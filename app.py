@@ -7,6 +7,9 @@ import os
 import time
 import requests
 import streamlit as st
+import folium
+from folium.plugins import MiniMap
+from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from dotenv import load_dotenv
@@ -351,6 +354,126 @@ def geocode_address(address: str, google_key: str | None = None) -> tuple[dict |
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# MAP HELPER
+# ═════════════════════════════════════════════════════════════════════════════
+
+def build_subject_map(
+    lat: float,
+    lon: float,
+    radius_miles: float,
+    label: str,
+    borough: str,
+    neighborhood: str,
+) -> folium.Map:
+    """
+    Build a zoomable Folium map centred on the subject property.
+    Shows the address pin, search-radius ring, and a mini-map inset.
+    Zoom level scales with radius so the full ring is always visible.
+    """
+    # Pick zoom level so the radius circle fits comfortably
+    if radius_miles <= 0.10:
+        zoom = 17
+    elif radius_miles <= 0.15:
+        zoom = 16
+    elif radius_miles <= 0.25:
+        zoom = 16
+    elif radius_miles <= 0.50:
+        zoom = 15
+    elif radius_miles <= 1.0:
+        zoom = 14
+    else:
+        zoom = 13
+
+    m = folium.Map(
+        location=[lat, lon],
+        zoom_start=zoom,
+        tiles="CartoDB positron",
+        control_scale=True,
+    )
+
+    # ── Tile layer switcher ───────────────────────────────────────────────────
+    folium.TileLayer(
+        tiles="CartoDB dark_matter",
+        name="Dark",
+        attr="CartoDB",
+    ).add_to(m)
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="Street Map",
+        attr="OpenStreetMap",
+    ).add_to(m)
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
+
+    # ── Search radius ring ────────────────────────────────────────────────────
+    folium.Circle(
+        location=[lat, lon],
+        radius=radius_miles * 1609.34,   # miles → metres
+        color="#1A3A6B",
+        weight=2,
+        dash_array="6 4",
+        fill=True,
+        fill_color="#1A3A6B",
+        fill_opacity=0.06,
+        tooltip=f"Search radius: {radius_miles:.2f} mi",
+    ).add_to(m)
+
+    # Solid inner dot to mark the exact centre
+    folium.CircleMarker(
+        location=[lat, lon],
+        radius=5,
+        color="#1A3A6B",
+        fill=True,
+        fill_color="#1A3A6B",
+        fill_opacity=0.9,
+        weight=2,
+    ).add_to(m)
+
+    # ── Subject property pin ──────────────────────────────────────────────────
+    hood_line = f"<br/><span style='color:#6B7280'>{neighborhood}</span>" if neighborhood and neighborhood != "—" else ""
+    borough_line = f" · {borough}" if borough and borough != "—" else ""
+
+    popup_html = f"""
+    <div style="font-family:sans-serif;min-width:200px;padding:4px">
+      <b style="font-size:1rem;color:#0D1B2A">📍 Subject Property</b>
+      {hood_line}{borough_line}
+      <hr style="margin:8px 0;border-color:#E5E7EB"/>
+      <span style="font-size:0.82rem;color:#374151">{label}</span><br/>
+      <span style="font-size:0.75rem;color:#9CA3AF;font-family:monospace">
+        {lat:.6f}, {lon:.6f}
+      </span><br/>
+      <span style="font-size:0.75rem;color:#1A3A6B;font-weight:600">
+        Radius: {radius_miles:.2f} mi
+      </span>
+    </div>
+    """
+
+    folium.Marker(
+        location=[lat, lon],
+        popup=folium.Popup(popup_html, max_width=260),
+        tooltip="<b>Subject Property</b> — click for details",
+        icon=folium.Icon(
+            color="darkblue",
+            icon="building",
+            prefix="fa",
+        ),
+    ).add_to(m)
+
+    # ── Mini-map inset ────────────────────────────────────────────────────────
+    MiniMap(
+        tile_layer="CartoDB positron",
+        position="bottomright",
+        width=140,
+        height=100,
+        collapsed_width=20,
+        collapsed_height=20,
+        zoom_level_offset=-6,
+        toggle_display=True,
+    ).add_to(m)
+
+    return m
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # SIDEBAR  —  API keys + quick help
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -553,6 +676,7 @@ if submitted:
     if is_transit:
         transit_tag = ' &nbsp;<span style="background:#DBEAFE;color:#1D4ED8;border-radius:20px;padding:3px 10px;font-size:0.75rem;font-weight:700;">🚇 Transit Hub</span>'
 
+    # ── Info card ─────────────────────────────────────────────────────────────
     st.markdown(f"""
     <div class="geo-card">
       <div class="geo-card-title">📍 Geocoding Result &nbsp; {badge}{demand_tag}{transit_tag}</div>
@@ -576,6 +700,35 @@ if submitted:
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Interactive map ───────────────────────────────────────────────────────
+    st.markdown(
+        "<div style='margin-top:20px;font-size:0.72rem;font-weight:700;"
+        "letter-spacing:0.08em;text-transform:uppercase;color:#6B7280;"
+        "margin-bottom:8px'>🗺️ Subject Property Map</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Scroll to zoom · Click the pin for details · "
+        "Use the layer icon (top-right) to switch map style · "
+        "Mini-map toggle bottom-right"
+    )
+
+    subject_map = build_subject_map(
+        lat=lat,
+        lon=lon,
+        radius_miles=radius_miles,
+        label=geo["formatted_address"],
+        borough=borough,
+        neighborhood=neighborhood,
+    )
+    st_folium(
+        subject_map,
+        width="100%",
+        height=460,
+        returned_objects=[],   # no callbacks needed yet
+        key="subject_map",
+    )
+
     # ── Search filter summary ────────────────────────────────────────────────
     unit_display   = ", ".join(f'<span class="filter-tag">{u}</span>' for u in (selected_units or UNIT_TYPES))
     rental_display = f'<span class="filter-tag">{rental_type}</span>'
@@ -583,9 +736,9 @@ if submitted:
 
     st.markdown(f"""
     <div class="filter-summary">
-      <b>Search ready.</b> When you run the full analysis, the app will pull
-      rental comps within <b>{radius_miles:.2f} miles</b>
-      ({radius_label}) of this location.<br/>
+      <b>Search confirmed.</b> The dashed ring on the map shows the exact area
+      from which rental comps will be pulled.<br/>
+      &nbsp;&nbsp;• <b>Radius:</b> {radius_miles:.2f} miles ({radius_label})<br/>
       &nbsp;&nbsp;• <b>Unit types:</b> {unit_display}<br/>
       &nbsp;&nbsp;• <b>Rental type:</b> {rental_display}
     </div>
@@ -594,9 +747,8 @@ if submitted:
     # ── Next-step callout ─────────────────────────────────────────────────────
     st.markdown("""
     <div class="next-step">
-      ⏳ <b>Stage 2 coming next:</b> live rental listings, rent statistics,
-      interactive map, photo gallery, and market insight summary will appear here
-      once data fetching is wired in.
+      ⏳ <b>Data collection coming next:</b> live rental listings from Rentcast
+      and Zillow will be plotted on this map once Stage 2 is wired in.
       Add your <b>Rentcast</b> and <b>RapidAPI</b> keys in the sidebar to be ready.
     </div>
     """, unsafe_allow_html=True)
@@ -619,7 +771,7 @@ elif not submitted:
 st.markdown("""
 <hr style="margin-top:48px;border-color:#E5E7EB"/>
 <div style="text-align:center;color:#9CA3AF;font-size:0.75rem;padding:12px 0">
-  NYC Rent Comp Analyzer · Stage 1: Inputs &amp; Geocoding ·
+  NYC Rent Comp Analyzer · Inputs, Geocoding &amp; Interactive Map ·
   For internal real estate diligence use only · Not financial advice
 </div>
 """, unsafe_allow_html=True)
