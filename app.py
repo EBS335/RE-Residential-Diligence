@@ -227,14 +227,15 @@ TRANSIT_HUBS = {
 # GEOCODING
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Nominatim viewbox:  west, south, east, north  (slightly padded beyond NYC)
-_NOM_VIEWBOX = "-74.30,40.45,-73.65,40.95"
 _NOM_HEADERS = {
     "User-Agent": "NYC-Rent-Comp-Analyzer/1.0 (real-estate-diligence-tool)",
     "Accept-Language": "en-US,en;q=0.9",
 }
-# Slightly generous bounds — catches addresses on the very edge of boroughs
-_NYC_BOUNDS_LOOSE = dict(lat_min=40.45, lat_max=40.95, lon_min=-74.30, lon_max=-73.65)
+# Loose NYC bounds — includes a small buffer around all five boroughs
+_NYC_BOUNDS = dict(lat_min=40.45, lat_max=40.95, lon_min=-74.30, lon_max=-73.65)
+
+NYC_TERMS = ("new york", "nyc", "brooklyn", "manhattan",
+             "queens", "bronx", "staten island", ", ny", " ny ")
 
 
 def _normalize_borough(text: str) -> str | None:
@@ -248,40 +249,28 @@ def _normalize_borough(text: str) -> str | None:
 
 
 def _in_nyc(lat: float, lon: float) -> bool:
-    b = _NYC_BOUNDS_LOOSE
+    b = _NYC_BOUNDS
     return b["lat_min"] <= lat <= b["lat_max"] and b["lon_min"] <= lon <= b["lon_max"]
 
 
 def _parse_nom_result(result: dict) -> dict:
-    """Extract structured fields from a Nominatim JSON result."""
     addr          = result.get("address", {})
     city_district = addr.get("city_district") or addr.get("suburb") or ""
     borough = (
-        _normalize_borough(city_district)
-        or _normalize_borough(addr.get("borough", ""))
+        _normalize_borough(addr.get("borough", ""))
+        or _normalize_borough(city_district)
         or _normalize_borough(addr.get("city", ""))
         or _normalize_borough(addr.get("county", ""))
-        or _normalize_borough(addr.get("state_district", ""))
     )
     neighborhood = (
         addr.get("neighbourhood")
         or addr.get("quarter")
-        or addr.get("hamlet")
         or (city_district if city_district else None)
     )
-    # Build a clean formatted address
-    parts = []
-    for key in ("house_number", "road", "suburb", "city_district",
-                "city", "state", "postcode", "country"):
-        v = addr.get(key, "")
-        if v and v not in parts:
-            parts.append(v)
-    formatted = result.get("display_name", ", ".join(parts))
-
     return {
         "lat":               float(result["lat"]),
         "lon":               float(result["lon"]),
-        "formatted_address": formatted,
+        "formatted_address": result.get("display_name", ""),
         "borough":           borough,
         "neighborhood":      neighborhood,
         "zip_code":          addr.get("postcode", ""),
@@ -289,22 +278,20 @@ def _parse_nom_result(result: dict) -> dict:
     }
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def geocode_nominatim(address: str) -> dict | None:
-    """
-    Direct HTTP geocoding via Nominatim with multiple fallback queries.
-    Uses viewbox + bounded=1 so results are constrained to the NYC area,
-    preventing false matches like 'New York' in other US states.
-    """
-    nyc_terms = ("new york", "nyc", "brooklyn", "manhattan",
-                 "queens", "bronx", "staten island")
-    has_nyc = any(t in address.lower() for t in nyc_terms)
+# ── Geocoding: Nominatim ──────────────────────────────────────────────────────
 
-    # Ordered list of queries to attempt — most specific first
-    if has_nyc:
-        queries = [address, f"{address}, USA"]
-    else:
-        queries = [
+def _geocode_nominatim(address: str) -> dict | None:
+    """
+    Direct HTTP call to Nominatim.  No bounded= constraint — we rely
+    on _in_nyc() to filter results so the query isn't artificially
+    restricted and can resolve any valid NYC street address.
+    """
+    has_nyc = any(t in address.lower() for t in NYC_TERMS)
+
+    queries = (
+        [address, f"{address}, New York, NY"]
+        if has_nyc else
+        [
             f"{address}, New York City, NY",
             f"{address}, Manhattan, NY",
             f"{address}, Brooklyn, NY",
@@ -313,6 +300,7 @@ def geocode_nominatim(address: str) -> dict | None:
             f"{address}, Staten Island, NY",
             f"{address}, New York, NY",
         ]
+    )
 
     for query in queries:
         try:
@@ -320,45 +308,99 @@ def geocode_nominatim(address: str) -> dict | None:
                 "https://nominatim.openstreetmap.org/search",
                 headers=_NOM_HEADERS,
                 params={
-                    "q":             query,
-                    "format":        "jsonv2",
+                    "q":              query,
+                    "format":         "jsonv2",
                     "addressdetails": "1",
-                    "limit":         "5",
-                    "countrycodes":  "us",
-                    "viewbox":       _NOM_VIEWBOX,
-                    "bounded":       "1",        # hard-restrict to viewbox
+                    "limit":          "5",
+                    "countrycodes":   "us",
+                    # NOTE: no bounded/viewbox — rely on _in_nyc() instead
                 },
                 timeout=12,
             )
-            if resp.status_code == 429:          # rate-limited
-                time.sleep(1.5)
+            if resp.status_code == 429:
+                time.sleep(2)
                 continue
             if not resp.ok:
-                time.sleep(0.4)
                 continue
-
-            results = resp.json()
-            for r in results:
+            for r in resp.json():
                 lat = float(r.get("lat", 0))
                 lon = float(r.get("lon", 0))
                 if _in_nyc(lat, lon):
                     return _parse_nom_result(r)
-
-            time.sleep(0.3)                      # polite pause between retries
+            time.sleep(0.4)
         except Exception:
-            time.sleep(0.3)
-            continue
+            time.sleep(0.4)
 
     return None
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def geocode_google(address: str, api_key: str) -> dict | None:
-    """Geocode via Google Maps Geocoding API."""
-    url = "https://maps.googleapis.com/maps/api/geocode/json"
+# ── Geocoding: Photon (Komoot, OSM-based, no key) ────────────────────────────
+
+def _geocode_photon(address: str) -> dict | None:
+    """Photon geocoding API — fast, reliable, OSM-backed, no API key needed."""
+    has_nyc = any(t in address.lower() for t in NYC_TERMS)
+    query   = address if has_nyc else f"{address}, New York, NY"
+
+    try:
+        resp = requests.get(
+            "https://photon.komoot.io/api/",
+            headers={"User-Agent": "NYC-Rent-Comp-Analyzer/1.0"},
+            params={"q": query, "limit": 5, "lang": "en"},
+            timeout=10,
+        )
+        if not resp.ok:
+            return None
+
+        for f in resp.json().get("features", []):
+            props  = f.get("properties", {})
+            coords = f.get("geometry", {}).get("coordinates", [])
+            if len(coords) < 2:
+                continue
+            lon, lat = float(coords[0]), float(coords[1])
+            if not _in_nyc(lat, lon):
+                continue
+            # Verify it's actually in New York state
+            if props.get("state") not in ("New York", "NY", None):
+                continue
+
+            city     = props.get("city", "")
+            district = props.get("district", "") or props.get("suburb", "")
+            borough  = (
+                _normalize_borough(city)
+                or _normalize_borough(district)
+                or _normalize_borough(props.get("county", ""))
+            )
+            neighborhood = district or city or None
+
+            parts = [p for p in [
+                props.get("housenumber", ""),
+                props.get("street", ""),
+                district or city,
+                props.get("postcode", ""),
+            ] if p]
+            formatted = ", ".join(parts) if parts else query
+
+            return {
+                "lat":               lat,
+                "lon":               lon,
+                "formatted_address": formatted,
+                "borough":           borough,
+                "neighborhood":      neighborhood,
+                "zip_code":          props.get("postcode", ""),
+                "geocoder":          "Photon / OSM",
+            }
+    except Exception:
+        pass
+
+    return None
+
+
+# ── Geocoding: Google Maps ────────────────────────────────────────────────────
+
+def _geocode_google(address: str, api_key: str) -> dict | None:
     try:
         r = requests.get(
-            url,
+            "https://maps.googleapis.com/maps/api/geocode/json",
             params={"address": address, "key": api_key, "components": "country:US"},
             timeout=10,
         )
@@ -367,19 +409,14 @@ def geocode_google(address: str, api_key: str) -> dict | None:
         if data.get("status") != "OK" or not data.get("results"):
             return None
 
-        result       = data["results"][0]
-        loc          = result["geometry"]["location"]
-        lat, lon     = loc["lat"], loc["lng"]
-
+        result   = data["results"][0]
+        loc      = result["geometry"]["location"]
+        lat, lon = loc["lat"], loc["lng"]
         if not _in_nyc(lat, lon):
             return None
 
-        comps        = result.get("address_components", [])
-        borough      = None
-        neighborhood = None
-        zip_code     = None
-
-        for c in comps:
+        borough = neighborhood = zip_code = None
+        for c in result.get("address_components", []):
             types = c["types"]
             name  = c["long_name"]
             if "neighborhood" in types and not neighborhood:
@@ -388,9 +425,8 @@ def geocode_google(address: str, api_key: str) -> dict | None:
                 borough = _normalize_borough(name)
             if "postal_code" in types:
                 zip_code = name
-
         if not borough:
-            for c in comps:
+            for c in result.get("address_components", []):
                 b = _normalize_borough(c["long_name"])
                 if b:
                     borough = b
@@ -409,18 +445,38 @@ def geocode_google(address: str, api_key: str) -> dict | None:
         return None
 
 
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+
 def geocode_address(address: str, google_key: str | None = None) -> tuple[dict | None, str]:
     """
-    Try Google first (when key is provided), then fall back to Nominatim.
-    Returns (result_dict | None, status_string).
+    Try Google → Nominatim → Photon.
+    Uses st.session_state as cache so failed results are NEVER cached
+    (unlike @st.cache_data which would lock out an address on any transient error).
     """
+    clean = address.strip()
+    cache_key = f"_geo_{clean.lower()}"
+
+    # Return cached success from this session
+    if cache_key in st.session_state:
+        return st.session_state[cache_key], "cached"
+
+    # 1. Google Maps (most accurate, requires key)
     if google_key and google_key.strip():
-        result = geocode_google(address.strip(), google_key.strip())
+        result = _geocode_google(clean, google_key.strip())
         if result:
+            st.session_state[cache_key] = result
             return result, "live"
 
-    result = geocode_nominatim(address.strip())
+    # 2. Nominatim (free, no key)
+    result = _geocode_nominatim(clean)
     if result:
+        st.session_state[cache_key] = result
+        return result, "live"
+
+    # 3. Photon (free, no key — independent OSM-based service)
+    result = _geocode_photon(clean)
+    if result:
+        st.session_state[cache_key] = result
         return result, "live"
 
     return None, "error"
