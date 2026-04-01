@@ -506,3 +506,340 @@ def scrape_apartments_com(
             return listings, "error" if not listings else "partial"
 
     return listings, ("live" if listings else "no_results")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Craigslist NYC
+# Most reliable free source — simple HTML, minimal bot protection.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def scrape_craigslist(
+    lat: float,
+    lon: float,
+    radius_miles: float,
+    bed_filter=None,
+):
+    session = requests.Session()
+    session.headers.update({**_HEADERS, "Referer": "https://newyork.craigslist.org/"})
+    listings = []
+
+    for page_offset in range(0, 600, 120):
+        try:
+            params = {
+                "lat": lat, "lon": lon,
+                "search_distance": round(radius_miles, 2),
+                "availabilityMode": 0, "s": page_offset,
+                "lang": "en", "cc": "us",
+            }
+            resp = session.get("https://newyork.craigslist.org/search/apa",
+                               params=params, timeout=20)
+            if _is_blocked(resp):
+                return listings, "blocked" if not listings else "partial"
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            cards = (
+                soup.find_all("li", class_=re.compile(r"cl-search-result|cl-static-search-result", re.I))
+                or soup.find_all("li", class_="result-row")
+                or soup.find_all("li", attrs={"data-pid": True})
+            )
+            if not cards:
+                break
+
+            for card in cards:
+                item = _parse_cl_card(card, lat, lon, bed_filter)
+                if item:
+                    listings.append(item)
+
+            if len(cards) < 119:
+                break
+            time.sleep(0.6)
+        except requests.exceptions.Timeout:
+            return listings, "timeout" if not listings else "partial"
+        except Exception:
+            return listings, "error" if not listings else "partial"
+
+    return listings, ("live" if listings else "no_results")
+
+
+def _parse_cl_card(card, clat, clon, bed_filter):
+    try:
+        price_tag = (
+            card.find(class_=re.compile(r"priceinfo|result-price|price", re.I))
+            or card.find("span", string=re.compile(r"\$\d"))
+        )
+        rent = _extract_price(price_tag.get_text(strip=True)) if price_tag else 0
+        if rent < 400:
+            return None
+
+        link_tag = (
+            card.find("a", class_=re.compile(r"cl-app-anchor|result-title|posting-title", re.I))
+            or card.find("a", href=re.compile(r"craigslist\.org"))
+        )
+        if not link_tag:
+            return None
+        title = link_tag.get_text(strip=True)
+        url   = link_tag.get("href", "")
+        if url and not url.startswith("http"):
+            url = "https://newyork.craigslist.org" + url
+
+        beds  = _beds_from_title(title)
+        utype = _bed_label(beds)
+        if bed_filter and utype not in bed_filter:
+            return None
+
+        hood_tag = card.find(class_=re.compile(r"result-hood|hood|meta", re.I))
+        address  = hood_tag.get_text(strip=True).strip("()/ ") if hood_tag else title[:60]
+
+        sqft_m = re.search(r"(\d{3,4})\s*(?:sq\s*ft|sf|sqft)", title, re.I)
+        sqft   = int(sqft_m.group(1)) if sqft_m else None
+        photo  = _first_photo(card)
+
+        return {
+            "address": address, "rent": float(rent), "bedrooms": beds,
+            "unit_type": utype, "building_name": "", "lat": clat, "lon": clon,
+            "url": url, "photos": [photo] if photo else [], "sqft": sqft,
+            "days_on_market": None, "source": "Craigslist", "distance_miles": 0.0,
+        }
+    except Exception:
+        return None
+
+
+def _beds_from_title(title):
+    t = title.lower()
+    if re.search(r"\bstudio\b|\b0\s*br\b|\b0br\b", t):
+        return 0
+    m = re.search(r"(\d)\s*(?:br|bd|bed(?:room)?s?)\b", t)
+    return min(int(m.group(1)), 5) if m else 1
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Zumper NYC
+# JSON-backed search with broad NYC inventory.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def scrape_zumper(lat, lon, radius_miles, bed_filter=None):
+    ne_lat, ne_lng, sw_lat, sw_lng = _bbox(lat, lon, radius_miles)
+    session = requests.Session()
+    session.headers.update({
+        **_HEADERS,
+        "Referer": "https://www.zumper.com/apartments-for-rent/new-york-city-ny",
+        "Accept":  "application/json, text/plain, */*",
+    })
+    listings = []
+    _zb = {"Studio": 0, "1 Bed": 1, "2 Bed": 2, "3 Bed": 3, "4+ Bed": 4}
+    bed_codes = [_zb[u] for u in (bed_filter or []) if u in _zb]
+
+    try:
+        params = {
+            "min_price": 500, "max_price": 30000, "page": 1,
+            "ne_lat": ne_lat, "ne_lng": ne_lng,
+            "sw_lat": sw_lat, "sw_lng": sw_lng,
+        }
+        if bed_codes:
+            params["beds"] = ",".join(str(b) for b in bed_codes)
+
+        resp = session.get("https://www.zumper.com/api/t/1/listings",
+                           params=params, timeout=20)
+        if _is_blocked(resp):
+            return [], "blocked"
+        if not resp.ok:
+            return _zumper_html_fallback(lat, lon, session, bed_filter)
+
+        data = resp.json()
+        raw  = data if isinstance(data, list) else (
+            data.get("listings") or data.get("data") or []
+        )
+        for item in raw:
+            beds  = item.get("bedrooms") or item.get("beds") or 0
+            utype = _bed_label(beds)
+            if bed_filter and utype not in bed_filter:
+                continue
+            rent = item.get("price") or item.get("rent") or 0
+            if not rent or float(rent) < 400:
+                continue
+            ilat = float(item.get("latitude") or item.get("lat") or lat)
+            ilon = float(item.get("longitude") or item.get("lng") or lon)
+            raw_p = item.get("photos") or []
+            photos = []
+            for p in raw_p:
+                src = p.get("src") or p.get("url") if isinstance(p, dict) else p
+                if isinstance(src, str) and src.startswith("http"):
+                    photos.append(src)
+            lid = item.get("id") or ""
+            listings.append({
+                "address": item.get("address") or item.get("street") or "",
+                "rent": float(rent), "bedrooms": int(beds), "unit_type": utype,
+                "building_name": item.get("name") or "",
+                "lat": ilat, "lon": ilon,
+                "url": f"https://www.zumper.com/apartments-for-rent/a{lid}" if lid else "",
+                "photos": photos[:5], "sqft": item.get("sqft") or None,
+                "days_on_market": item.get("days_on_market") or None,
+                "source": "Zumper",
+                "distance_miles": _haversine(lat, lon, ilat, ilon),
+            })
+    except requests.exceptions.Timeout:
+        return [], "timeout"
+    except Exception:
+        return _zumper_html_fallback(lat, lon, session, bed_filter)
+
+    return listings, ("live" if listings else "no_results")
+
+
+def _zumper_html_fallback(clat, clon, session, bed_filter):
+    listings = []
+    try:
+        resp = session.get(
+            "https://www.zumper.com/apartments-for-rent/new-york-city-ny",
+            timeout=20
+        )
+        if _is_blocked(resp) or not resp.ok:
+            return [], "blocked"
+        soup = BeautifulSoup(resp.text, "lxml")
+        nd = soup.find("script", id="__NEXT_DATA__")
+        if not nd or not nd.string:
+            return [], "no_results"
+        data  = json.loads(nd.string)
+        pp    = data.get("props", {}).get("pageProps", {})
+        raw   = pp.get("listings") or pp.get("initialState", {}).get("listings", {}).get("list") or []
+        for item in raw:
+            beds  = item.get("bedrooms") or 0
+            utype = _bed_label(beds)
+            if bed_filter and utype not in bed_filter:
+                continue
+            rent = item.get("price") or 0
+            if not rent or float(rent) < 400:
+                continue
+            ilat = float(item.get("latitude") or clat)
+            ilon = float(item.get("longitude") or clon)
+            lid  = item.get("id") or ""
+            listings.append({
+                "address": item.get("address") or "", "rent": float(rent),
+                "bedrooms": int(beds), "unit_type": utype, "building_name": item.get("name") or "",
+                "lat": ilat, "lon": ilon,
+                "url": f"https://www.zumper.com/apartments-for-rent/a{lid}" if lid else "",
+                "photos": [], "sqft": item.get("sqft") or None, "days_on_market": None,
+                "source": "Zumper", "distance_miles": _haversine(clat, clon, ilat, ilon),
+            })
+    except Exception:
+        pass
+    return listings, ("live" if listings else "no_results")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# RentHop NYC
+# NYC-dedicated aggregator with landlord-direct + brokerage listings.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def scrape_renthop(lat, lon, radius_miles, bed_filter=None):
+    session = requests.Session()
+    session.headers.update({**_HEADERS, "Referer": "https://www.renthop.com/"})
+    listings = []
+    _rb = {"Studio": 0, "1 Bed": 1, "2 Bed": 2, "3 Bed": 3, "4+ Bed": 4}
+    bed_params = [_rb[u] for u in (bed_filter or []) if u in _rb]
+
+    for page in range(1, 6):
+        try:
+            params = {
+                "lat": lat, "lon": lon, "radius": radius_miles,
+                "page": page, "sort": "hopscore",
+            }
+            if bed_params:
+                params["bedrooms[]"] = bed_params
+
+            resp = session.get("https://www.renthop.com/search/the-big-apple",
+                               params=params, timeout=20)
+            if _is_blocked(resp):
+                return listings, "blocked" if not listings else "partial"
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            nd = soup.find("script", id="__NEXT_DATA__")
+            if nd and nd.string:
+                parsed = _parse_renthop_nd(json.loads(nd.string), lat, lon, bed_filter)
+                listings.extend(parsed)
+                if not parsed:
+                    break
+                time.sleep(0.7)
+                continue
+
+            cards = (
+                soup.find_all("div", class_=re.compile(r"listing-card|apartment-card", re.I))
+                or soup.find_all("article")
+            )
+            if not cards:
+                break
+            for card in cards:
+                item = _parse_renthop_card(card, lat, lon, bed_filter)
+                if item:
+                    listings.append(item)
+            time.sleep(0.8)
+        except requests.exceptions.Timeout:
+            return listings, "timeout" if not listings else "partial"
+        except Exception:
+            return listings, "error" if not listings else "partial"
+
+    return listings, ("live" if listings else "no_results")
+
+
+def _parse_renthop_nd(data, clat, clon, bed_filter):
+    listings = []
+    try:
+        pp  = data.get("props", {}).get("pageProps", {})
+        raw = pp.get("listings") or pp.get("apartments") or []
+        for item in raw:
+            beds  = item.get("bedrooms") or 0
+            utype = _bed_label(beds)
+            if bed_filter and utype not in bed_filter:
+                continue
+            rent = item.get("price") or item.get("rent") or 0
+            if not rent or float(rent) < 400:
+                continue
+            ilat = float(item.get("latitude") or item.get("lat") or clat)
+            ilon = float(item.get("longitude") or item.get("lon") or clon)
+            raw_p = item.get("photos") or item.get("images") or []
+            photos = []
+            for p in raw_p:
+                src = p.get("url") or p.get("src") if isinstance(p, dict) else p
+                if isinstance(src, str) and src.startswith("http"):
+                    photos.append(src)
+            lid = item.get("id") or item.get("listing_id") or ""
+            listings.append({
+                "address": item.get("address") or item.get("street_address") or "",
+                "rent": float(rent), "bedrooms": int(beds), "unit_type": utype,
+                "building_name": item.get("building_name") or "",
+                "lat": ilat, "lon": ilon,
+                "url": f"https://www.renthop.com/apartments/{lid}" if lid else "",
+                "photos": photos[:5], "sqft": item.get("sqft") or None,
+                "days_on_market": item.get("days_on_market") or None,
+                "source": "RentHop",
+                "distance_miles": _haversine(clat, clon, ilat, ilon),
+            })
+    except Exception:
+        pass
+    return listings
+
+
+def _parse_renthop_card(card, clat, clon, bed_filter):
+    try:
+        pt   = card.find(class_=re.compile(r"price|rent", re.I))
+        rent = _extract_price(pt.get_text()) if pt else 0
+        if rent < 400:
+            return None
+        bt   = card.find(class_=re.compile(r"bed|room", re.I))
+        m    = re.search(r"(\d+)", bt.get_text()) if bt else None
+        beds = int(m.group(1)) if m else 1
+        utype = _bed_label(beds)
+        if bed_filter and utype not in bed_filter:
+            return None
+        at   = card.find(class_=re.compile(r"address|location|street", re.I))
+        addr = at.get_text(strip=True) if at else ""
+        link = card.find("a", href=re.compile(r"renthop\.com", re.I))
+        url  = link["href"] if link else ""
+        photo = _first_photo(card)
+        return {
+            "address": addr, "rent": float(rent), "bedrooms": beds,
+            "unit_type": utype, "building_name": "", "lat": clat, "lon": clon,
+            "url": url, "photos": [photo] if photo else [], "sqft": None,
+            "days_on_market": None, "source": "RentHop", "distance_miles": 0.0,
+        }
+    except Exception:
+        return None

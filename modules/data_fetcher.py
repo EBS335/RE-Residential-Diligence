@@ -279,18 +279,28 @@ def fetch_all_listings(
     """
     Pull from all sources, merge, deduplicate, and clean.
 
-    Scraping (StreetEasy + Apartments.com) runs automatically — no keys needed.
+    Scraping (StreetEasy, Apartments.com, Craigslist, Zumper, RentHop) runs
+    automatically — no keys needed.
     Rentcast and Zillow/RapidAPI are optional supplements when keys are provided.
 
     Returns (listings, status_dict).
     status values: 'live' | 'partial' | 'blocked' | 'error' | 'no_key' | 'no_results'
     """
-    from modules.scraper import scrape_streeteasy, scrape_apartments_com
+    from modules.scraper import (
+        scrape_streeteasy,
+        scrape_apartments_com,
+        scrape_craigslist,
+        scrape_zumper,
+        scrape_renthop,
+    )
 
     raw: list = []
     status: dict = {
         "streeteasy":    "pending",
         "apartments":    "pending",
+        "craigslist":    "pending",
+        "zumper":        "pending",
+        "renthop":       "pending",
         "rentcast":      "no_key",
         "zillow":        "no_key",
         "overall":       "no_data",
@@ -309,6 +319,27 @@ def fetch_all_listings(
         ap_status if ap_status != "live" else "no_results"
     )
     raw.extend(ap_listings)
+
+    # ── Primary: scrape Craigslist ────────────────────────────────────────────
+    cl_listings, cl_status = scrape_craigslist(lat, lon, radius_miles, bed_filter)
+    status["craigslist"] = cl_status if cl_listings else (
+        cl_status if cl_status != "live" else "no_results"
+    )
+    raw.extend(cl_listings)
+
+    # ── Primary: scrape Zumper ────────────────────────────────────────────────
+    zu_listings, zu_status = scrape_zumper(lat, lon, radius_miles, bed_filter)
+    status["zumper"] = zu_status if zu_listings else (
+        zu_status if zu_status != "live" else "no_results"
+    )
+    raw.extend(zu_listings)
+
+    # ── Primary: scrape RentHop ───────────────────────────────────────────────
+    rh_listings, rh_status = scrape_renthop(lat, lon, radius_miles, bed_filter)
+    status["renthop"] = rh_status if rh_listings else (
+        rh_status if rh_status != "live" else "no_results"
+    )
+    raw.extend(rh_listings)
 
     # ── Supplemental: Rentcast API (if key provided) ──────────────────────────
     if rentcast_key:
@@ -334,10 +365,12 @@ def fetch_all_listings(
     cleaned = _remove_outliers(cleaned)
     cleaned.sort(key=lambda x: x["distance_miles"])
 
-    all_statuses = list(status.values())
-    if any(s == "live" for s in all_statuses):
+    scraper_statuses = [status[k] for k in ("streeteasy", "apartments", "craigslist", "zumper", "renthop")]
+    api_statuses = [status[k] for k in ("rentcast", "zillow") if status[k] != "no_key"]
+    all_active = scraper_statuses + api_statuses
+    if any(s == "live" for s in all_active):
         status["overall"] = "live"
-    elif any(s == "partial" for s in all_statuses):
+    elif any(s == "partial" for s in all_active):
         status["overall"] = "partial"
     else:
         status["overall"] = "no_data"

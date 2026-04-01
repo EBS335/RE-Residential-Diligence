@@ -1119,6 +1119,12 @@ if 'geo' in st.session_state:
         + " &nbsp; "
         + _source_pill("Apartments.com", data_status.get("apartments", "pending"))
         + " &nbsp; "
+        + _source_pill("Craigslist",    data_status.get("craigslist", "pending"))
+        + " &nbsp; "
+        + _source_pill("Zumper",        data_status.get("zumper", "pending"))
+        + " &nbsp; "
+        + _source_pill("RentHop",       data_status.get("renthop", "pending"))
+        + " &nbsp; "
         + _source_pill("Rentcast", data_status.get("rentcast", "no_key"))
         + " &nbsp; "
         + _source_pill("Zillow", data_status.get("zillow", "no_key"))
@@ -1126,21 +1132,24 @@ if 'geo' in st.session_state:
     st.markdown(pills_html, unsafe_allow_html=True)
 
     # ── No results / blocked state ─────────────────────────────────────────
-    se_blocked   = data_status.get("streeteasy") == "blocked"
-    apts_blocked = data_status.get("apartments") == "blocked"
+    blocked_sources = [
+        k for k in ("streeteasy", "apartments", "craigslist", "zumper", "renthop")
+        if data_status.get(k) == "blocked"
+    ]
+    all_primary_blocked = len(blocked_sources) == 5
 
     if not listings:
-        if se_blocked and apts_blocked:
+        if all_primary_blocked:
             st.warning(
-                "**Both StreetEasy and Apartments.com blocked this request** "
-                "(bot/Cloudflare protection).\n\n"
+                "**All scraping sources were blocked** (bot/Cloudflare protection).\n\n"
                 "To get live data add a **Rentcast** or **RapidAPI** key in the sidebar — "
                 "those use authorized APIs that bypass bot detection. "
                 "Rentcast has a free tier at rentcast.io."
             )
-        elif se_blocked or apts_blocked:
+        elif blocked_sources:
+            blocked_names = ", ".join(blocked_sources)
             st.warning(
-                "One source was blocked by bot protection. "
+                f"Some sources were blocked by bot protection ({blocked_names}). "
                 "Try **expanding the radius** or add API keys in the sidebar for reliable data."
             )
         else:
@@ -1376,6 +1385,39 @@ if 'geo' in st.session_state:
             "url": "https://apartments.com",
             "url_label": "apartments.com",
             "status": data_status.get("apartments", "pending"),
+            "primary": True,
+        },
+        {
+            "name": "Craigslist",
+            "desc": (
+                "High-volume NYC listings including private landlords, FSBO, and no-fee rentals "
+                "rarely found on other platforms. Scraped directly: no API key required."
+            ),
+            "url": "https://newyork.craigslist.org/search/apa",
+            "url_label": "newyork.craigslist.org",
+            "status": data_status.get("craigslist", "pending"),
+            "primary": True,
+        },
+        {
+            "name": "Zumper",
+            "desc": (
+                "Real-time rental marketplace with strong NYC coverage and instant-apply listings. "
+                "Scraped directly via JSON API: no API key required."
+            ),
+            "url": "https://www.zumper.com",
+            "url_label": "zumper.com",
+            "status": data_status.get("zumper", "pending"),
+            "primary": True,
+        },
+        {
+            "name": "RentHop",
+            "desc": (
+                "NYC-focused marketplace with broker and no-fee listings across all five boroughs. "
+                "Scraped directly: no API key required."
+            ),
+            "url": "https://www.renthop.com",
+            "url_label": "renthop.com",
+            "status": data_status.get("renthop", "pending"),
             "primary": True,
         },
         {
