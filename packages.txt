@@ -1,3 +1,0 @@
-# Playwright browser binaries and their system deps are installed at runtime
-# via: playwright install chromium --with-deps
-# No apt packages needed here.
