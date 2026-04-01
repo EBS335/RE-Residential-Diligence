@@ -751,6 +751,16 @@ with st.sidebar:
         help="Enables the most accurate address geocoding. "
              "Falls back to OpenStreetMap if omitted.",
     )
+    scraping_key = st.text_input(
+        "ScrapingBee API Key  *(recommended)*",
+        value=os.getenv("SCRAPINGBEE_KEY", ""),
+        type="password",
+        help=(
+            "Routes scraping through residential proxies — the most reliable fix "
+            "when StreetEasy / Apartments.com are blocked on cloud IPs. "
+            "Free tier: 1,000 credits/month at scrapingbee.com."
+        ),
+    )
     rentcast_key = st.text_input(
         "Rentcast API Key  *(optional)*",
         value=os.getenv("RENTCAST_API_KEY", ""),
@@ -769,18 +779,20 @@ with st.sidebar:
     st.divider()
     st.markdown("### 📖 How to use")
     st.caption(
-        "**No API keys needed** — the app scrapes StreetEasy and "
-        "Apartments.com directly for live listings.\n\n"
-        "Add a **Rentcast** or **RapidAPI** key for supplemental data "
-        "from authorized APIs (useful if scraping is blocked).\n\n"
-        "**Google Maps key** improves geocoding accuracy (optional)."
+        "**No API keys needed** — the app scrapes 5 sources directly "
+        "(StreetEasy, Apartments.com, Craigslist, Zumper, RentHop).\n\n"
+        "Add a **ScrapingBee** key (free tier available) to route requests "
+        "through residential proxies — this bypasses Cloudflare blocks that "
+        "affect cloud-hosted apps.\n\n"
+        "**Rentcast** / **RapidAPI** keys add supplemental API-sourced data."
     )
     st.divider()
     st.markdown("### 🔗 Get API keys")
     st.markdown(
+        "- [ScrapingBee](https://scrapingbee.com) *(free tier — recommended)*\n"
         "- [Google Maps Platform](https://console.cloud.google.com) *(optional)*\n"
-        "- [Rentcast.io](https://rentcast.io) *(Stage 2)*\n"
-        "- [RapidAPI](https://rapidapi.com) *(Stage 2)*"
+        "- [Rentcast.io](https://rentcast.io) *(optional)*\n"
+        "- [RapidAPI](https://rapidapi.com) *(optional)*"
     )
 
 
@@ -1077,10 +1089,12 @@ if 'geo' in st.session_state:
     # ── Fetch with loading indicator ──────────────────────────────────────────
     has_rentcast = bool(rentcast_key and rentcast_key.strip())
     has_rapidapi = bool(rapidapi_key and rapidapi_key.strip())
+    has_proxy    = bool(scraping_key and scraping_key.strip())
 
     fetch_cache_key = (
         f"_listings_{lat:.5f}_{lon:.5f}_{radius_miles}_"
-        f"{'_'.join(sorted(selected_units or []))}_rc{int(has_rentcast)}_ra{int(has_rapidapi)}"
+        f"{'_'.join(sorted(selected_units or []))}"
+        f"_rc{int(has_rentcast)}_ra{int(has_rapidapi)}_pb{int(has_proxy)}"
     )
     if fetch_cache_key in st.session_state:
         listings       = st.session_state[fetch_cache_key]["listings"]
@@ -1088,7 +1102,7 @@ if 'geo' in st.session_state:
         data_freshness = "Cached Data"
     else:
         with st.spinner(
-            "🔍 Searching StreetEasy & Apartments.com for live listings…"
+            "🔍 Scraping StreetEasy, Apartments.com, Craigslist, Zumper & RentHop…"
         ):
             listings, data_status = fetch_all_listings(
                 lat=lat,
@@ -1097,6 +1111,7 @@ if 'geo' in st.session_state:
                 rentcast_key=rentcast_key.strip() if has_rentcast else None,
                 rapidapi_key=rapidapi_key.strip() if has_rapidapi else None,
                 bed_filter=selected_units if selected_units else None,
+                proxy_key=scraping_key.strip() if has_proxy else None,
             )
         # Only cache successes — failures retry on next submit
         if listings:

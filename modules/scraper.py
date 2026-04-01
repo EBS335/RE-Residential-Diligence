@@ -16,20 +16,33 @@ Status codes returned:
 
 import json
 import math
+import random
 import re
 import time
 from typing import Optional
 
-import requests
+# curl_cffi gives us Chrome-accurate TLS fingerprinting (JA3/JA3S), which
+# bypasses bot-detection systems that flag the default requests TLS handshake.
+try:
+    from curl_cffi import requests as _cf_requests  # type: ignore
+    _USE_CURL = True
+except ImportError:
+    import requests as _cf_requests  # type: ignore
+    _USE_CURL = False
+
+import requests as _plain_requests  # used for ScrapingBee proxy calls
 from bs4 import BeautifulSoup
 
-# ── Browser-mimicking headers ─────────────────────────────────────────────────
+# ── Rotating User-Agent pool ──────────────────────────────────────────────────
+_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+]
+
+# ── Base browser headers (User-Agent injected per-session) ───────────────────
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;"
         "q=0.9,image/avif,image/webp,*/*;q=0.8"
@@ -44,6 +57,9 @@ _HEADERS = {
     "Sec-Fetch-Site": "none",
     "Sec-Fetch-User": "?1",
     "Cache-Control": "max-age=0",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
 }
 
 _BED_MAP = {0: "Studio", 1: "1 Bed", 2: "2 Bed", 3: "3 Bed"}
@@ -80,7 +96,44 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def _is_blocked(resp: requests.Response) -> bool:
+def _make_session():
+    """
+    Create a curl_cffi session impersonating Chrome 124 (best TLS fingerprint),
+    or fall back to a plain requests.Session if curl_cffi is unavailable.
+    A random User-Agent is chosen per session.
+    """
+    if _USE_CURL:
+        sess = _cf_requests.Session()
+        sess.impersonate = "chrome124"
+    else:
+        sess = _plain_requests.Session()
+    sess.headers.update({**_HEADERS, "User-Agent": random.choice(_USER_AGENTS)})
+    return sess
+
+
+def _proxy_get(url: str, session, proxy_key: Optional[str] = None,
+               render_js: bool = False, timeout: int = 20, **kwargs):
+    """
+    Make a GET request.
+    - If proxy_key is provided: route through ScrapingBee (bypasses IP blocks).
+    - Otherwise: use the curl_cffi / requests session directly.
+    """
+    if proxy_key:
+        params = {
+            "api_key": proxy_key,
+            "url": url,
+            "render_js": "true" if render_js else "false",
+            "block_resources": "false",
+        }
+        return _plain_requests.get(
+            "https://app.scrapingbee.com/api/v1/",
+            params=params,
+            timeout=60,
+        )
+    return session.get(url, timeout=timeout, **kwargs)
+
+
+def _is_blocked(resp) -> bool:
     """Detect Cloudflare / bot-protection challenge pages."""
     if resp.status_code in (403, 429, 503):
         return True
@@ -239,6 +292,7 @@ def scrape_streeteasy(
     lon: float,
     radius_miles: float,
     bed_filter: Optional[list] = None,
+    proxy_key: Optional[str] = None,
 ) -> tuple[list, str]:
     """
     Scrape StreetEasy rental search results within the bounding box.
@@ -246,12 +300,13 @@ def scrape_streeteasy(
     """
     ne_lat, ne_lng, sw_lat, sw_lng = _bbox(lat, lon, radius_miles)
 
-    session = requests.Session()
-    session.headers.update(_HEADERS)
+    session = _make_session()
+    session.headers.update({"Referer": "https://streeteasy.com/"})
 
     # Warm-up: visit homepage to get session cookies (reduces bot score)
     try:
-        session.get("https://streeteasy.com", timeout=10, allow_redirects=True)
+        _proxy_get("https://streeteasy.com", session, proxy_key=proxy_key,
+                   timeout=10, allow_redirects=True)
         time.sleep(1.0)
     except Exception:
         pass
@@ -269,7 +324,7 @@ def scrape_streeteasy(
                 f"&search%5Bsw_lng%5D={sw_lng}"
                 f"&page={page}"
             )
-            resp = session.get(url, timeout=20)
+            resp = _proxy_get(url, session, proxy_key=proxy_key, timeout=20)
 
             if _is_blocked(resp):
                 status = "blocked" if not listings else "partial"
@@ -305,7 +360,7 @@ def scrape_streeteasy(
 
             time.sleep(0.7)
 
-        except requests.exceptions.Timeout:
+        except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
             return listings, "error" if not listings else "partial"
@@ -436,6 +491,7 @@ def scrape_apartments_com(
     lon: float,
     radius_miles: float,
     bed_filter: Optional[list] = None,
+    proxy_key: Optional[str] = None,
 ) -> tuple[list, str]:
     """
     Scrape Apartments.com rental results.
@@ -443,8 +499,8 @@ def scrape_apartments_com(
     """
     ne_lat, ne_lng, sw_lat, sw_lng = _bbox(lat, lon, radius_miles)
 
-    session = requests.Session()
-    session.headers.update({**_HEADERS, "Referer": "https://www.apartments.com/"})
+    session = _make_session()
+    session.headers.update({"Referer": "https://www.apartments.com/"})
 
     listings: list = []
 
@@ -454,7 +510,7 @@ def scrape_apartments_com(
             bbox = f"{sw_lat},{sw_lng},{ne_lat},{ne_lng}"
             url  = f"https://www.apartments.com/new-york-ny/{page}/?bb={bbox}"
 
-            resp = session.get(url, timeout=20)
+            resp = _proxy_get(url, session, proxy_key=proxy_key, timeout=20)
 
             if _is_blocked(resp):
                 return listings, "blocked" if not listings else "partial"
@@ -500,7 +556,7 @@ def scrape_apartments_com(
 
             time.sleep(0.9)
 
-        except requests.exceptions.Timeout:
+        except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
             return listings, "error" if not listings else "partial"
@@ -518,9 +574,10 @@ def scrape_craigslist(
     lon: float,
     radius_miles: float,
     bed_filter=None,
+    proxy_key: Optional[str] = None,
 ):
-    session = requests.Session()
-    session.headers.update({**_HEADERS, "Referer": "https://newyork.craigslist.org/"})
+    session = _make_session()
+    session.headers.update({"Referer": "https://newyork.craigslist.org/"})
     listings = []
 
     for page_offset in range(0, 600, 120):
@@ -531,8 +588,8 @@ def scrape_craigslist(
                 "availabilityMode": 0, "s": page_offset,
                 "lang": "en", "cc": "us",
             }
-            resp = session.get("https://newyork.craigslist.org/search/apa",
-                               params=params, timeout=20)
+            resp = _proxy_get("https://newyork.craigslist.org/search/apa",
+                              session, proxy_key=proxy_key, timeout=20, params=params)
             if _is_blocked(resp):
                 return listings, "blocked" if not listings else "partial"
 
@@ -553,7 +610,7 @@ def scrape_craigslist(
             if len(cards) < 119:
                 break
             time.sleep(0.6)
-        except requests.exceptions.Timeout:
+        except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
             return listings, "error" if not listings else "partial"
@@ -617,11 +674,10 @@ def _beds_from_title(title):
 # JSON-backed search with broad NYC inventory.
 # ═════════════════════════════════════════════════════════════════════════════
 
-def scrape_zumper(lat, lon, radius_miles, bed_filter=None):
+def scrape_zumper(lat, lon, radius_miles, bed_filter=None, proxy_key=None):
     ne_lat, ne_lng, sw_lat, sw_lng = _bbox(lat, lon, radius_miles)
-    session = requests.Session()
+    session = _make_session()
     session.headers.update({
-        **_HEADERS,
         "Referer": "https://www.zumper.com/apartments-for-rent/new-york-city-ny",
         "Accept":  "application/json, text/plain, */*",
     })
@@ -638,12 +694,12 @@ def scrape_zumper(lat, lon, radius_miles, bed_filter=None):
         if bed_codes:
             params["beds"] = ",".join(str(b) for b in bed_codes)
 
-        resp = session.get("https://www.zumper.com/api/t/1/listings",
-                           params=params, timeout=20)
+        resp = _proxy_get("https://www.zumper.com/api/t/1/listings",
+                          session, proxy_key=proxy_key, timeout=20, params=params)
         if _is_blocked(resp):
             return [], "blocked"
         if not resp.ok:
-            return _zumper_html_fallback(lat, lon, session, bed_filter)
+            return _zumper_html_fallback(lat, lon, session, bed_filter, proxy_key=proxy_key)
 
         data = resp.json()
         raw  = data if isinstance(data, list) else (
@@ -677,20 +733,20 @@ def scrape_zumper(lat, lon, radius_miles, bed_filter=None):
                 "source": "Zumper",
                 "distance_miles": _haversine(lat, lon, ilat, ilon),
             })
-    except requests.exceptions.Timeout:
-        return [], "timeout"
-    except Exception:
-        return _zumper_html_fallback(lat, lon, session, bed_filter)
+    except Exception as _e:
+        if "timeout" in str(_e).lower() or "timed out" in str(_e).lower():
+            return [], "timeout"
+        return _zumper_html_fallback(lat, lon, session, bed_filter, proxy_key=proxy_key)
 
     return listings, ("live" if listings else "no_results")
 
 
-def _zumper_html_fallback(clat, clon, session, bed_filter):
+def _zumper_html_fallback(clat, clon, session, bed_filter, proxy_key=None):
     listings = []
     try:
-        resp = session.get(
+        resp = _proxy_get(
             "https://www.zumper.com/apartments-for-rent/new-york-city-ny",
-            timeout=20
+            session, proxy_key=proxy_key, timeout=20,
         )
         if _is_blocked(resp) or not resp.ok:
             return [], "blocked"
@@ -730,9 +786,9 @@ def _zumper_html_fallback(clat, clon, session, bed_filter):
 # NYC-dedicated aggregator with landlord-direct + brokerage listings.
 # ═════════════════════════════════════════════════════════════════════════════
 
-def scrape_renthop(lat, lon, radius_miles, bed_filter=None):
-    session = requests.Session()
-    session.headers.update({**_HEADERS, "Referer": "https://www.renthop.com/"})
+def scrape_renthop(lat, lon, radius_miles, bed_filter=None, proxy_key=None):
+    session = _make_session()
+    session.headers.update({"Referer": "https://www.renthop.com/"})
     listings = []
     _rb = {"Studio": 0, "1 Bed": 1, "2 Bed": 2, "3 Bed": 3, "4+ Bed": 4}
     bed_params = [_rb[u] for u in (bed_filter or []) if u in _rb]
@@ -746,8 +802,8 @@ def scrape_renthop(lat, lon, radius_miles, bed_filter=None):
             if bed_params:
                 params["bedrooms[]"] = bed_params
 
-            resp = session.get("https://www.renthop.com/search/the-big-apple",
-                               params=params, timeout=20)
+            resp = _proxy_get("https://www.renthop.com/search/the-big-apple",
+                              session, proxy_key=proxy_key, timeout=20, params=params)
             if _is_blocked(resp):
                 return listings, "blocked" if not listings else "partial"
 
@@ -772,7 +828,7 @@ def scrape_renthop(lat, lon, radius_miles, bed_filter=None):
                 if item:
                     listings.append(item)
             time.sleep(0.8)
-        except requests.exceptions.Timeout:
+        except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
             return listings, "error" if not listings else "partial"
