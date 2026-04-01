@@ -726,27 +726,28 @@ with st.sidebar:
              "Falls back to OpenStreetMap if omitted.",
     )
     rentcast_key = st.text_input(
-        "Rentcast API Key  *(Stage 2)*",
+        "Rentcast API Key  *(optional)*",
         value=os.getenv("RENTCAST_API_KEY", ""),
         type="password",
-        help="Required in Stage 2 to pull live NYC rental listings. "
-             "Free tier at rentcast.io.",
+        help="Supplements scraping with authorized API data. "
+             "Free tier: 50 req/month at rentcast.io.",
     )
     rapidapi_key = st.text_input(
-        "RapidAPI Key  *(Stage 2)*",
+        "RapidAPI Key  *(optional)*",
         value=os.getenv("RAPIDAPI_KEY", ""),
         type="password",
-        help="Required in Stage 2 for supplemental Zillow data. "
+        help="Adds Zillow listings via RapidAPI. "
              "Subscribe to 'Zillow Com1' at rapidapi.com.",
     )
 
     st.divider()
     st.markdown("### 📖 How to use")
     st.caption(
-        "**Stage 1 (now):** Enter an address, pick a radius, set filters — "
-        "the app geocodes the location and shows borough, neighborhood, ZIP.\n\n"
-        "**Stage 2 (coming):** Live rental listings, rent stats, map, charts, "
-        "photo gallery, and market insights."
+        "**No API keys needed** — the app scrapes StreetEasy and "
+        "Apartments.com directly for live listings.\n\n"
+        "Add a **Rentcast** or **RapidAPI** key for supplemental data "
+        "from authorized APIs (useful if scraping is blocked).\n\n"
+        "**Google Maps key** improves geocoding accuracy (optional)."
     )
     st.divider()
     st.markdown("### 🔗 Get API keys")
@@ -1026,367 +1027,396 @@ if submitted:
     </div>
     """, unsafe_allow_html=True)
 
-    # Check if we have at least one API key for data collection
+    # Scraping always runs — API keys are optional supplements
     has_rentcast = rentcast_key and rentcast_key.strip()
     has_rapidapi = rapidapi_key and rapidapi_key.strip()
 
-    if has_rentcast or has_rapidapi:
-        st.divider()
+    st.divider()
 
-        # ── Fetch with loading indicator ──────────────────────────────────────
-        fetch_cache_key = (
-            f"_listings_{lat:.5f}_{lon:.5f}_{radius_miles}_"
-            f"{'_'.join(sorted(selected_units or []))}"
-        )
-        if fetch_cache_key in st.session_state:
-            listings      = st.session_state[fetch_cache_key]["listings"]
-            data_status   = st.session_state[fetch_cache_key]["status"]
-            data_freshness = "Cached Data"
-        else:
-            with st.spinner("📊 Fetching live rental listings…"):
-                listings, data_status = fetch_all_listings(
-                    lat=lat,
-                    lon=lon,
-                    radius_miles=radius_miles,
-                    rentcast_key=rentcast_key.strip() if has_rentcast else None,
-                    rapidapi_key=rapidapi_key.strip() if has_rapidapi else None,
-                    bed_filter=selected_units if selected_units else None,
-                )
-            st.session_state[fetch_cache_key] = {"listings": listings, "status": data_status}
-            data_freshness = (
-                "Live Data"    if data_status.get("overall") == "live"    else
-                "Partial Data" if data_status.get("overall") == "partial" else
-                "No Data"
+    # ── Fetch with loading indicator ──────────────────────────────────────────
+    fetch_cache_key = (
+        f"_listings_{lat:.5f}_{lon:.5f}_{radius_miles}_"
+        f"{'_'.join(sorted(selected_units or []))}"
+    )
+    if fetch_cache_key in st.session_state:
+        listings       = st.session_state[fetch_cache_key]["listings"]
+        data_status    = st.session_state[fetch_cache_key]["status"]
+        data_freshness = "Cached Data"
+    else:
+        with st.spinner(
+            "🔍 Searching StreetEasy & Apartments.com for live listings…"
+        ):
+            listings, data_status = fetch_all_listings(
+                lat=lat,
+                lon=lon,
+                radius_miles=radius_miles,
+                rentcast_key=rentcast_key.strip() if has_rentcast else None,
+                rapidapi_key=rapidapi_key.strip() if has_rapidapi else None,
+                bed_filter=selected_units if selected_units else None,
             )
-
-        # ── Data status row ────────────────────────────────────────────────────
-        def _source_pill(source_name: str, status_val: str) -> str:
-            if status_val == "live":
-                return f'<span class="pill-live">✅ {source_name} · Live Data</span>'
-            if status_val == "partial":
-                return f'<span class="pill-partial">⚠️ {source_name} · Partial Data</span>'
-            if status_val == "no_results":
-                return f'<span class="pill-partial">📭 {source_name} · No Results</span>'
-            if status_val == "invalid_key":
-                return f'<span class="pill-error">🔑 {source_name} · Invalid Key</span>'
-            if status_val == "no_key":
-                return f'<span class="pill-error">➖ {source_name} · No Key</span>'
-            return f'<span class="pill-error">❌ {source_name} · Error</span>'
-
-        freshness_cls = (
-            "pill-live"    if data_freshness == "Live Data"    else
-            "pill-partial" if data_freshness == "Partial Data" else
-            "pill-cached"  if data_freshness == "Cached Data"  else
-            "pill-error"
-        )
-        freshness_icon = (
-            "🟢" if data_freshness == "Live Data" else
-            "🟡" if data_freshness == "Partial Data" else
-            "🔵" if data_freshness == "Cached Data" else "🔴"
+        st.session_state[fetch_cache_key] = {"listings": listings, "status": data_status}
+        data_freshness = (
+            "Live Data"    if data_status.get("overall") == "live"    else
+            "Partial Data" if data_status.get("overall") == "partial" else
+            "No Data"
         )
 
-        pills_html = (
-            f'<span class="{freshness_cls}">{freshness_icon} {data_freshness}</span> &nbsp; '
-            + _source_pill("Rentcast", data_status.get("rentcast", "no_key"))
-            + " &nbsp; "
-            + _source_pill("Zillow", data_status.get("zillow", "no_key"))
-        )
-        st.markdown(pills_html, unsafe_allow_html=True)
+    # ── Data status row ────────────────────────────────────────────────────────
+    def _source_pill(source_name: str, status_val: str) -> str:
+        if status_val == "live":
+            return f'<span class="pill-live">✅ {source_name} · Live</span>'
+        if status_val == "partial":
+            return f'<span class="pill-partial">⚠️ {source_name} · Partial</span>'
+        if status_val == "blocked":
+            return f'<span class="pill-error">🛡️ {source_name} · Blocked</span>'
+        if status_val == "no_results":
+            return f'<span class="pill-partial">📭 {source_name} · No Results</span>'
+        if status_val == "invalid_key":
+            return f'<span class="pill-error">🔑 {source_name} · Invalid Key</span>'
+        if status_val == "no_key":
+            return f'<span class="pill-cached">➖ {source_name} · Optional</span>'
+        if status_val == "timeout":
+            return f'<span class="pill-partial">⏱️ {source_name} · Timeout</span>'
+        if status_val in ("pending", "no_data"):
+            return f'<span class="pill-error">⭕ {source_name} · No Data</span>'
+        return f'<span class="pill-error">❌ {source_name} · Error</span>'
 
-        # ── No results state ───────────────────────────────────────────────────
-        if not listings:
+    freshness_cls = (
+        "pill-live"    if data_freshness == "Live Data"    else
+        "pill-partial" if data_freshness == "Partial Data" else
+        "pill-cached"  if data_freshness == "Cached Data"  else
+        "pill-error"
+    )
+    freshness_icon = (
+        "🟢" if data_freshness == "Live Data" else
+        "🟡" if data_freshness == "Partial Data" else
+        "🔵" if data_freshness == "Cached Data" else "🔴"
+    )
+
+    pills_html = (
+        f'<span class="{freshness_cls}">{freshness_icon} {data_freshness}</span> &nbsp; '
+        + _source_pill("StreetEasy",    data_status.get("streeteasy", "pending"))
+        + " &nbsp; "
+        + _source_pill("Apartments.com", data_status.get("apartments", "pending"))
+        + " &nbsp; "
+        + _source_pill("Rentcast", data_status.get("rentcast", "no_key"))
+        + " &nbsp; "
+        + _source_pill("Zillow", data_status.get("zillow", "no_key"))
+    )
+    st.markdown(pills_html, unsafe_allow_html=True)
+
+    # ── No results / blocked state ─────────────────────────────────────────
+    se_blocked   = data_status.get("streeteasy") == "blocked"
+    apts_blocked = data_status.get("apartments") == "blocked"
+
+    if not listings:
+        if se_blocked and apts_blocked:
+            st.warning(
+                "**Both StreetEasy and Apartments.com blocked this request** "
+                "(bot/Cloudflare protection).\n\n"
+                "To get live data add a **Rentcast** or **RapidAPI** key in the sidebar — "
+                "those use authorized APIs that bypass bot detection. "
+                "Rentcast has a free tier at rentcast.io."
+            )
+        elif se_blocked or apts_blocked:
+            st.warning(
+                "One source was blocked by bot protection. "
+                "Try **expanding the radius** or add API keys in the sidebar for reliable data."
+            )
+        else:
             st.warning(
                 "No rental listings found in this area.\n\n"
-                "• Try **expanding the radius** — use 20–50 blocks to capture more comps\n"
-                "• Verify your **API keys** in the sidebar are correct\n"
-                "• Some radii/neighborhoods have sparse listing coverage"
+                "• Try **expanding the radius** (20–50 blocks captures more comps)\n"
+                "• Check your internet connection\n"
+                "• Add Rentcast / RapidAPI keys as backup sources"
             )
 
-        else:
-            # ── Analysis ───────────────────────────────────────────────────────
-            summary_df = compute_summary(listings)
-            insights   = compute_insights(listings, geo, radius_miles)
+    else:
+        # ── Analysis ───────────────────────────────────────────────────────
+        summary_df = compute_summary(listings)
+        insights   = compute_insights(listings, geo, radius_miles)
 
-            # ── Neighborhood context stats ─────────────────────────────────────
-            total_listings = len(listings)
-            sources_used   = sorted({l["source"] for l in listings})
-            med_rent_all   = sorted(listings, key=lambda x: x["rent"])[len(listings)//2]["rent"]
+        # ── Neighborhood context stats ─────────────────────────────────────
+        total_listings = len(listings)
+        sources_used   = sorted({l["source"] for l in listings})
+        med_rent_all   = sorted(listings, key=lambda x: x["rent"])[len(listings)//2]["rent"]
 
-            # ── Market insights ────────────────────────────────────────────────
-            st.markdown("---")
-            st.markdown(
-                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>💡 Market Insights</div>",
-                unsafe_allow_html=True,
-            )
-            for insight in insights:
-                st.markdown(f"• {insight}")
-
-            # ── Borough comparison ─────────────────────────────────────────────
-            if bench:
-                st.markdown("---")
-                st.markdown(
-                    "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                    "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>"
-                    f"🏙️ Comp vs {borough} Borough Median</div>",
-                    unsafe_allow_html=True,
-                )
-                bcomp_rows = ""
-                for _, row in summary_df.iterrows():
-                    utype      = row["Unit Type"]
-                    comp_avg   = row["_avg"]
-                    bmark      = bench.get(utype)
-                    if bmark is None:
-                        continue
-                    diff_pct   = (comp_avg - bmark) / bmark * 100
-                    diff_label = (
-                        f'<span class="bcomp-above">▲ {abs(diff_pct):.1f}% above</span>'
-                        if diff_pct > 3 else
-                        f'<span class="bcomp-below">▼ {abs(diff_pct):.1f}% below</span>'
-                        if diff_pct < -3 else
-                        f'<span class="bcomp-at">≈ at median</span>'
-                    )
-                    bcomp_rows += (
-                        f"<tr><td><b>{utype}</b></td>"
-                        f"<td>${comp_avg:,.0f}</td>"
-                        f"<td>${bmark:,}</td>"
-                        f"<td>{diff_label}</td></tr>"
-                    )
-                if bcomp_rows:
-                    st.markdown(f"""
-                    <table class="bcomp-table">
-                      <thead><tr>
-                        <th>Unit Type</th>
-                        <th>Comp Avg Rent</th>
-                        <th>{borough} Median*</th>
-                        <th>vs. Borough</th>
-                      </tr></thead>
-                      <tbody>{bcomp_rows}</tbody>
-                    </table>
-                    <div style="font-size:0.70rem;color:#9CA3AF;margin-top:6px">
-                      * Borough medians from StreetEasy / NYC Rent Guidelines Board Q4 2024.
-                      Use as directional benchmark only.
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            # ── Rent summary table ─────────────────────────────────────────────
-            st.markdown("---")
-            st.markdown(
-                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📈 Rent Summary by Unit Type</div>",
-                unsafe_allow_html=True,
-            )
-            display_cols = ["Unit Type", "# Listings", "Avg Rent", "Median Rent",
-                            "Min Rent", "Max Rent", "Rent Range", "Avg $/SF"]
-            st.dataframe(
-                summary_df[display_cols].set_index("Unit Type"),
-                use_container_width=True,
-                height=min(len(summary_df) * 35 + 38, 260),
-            )
-
-            # ── Listings map ───────────────────────────────────────────────────
-            st.markdown("---")
-            st.markdown(
-                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>🗺️ Comparable Listings Map</div>",
-                unsafe_allow_html=True,
-            )
-            st.caption(
-                "Colored markers = rental listings by unit type.  "
-                "Click any marker for rent, address, and source link.  "
-                "Clusters expand on zoom."
-            )
-            listings_map = build_map(
-                listings=listings,
-                center_lat=lat,
-                center_lon=lon,
-                radius_miles=radius_miles,
-                subject_label=geo["formatted_address"],
-            )
-            st_folium(listings_map, width="100%", height=540,
-                      returned_objects=[], key="listings_map")
-
-            # ── Charts ─────────────────────────────────────────────────────────
-            st.markdown("---")
-            st.markdown(
-                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>📊 Rent Charts</div>",
-                unsafe_allow_html=True,
-            )
-            col_bar, col_range = st.columns(2)
-            with col_bar:
-                st.plotly_chart(build_bar_chart(summary_df),
-                                use_container_width=True, config={"displayModeBar": False})
-            with col_range:
-                st.plotly_chart(build_range_chart(summary_df),
-                                use_container_width=True, config={"displayModeBar": False})
-
-            st.plotly_chart(build_box_chart(listings),
-                            use_container_width=True, config={"displayModeBar": False})
-            st.plotly_chart(build_scatter_chart(listings),
-                            use_container_width=True, config={"displayModeBar": False})
-
-            # ── Listings table ─────────────────────────────────────────────────
-            st.markdown("---")
-            st.markdown(
-                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📋 Listings Table</div>",
-                unsafe_allow_html=True,
-            )
-            display_listings = []
-            for listing in listings:
-                sqft = listing.get("sqft") or 0
-                rent = listing.get("rent") or 0
-                psf  = f"${rent / sqft:.2f}" if sqft and sqft > 0 else "—"
-                url  = listing.get("url") or ""
-                link = (
-                    f'<a href="{url}" target="_blank" '
-                    f'style="color:#1A3A6B;text-decoration:none;font-weight:600">View →</a>'
-                    if url else "—"
-                )
-                display_listings.append({
-                    "Address":    listing.get("address", "N/A"),
-                    "Rent":       f"${rent:,.0f}",
-                    "Unit Type":  listing.get("unit_type", "—"),
-                    "$/SF":       psf,
-                    "Building":   listing.get("building_name") or "—",
-                    "Dist (mi)":  f"{listing.get('distance_miles', 0):.2f}",
-                    "DOM":        listing.get("days_on_market") or "—",
-                    "Source":     listing.get("source", "—"),
-                    "Link":       link,
-                })
-            df_display = pd.DataFrame(display_listings)
-            st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
-
-            # ── Photo Gallery ──────────────────────────────────────────────────
-            photos_available = [l for l in listings if l.get("photos")]
-            if photos_available:
-                st.markdown("---")
-                st.markdown(
-                    "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                    "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>🖼️ Photo Gallery</div>",
-                    unsafe_allow_html=True,
-                )
-                st.caption(f"{len(photos_available)} listings have photos available.")
-
-                cols_per_row = 3
-                rows = [
-                    photos_available[i : i + cols_per_row]
-                    for i in range(0, min(len(photos_available), 24), cols_per_row)
-                ]
-                for row_items in rows:
-                    cols = st.columns(cols_per_row)
-                    for col, listing in zip(cols, row_items):
-                        photo_url = listing["photos"][0] if listing["photos"] else None
-                        if not photo_url:
-                            continue
-                        rent_label = f"${listing.get('rent', 0):,.0f}/mo"
-                        utype      = listing.get("unit_type", "")
-                        addr       = listing.get("address", "")[:45]
-                        src        = listing.get("source", "")
-                        list_url   = listing.get("url", "")
-                        with col:
-                            st.markdown(f"""
-                            <div class="photo-card">
-                              <img src="{photo_url}" alt="{addr}"
-                                   onerror="this.style.display='none'"/>
-                              <div class="photo-caption">
-                                <b>{rent_label}</b> · {utype}<br>
-                                {addr}<br>
-                                <span style="color:#9CA3AF">{src}</span>
-                                {"&nbsp;·&nbsp;<a href='" + list_url + "' target='_blank' style='color:#1A3A6B;font-weight:600'>View →</a>" if list_url else ""}
-                              </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-
-        # ── Source section ─────────────────────────────────────────────────────
+        # ── Market insights ────────────────────────────────────────────────
         st.markdown("---")
         st.markdown(
             "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-            "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📌 Data Sources</div>",
+            "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>💡 Market Insights</div>",
             unsafe_allow_html=True,
         )
-        sources_config = [
-            {
-                "name": "Rentcast",
-                "desc": (
-                    "Real-time rental listing aggregator. Syndicates from landlord-direct listings, "
-                    "MLS feeds, StreetEasy, Apartments.com, and other major NYC platforms."
-                ),
-                "url": "https://rentcast.io",
-                "url_label": "rentcast.io",
-                "status": data_status.get("rentcast", "no_key"),
-            },
-            {
-                "name": "Zillow (via RapidAPI)",
-                "desc": (
-                    "National residential listing portal with deep NYC rental inventory, "
-                    "Zestimate valuations, and price history."
-                ),
-                "url": "https://rapidapi.com/apimaker/api/zillow-com1/",
-                "url_label": "rapidapi.com / zillow-com1",
-                "status": data_status.get("zillow", "no_key"),
-            },
-            {
-                "name": "StreetEasy",
-                "desc": "NYC's primary rental marketplace. Data accessed via Rentcast aggregation.",
-                "url": "https://streeteasy.com",
-                "url_label": "streeteasy.com",
-                "status": "syndicated",
-            },
-            {
-                "name": "Apartments.com",
-                "desc": "National multifamily rental platform with strong NYC coverage. Data via Rentcast.",
-                "url": "https://apartments.com",
-                "url_label": "apartments.com",
-                "status": "syndicated",
-            },
-        ]
-        src_cols = st.columns(2)
-        for idx, src in enumerate(sources_config):
-            pill = (
-                '<span class="pill-live">Live</span>'      if src["status"] == "live"      else
-                '<span class="pill-partial">Partial</span>' if src["status"] == "partial"   else
-                '<span class="pill-cached">Syndicated</span>' if src["status"] == "syndicated" else
-                '<span class="pill-error">No Key</span>'   if src["status"] == "no_key"    else
-                '<span class="pill-error">Error</span>'
+        for insight in insights:
+            st.markdown(f"• {insight}")
+
+        # ── Borough comparison ─────────────────────────────────────────────
+        if bench:
+            st.markdown("---")
+            st.markdown(
+                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>"
+                f"🏙️ Comp vs {borough} Borough Median</div>",
+                unsafe_allow_html=True,
             )
-            with src_cols[idx % 2]:
+            bcomp_rows = ""
+            for _, row in summary_df.iterrows():
+                utype      = row["Unit Type"]
+                comp_avg   = row["_avg"]
+                bmark      = bench.get(utype)
+                if bmark is None:
+                    continue
+                diff_pct   = (comp_avg - bmark) / bmark * 100
+                diff_label = (
+                    f'<span class="bcomp-above">▲ {abs(diff_pct):.1f}% above</span>'
+                    if diff_pct > 3 else
+                    f'<span class="bcomp-below">▼ {abs(diff_pct):.1f}% below</span>'
+                    if diff_pct < -3 else
+                    f'<span class="bcomp-at">≈ at median</span>'
+                )
+                bcomp_rows += (
+                    f"<tr><td><b>{utype}</b></td>"
+                    f"<td>${comp_avg:,.0f}</td>"
+                    f"<td>${bmark:,}</td>"
+                    f"<td>{diff_label}</td></tr>"
+                )
+            if bcomp_rows:
                 st.markdown(f"""
-                <div class="source-card">
-                  <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span class="source-name">{src['name']}</span>
-                    {pill}
-                  </div>
-                  <div class="source-desc">{src['desc']}</div>
-                  <div class="source-link">
-                    <a href="{src['url']}" target="_blank">🔗 {src['url_label']}</a>
-                  </div>
+                <table class="bcomp-table">
+                  <thead><tr>
+                    <th>Unit Type</th>
+                    <th>Comp Avg Rent</th>
+                    <th>{borough} Median*</th>
+                    <th>vs. Borough</th>
+                  </tr></thead>
+                  <tbody>{bcomp_rows}</tbody>
+                </table>
+                <div style="font-size:0.70rem;color:#9CA3AF;margin-top:6px">
+                  * Borough medians from StreetEasy / NYC Rent Guidelines Board Q4 2024.
+                  Use as directional benchmark only.
                 </div>
                 """, unsafe_allow_html=True)
 
+        # ── Rent summary table ─────────────────────────────────────────────
+        st.markdown("---")
         st.markdown(
-            "<div style='font-size:0.70rem;color:#9CA3AF;margin-top:4px'>"
-            "All listings are deduplicated across sources and IQR-filtered to remove outliers. "
-            "Data is for informational purposes only — not a substitute for professional market analysis."
-            "</div>",
+            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+            "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📈 Rent Summary by Unit Type</div>",
             unsafe_allow_html=True,
         )
+        display_cols = ["Unit Type", "# Listings", "Avg Rent", "Median Rent",
+                        "Min Rent", "Max Rent", "Rent Range", "Avg $/SF"]
+        st.dataframe(
+            summary_df[display_cols].set_index("Unit Type"),
+            use_container_width=True,
+            height=min(len(summary_df) * 35 + 38, 260),
+        )
 
-    else:
-        # ── No API keys state ──────────────────────────────────────────────────
-        st.markdown("""
-        <div class="next-step">
-          ⏳ <b>Ready for data collection:</b> Add your <b>Rentcast</b> and/or <b>RapidAPI</b> keys
-          in the sidebar to pull live rental listings and see charts, maps, and market insights.
-          <br/><br/>
-          • <b>Rentcast:</b> <a href="https://rentcast.io" target="_blank" style="color:#1A3A6B">rentcast.io</a>
-            — free tier: 50 requests/month<br/>
-          • <b>RapidAPI / Zillow:</b>
-            <a href="https://rapidapi.com/apimaker/api/zillow-com1/" target="_blank" style="color:#1A3A6B">
-              Zillow Com1 on RapidAPI</a>
-        </div>
-        """, unsafe_allow_html=True)
+        # ── Listings map ───────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>🗺️ Comparable Listings Map</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Colored markers = rental listings by unit type.  "
+            "Click any marker for rent, address, and source link.  "
+            "Clusters expand on zoom."
+        )
+        listings_map = build_map(
+            listings=listings,
+            center_lat=lat,
+            center_lon=lon,
+            radius_miles=radius_miles,
+            subject_label=geo["formatted_address"],
+        )
+        st_folium(listings_map, width="100%", height=540,
+                  returned_objects=[], key="listings_map")
+
+        # ── Charts ─────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>📊 Rent Charts</div>",
+            unsafe_allow_html=True,
+        )
+        col_bar, col_range = st.columns(2)
+        with col_bar:
+            st.plotly_chart(build_bar_chart(summary_df),
+                            use_container_width=True, config={"displayModeBar": False})
+        with col_range:
+            st.plotly_chart(build_range_chart(summary_df),
+                            use_container_width=True, config={"displayModeBar": False})
+
+        st.plotly_chart(build_box_chart(listings),
+                        use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(build_scatter_chart(listings),
+                        use_container_width=True, config={"displayModeBar": False})
+
+        # ── Listings table ─────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+            "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📋 Listings Table</div>",
+            unsafe_allow_html=True,
+        )
+        display_listings = []
+        for listing in listings:
+            sqft = listing.get("sqft") or 0
+            rent = listing.get("rent") or 0
+            psf  = f"${rent / sqft:.2f}" if sqft and sqft > 0 else "—"
+            url  = listing.get("url") or ""
+            link = (
+                f'<a href="{url}" target="_blank" '
+                f'style="color:#1A3A6B;text-decoration:none;font-weight:600">View →</a>'
+                if url else "—"
+            )
+            display_listings.append({
+                "Address":    listing.get("address", "N/A"),
+                "Rent":       f"${rent:,.0f}",
+                "Unit Type":  listing.get("unit_type", "—"),
+                "$/SF":       psf,
+                "Building":   listing.get("building_name") or "—",
+                "Dist (mi)":  f"{listing.get('distance_miles', 0):.2f}",
+                "DOM":        listing.get("days_on_market") or "—",
+                "Source":     listing.get("source", "—"),
+                "Link":       link,
+            })
+        df_display = pd.DataFrame(display_listings)
+        st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
+
+        # ── Photo Gallery ──────────────────────────────────────────────────
+        photos_available = [l for l in listings if l.get("photos")]
+        if photos_available:
+            st.markdown("---")
+            st.markdown(
+                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>🖼️ Photo Gallery</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"{len(photos_available)} listings have photos available.")
+
+            cols_per_row = 3
+            rows = [
+                photos_available[i : i + cols_per_row]
+                for i in range(0, min(len(photos_available), 24), cols_per_row)
+            ]
+            for row_items in rows:
+                cols = st.columns(cols_per_row)
+                for col, listing in zip(cols, row_items):
+                    photo_url = listing["photos"][0] if listing["photos"] else None
+                    if not photo_url:
+                        continue
+                    rent_label = f"${listing.get('rent', 0):,.0f}/mo"
+                    utype      = listing.get("unit_type", "")
+                    addr       = listing.get("address", "")[:45]
+                    src        = listing.get("source", "")
+                    list_url   = listing.get("url", "")
+                    with col:
+                        st.markdown(f"""
+                        <div class="photo-card">
+                          <img src="{photo_url}" alt="{addr}"
+                               onerror="this.style.display='none'"/>
+                          <div class="photo-caption">
+                            <b>{rent_label}</b> · {utype}<br>
+                            {addr}<br>
+                            <span style="color:#9CA3AF">{src}</span>
+                            {"&nbsp;·&nbsp;<a href='" + list_url + "' target='_blank' style='color:#1A3A6B;font-weight:600'>View →</a>" if list_url else ""}
+                          </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+    # ── Source section ─────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+        "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📌 Data Sources</div>",
+        unsafe_allow_html=True,
+    )
+    sources_config = [
+        {
+            "name": "StreetEasy",
+            "desc": (
+                "NYC's dominant rental marketplace — highest listing density of any NYC platform. "
+                "Scraped directly: no API key required."
+            ),
+            "url": "https://streeteasy.com",
+            "url_label": "streeteasy.com",
+            "status": data_status.get("streeteasy", "pending"),
+            "primary": True,
+        },
+        {
+            "name": "Apartments.com",
+            "desc": (
+                "National multifamily platform with strong NYC coverage across all boroughs. "
+                "Scraped directly: no API key required."
+            ),
+            "url": "https://apartments.com",
+            "url_label": "apartments.com",
+            "status": data_status.get("apartments", "pending"),
+            "primary": True,
+        },
+        {
+            "name": "Rentcast  *(optional)*",
+            "desc": (
+                "Authorized aggregator: syndicates from StreetEasy, MLS, landlord-direct, "
+                "and other NYC feeds. Most reliable fallback when scraping is blocked."
+            ),
+            "url": "https://rentcast.io",
+            "url_label": "rentcast.io — free tier available",
+            "status": data_status.get("rentcast", "no_key"),
+            "primary": False,
+        },
+        {
+            "name": "Zillow  *(optional)*",
+            "desc": (
+                "National portal with deep NYC rental inventory and price history, "
+                "accessed via RapidAPI (zillow-com1)."
+            ),
+            "url": "https://rapidapi.com/apimaker/api/zillow-com1/",
+            "url_label": "rapidapi.com / zillow-com1",
+            "status": data_status.get("zillow", "no_key"),
+            "primary": False,
+        },
+    ]
+    src_cols = st.columns(2)
+    for idx, src in enumerate(sources_config):
+        s = src["status"]
+        pill = (
+            '<span class="pill-live">✅ Live</span>'         if s == "live"      else
+            '<span class="pill-partial">⚠️ Partial</span>'   if s == "partial"   else
+            '<span class="pill-error">🛡️ Blocked</span>'     if s == "blocked"   else
+            '<span class="pill-partial">📭 No Results</span>' if s == "no_results" else
+            '<span class="pill-cached">➖ Optional</span>'    if s == "no_key"    else
+            '<span class="pill-partial">⏱️ Timeout</span>'   if s == "timeout"   else
+            '<span class="pill-error">❌ Error</span>'
+        )
+        with src_cols[idx % 2]:
+            st.markdown(f"""
+            <div class="source-card">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span class="source-name">{src['name']}</span>
+                {pill}
+              </div>
+              <div class="source-desc">{src['desc']}</div>
+              <div class="source-link">
+                <a href="{src['url']}" target="_blank">🔗 {src['url_label']}</a>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown(
+        "<div style='font-size:0.70rem;color:#9CA3AF;margin-top:4px'>"
+        "All listings are deduplicated across sources and IQR-filtered to remove outliers. "
+        "Data is for informational purposes only — not a substitute for professional market analysis."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # (Scraping always runs — no API key required for core data collection.
+    #  Rentcast / Zillow keys in the sidebar add supplemental listings.)
 
 # ── Idle state ────────────────────────────────────────────────────────────────
 elif not submitted:
