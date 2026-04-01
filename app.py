@@ -264,6 +264,18 @@ html, body, [data-testid="stAppViewContainer"] {
 .hood-stat { text-align: center; min-width: 80px; }
 .hood-stat-val { font-size: 1.1rem; font-weight: 800; color: #1A3A6B; }
 .hood-stat-lbl { font-size: 0.70rem; color: #6B7280; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+/* ── Scraping status panel ────────────────────────────────────────────── */
+.scrape-status-panel { background:white; border:1px solid #E5E7EB; border-radius:10px;
+    padding:14px 18px; margin-top:10px; margin-bottom:6px; }
+.scrape-status-panel table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+.scrape-status-panel th { background:#F9FAFB; color:#6B7280; font-weight:700;
+    padding:6px 10px; text-align:left; border-bottom:1px solid #E5E7EB;
+    font-size:0.74rem; text-transform:uppercase; letter-spacing:0.06em; }
+.scrape-status-panel td { padding:6px 10px; border-bottom:1px solid #F3F4F6;
+    color:#111827; vertical-align:middle; }
+.scrape-status-panel tr:last-child td { border-bottom:none; }
+.scrape-count-badge { background:#F3F4F6; color:#374151; border-radius:12px;
+    padding:2px 9px; font-size:0.77rem; font-weight:700; font-family:monospace; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -276,9 +288,23 @@ RADIUS_OPTIONS = {
     "3 blocks  (~0.15 mi)":   0.15,
     "5 blocks  (~0.25 mi)":   0.25,
     "10 blocks (~0.50 mi)":   0.50,
+    "15 blocks (~0.75 mi)":   0.75,
     "20 blocks (~1.00 mi)":   1.00,
+    "25 blocks (~1.25 mi)":   1.25,
     "30 blocks (~1.50 mi)":   1.50,
+    "35 blocks (~1.75 mi)":   1.75,
+    "40 blocks (~2.00 mi)":   2.00,
+    "45 blocks (~2.25 mi)":   2.25,
     "50 blocks (~2.50 mi)":   2.50,
+    "55 blocks (~2.75 mi)":   2.75,
+    "60 blocks (~3.00 mi)":   3.00,
+    "65 blocks (~3.25 mi)":   3.25,
+    "70 blocks (~3.50 mi)":   3.50,
+    "75 blocks (~3.75 mi)":   3.75,
+    "80 blocks (~4.00 mi)":   4.00,
+    "85 blocks (~4.25 mi)":   4.25,
+    "90 blocks (~4.50 mi)":   4.50,
+    "95 blocks (~4.75 mi)":   4.75,
     "100 blocks (~5.00 mi)":  5.00,
     "Custom…":                None,
 }
@@ -1131,6 +1157,57 @@ if 'geo' in st.session_state:
     )
     st.markdown(pills_html, unsafe_allow_html=True)
 
+    # ── Scraping status panel (source + status + raw counts) ───────────────
+    _counts = data_status.get("_counts", {})
+    _status_labels = {
+        "live":        ("✅", "Live",        "pill-live"),
+        "partial":     ("⚠️", "Partial",     "pill-partial"),
+        "blocked":     ("🛡️", "Blocked",     "pill-error"),
+        "no_results":  ("📭", "No Results",  "pill-partial"),
+        "invalid_key": ("🔑", "Invalid Key", "pill-error"),
+        "no_key":      ("➖", "Optional",    "pill-cached"),
+        "timeout":     ("⏱️", "Timeout",     "pill-partial"),
+        "pending":     ("⭕", "No Data",     "pill-error"),
+        "no_data":     ("⭕", "No Data",     "pill-error"),
+    }
+    _sources_display = [
+        ("StreetEasy",     "streeteasy"),
+        ("Apartments.com", "apartments"),
+        ("Craigslist",     "craigslist"),
+        ("Zumper",         "zumper"),
+        ("RentHop",        "renthop"),
+        ("Rentcast",       "rentcast"),
+        ("Zillow",         "zillow"),
+    ]
+    _status_rows = ""
+    for _sname, _skey in _sources_display:
+        _s = data_status.get(_skey, "pending")
+        _icon, _label, _css = _status_labels.get(_s, ("❌", "Error", "pill-error"))
+        _cnt = _counts.get(_skey, 0)
+        _count_cell = (
+            f'<span class="scrape-count-badge">{_cnt} found</span>'
+            if _cnt > 0
+            else '<span style="color:#9CA3AF;font-size:0.78rem">—</span>'
+        )
+        _opt = ' <span style="color:#9CA3AF;font-size:0.74rem">(optional)</span>' if _s == "no_key" else ""
+        _status_rows += (
+            f"<tr><td><b>{_sname}</b>{_opt}</td>"
+            f'<td><span class="{_css}">{_icon} {_label}</span></td>'
+            f"<td>{_count_cell}</td></tr>"
+        )
+    st.markdown(
+        f"""<div class="scrape-status-panel">
+          <div style="font-size:0.72rem;font-weight:700;letter-spacing:0.08em;
+                      text-transform:uppercase;color:#6B7280;margin-bottom:10px">
+            🔍 Live Scraping Status
+          </div>
+          <table><thead><tr>
+            <th>Source</th><th>Status</th><th>Listings Found (pre-dedup)</th>
+          </tr></thead><tbody>{_status_rows}</tbody></table>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
     # ── No results / blocked state ─────────────────────────────────────────
     blocked_sources = [
         k for k in ("streeteasy", "apartments", "craigslist", "zumper", "renthop")
@@ -1284,13 +1361,8 @@ if 'geo' in st.session_state:
         st.plotly_chart(build_scatter_chart(listings),
                         use_container_width=True, config={"displayModeBar": False})
 
-        # ── Listings table ─────────────────────────────────────────────────
+        # ── All Listings Table (collapsible) ──────────────────────────────
         st.markdown("---")
-        st.markdown(
-            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-            "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📋 Listings Table</div>",
-            unsafe_allow_html=True,
-        )
         display_listings = []
         for listing in listings:
             sqft = listing.get("sqft") or 0
@@ -1303,18 +1375,19 @@ if 'geo' in st.session_state:
                 if url else "—"
             )
             display_listings.append({
-                "Address":    listing.get("address", "N/A"),
-                "Rent":       f"${rent:,.0f}",
-                "Unit Type":  listing.get("unit_type", "—"),
-                "$/SF":       psf,
-                "Building":   listing.get("building_name") or "—",
-                "Dist (mi)":  f"{listing.get('distance_miles', 0):.2f}",
-                "DOM":        listing.get("days_on_market") or "—",
-                "Source":     listing.get("source", "—"),
-                "Link":       link,
+                "Source":        listing.get("source", "—"),
+                "Address":       listing.get("address", "N/A"),
+                "Unit Type":     listing.get("unit_type", "—"),
+                "Beds":          listing.get("bedrooms", "—"),
+                "Rent/mo":       f"${rent:,.0f}",
+                "$/SF":          psf,
+                "Sqft":          listing.get("sqft") or "—",
+                "Distance (mi)": f"{listing.get('distance_miles', 0):.2f}",
+                "Link":          link,
             })
         df_display = pd.DataFrame(display_listings)
-        st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
+        with st.expander(f"📋 All Listings ({len(display_listings)} total)", expanded=False):
+            st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
 
         # ── Photo Gallery ──────────────────────────────────────────────────
         photos_available = [l for l in listings if l.get("photos")]

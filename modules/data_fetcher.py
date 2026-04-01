@@ -304,6 +304,15 @@ def fetch_all_listings(
         "rentcast":      "no_key",
         "zillow":        "no_key",
         "overall":       "no_data",
+        "_counts": {
+            "streeteasy": 0,
+            "apartments": 0,
+            "craigslist": 0,
+            "zumper":     0,
+            "renthop":    0,
+            "rentcast":   0,
+            "zillow":     0,
+        },
     }
 
     # ── Primary: scrape StreetEasy ─────────────────────────────────────────────
@@ -312,6 +321,7 @@ def fetch_all_listings(
         se_status if se_status != "live" else "no_results"
     )
     raw.extend(se_listings)
+    status["_counts"]["streeteasy"] = len(se_listings)
 
     # ── Primary: scrape Apartments.com ────────────────────────────────────────
     ap_listings, ap_status = scrape_apartments_com(lat, lon, radius_miles, bed_filter)
@@ -319,6 +329,7 @@ def fetch_all_listings(
         ap_status if ap_status != "live" else "no_results"
     )
     raw.extend(ap_listings)
+    status["_counts"]["apartments"] = len(ap_listings)
 
     # ── Primary: scrape Craigslist ────────────────────────────────────────────
     cl_listings, cl_status = scrape_craigslist(lat, lon, radius_miles, bed_filter)
@@ -326,6 +337,7 @@ def fetch_all_listings(
         cl_status if cl_status != "live" else "no_results"
     )
     raw.extend(cl_listings)
+    status["_counts"]["craigslist"] = len(cl_listings)
 
     # ── Primary: scrape Zumper ────────────────────────────────────────────────
     zu_listings, zu_status = scrape_zumper(lat, lon, radius_miles, bed_filter)
@@ -333,6 +345,7 @@ def fetch_all_listings(
         zu_status if zu_status != "live" else "no_results"
     )
     raw.extend(zu_listings)
+    status["_counts"]["zumper"] = len(zu_listings)
 
     # ── Primary: scrape RentHop ───────────────────────────────────────────────
     rh_listings, rh_status = scrape_renthop(lat, lon, radius_miles, bed_filter)
@@ -340,6 +353,7 @@ def fetch_all_listings(
         rh_status if rh_status != "live" else "no_results"
     )
     raw.extend(rh_listings)
+    status["_counts"]["renthop"] = len(rh_listings)
 
     # ── Supplemental: Rentcast API (if key provided) ──────────────────────────
     if rentcast_key:
@@ -348,6 +362,7 @@ def fetch_all_listings(
             rc_status if rc_status != "live" else "no_results"
         )
         raw.extend(rc_listings)
+        status["_counts"]["rentcast"] = len(rc_listings)
 
     # ── Supplemental: Zillow/RapidAPI (if key provided) ───────────────────────
     if rapidapi_key:
@@ -356,6 +371,7 @@ def fetch_all_listings(
             zl_status if zl_status != "live" else "no_results"
         )
         raw.extend(zl_listings)
+        status["_counts"]["zillow"] = len(zl_listings)
 
     if not raw:
         status["overall"] = "no_data"
