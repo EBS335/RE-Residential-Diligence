@@ -886,12 +886,29 @@ if submitted:
         )
         st.stop()
 
-    # ── Persist result in session state (for Stage 2) ────────────────────────
-    st.session_state["geo"]          = geo
-    st.session_state["radius_miles"] = radius_miles
-    st.session_state["unit_filter"]  = selected_units or UNIT_TYPES
-    st.session_state["rental_type"]  = rental_type
-    st.session_state["address_raw"]  = address_input.strip()
+    # ── Persist result in session state ─────────────────────────────────────
+    st.session_state["geo"]           = geo
+    st.session_state["radius_miles"]  = radius_miles
+    st.session_state["radius_choice"] = radius_choice
+    st.session_state["unit_filter"]   = selected_units
+    st.session_state["rental_type"]   = rental_type
+    st.session_state["address_raw"]   = address_input.strip()
+    # Clear stale listing cache so each new search always refetches
+    for _k in [k for k in list(st.session_state) if k.startswith('_listings_')]:
+        del st.session_state[_k]
+
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# RESULTS — reads from session_state, persists across all reruns
+# ═══════════════════════════════════════════════════════════════════════
+
+if 'geo' in st.session_state:
+    geo           = st.session_state['geo']
+    radius_miles  = st.session_state['radius_miles']
+    radius_choice = st.session_state.get('radius_choice', '5 blocks  (~0.25 mi)')
+    selected_units = st.session_state.get('unit_filter', [])
+    rental_type   = st.session_state.get('rental_type', 'All (no filter)')
 
     # ── Derived fields ────────────────────────────────────────────────────────
     borough      = geo.get("borough")      or "—"
@@ -1028,15 +1045,16 @@ if submitted:
     """, unsafe_allow_html=True)
 
     # Scraping always runs — API keys are optional supplements
-    has_rentcast = rentcast_key and rentcast_key.strip()
-    has_rapidapi = rapidapi_key and rapidapi_key.strip()
 
     st.divider()
 
     # ── Fetch with loading indicator ──────────────────────────────────────────
+    has_rentcast = bool(rentcast_key and rentcast_key.strip())
+    has_rapidapi = bool(rapidapi_key and rapidapi_key.strip())
+
     fetch_cache_key = (
         f"_listings_{lat:.5f}_{lon:.5f}_{radius_miles}_"
-        f"{'_'.join(sorted(selected_units or []))}"
+        f"{'_'.join(sorted(selected_units or []))}_rc{int(has_rentcast)}_ra{int(has_rapidapi)}"
     )
     if fetch_cache_key in st.session_state:
         listings       = st.session_state[fetch_cache_key]["listings"]
@@ -1054,7 +1072,9 @@ if submitted:
                 rapidapi_key=rapidapi_key.strip() if has_rapidapi else None,
                 bed_filter=selected_units if selected_units else None,
             )
-        st.session_state[fetch_cache_key] = {"listings": listings, "status": data_status}
+        # Only cache successes — failures retry on next submit
+        if listings:
+            st.session_state[fetch_cache_key] = {"listings": listings, "status": data_status}
         data_freshness = (
             "Live Data"    if data_status.get("overall") == "live"    else
             "Partial Data" if data_status.get("overall") == "partial" else
@@ -1419,7 +1439,7 @@ if submitted:
     #  Rentcast / Zillow keys in the sidebar add supplemental listings.)
 
 # ── Idle state ────────────────────────────────────────────────────────────────
-elif not submitted:
+else:
     st.markdown("""
     <div style="text-align:center;padding:56px 24px;color:#9CA3AF">
       <div style="font-size:3.5rem;margin-bottom:12px">🏙️</div>
