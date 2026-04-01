@@ -13,7 +13,7 @@ from streamlit_folium import st_folium
 from dotenv import load_dotenv
 import pandas as pd
 
-from modules.data_fetcher import fetch_all_listings, UNIT_ORDER
+from modules.data_fetcher import fetch_all_listings
 from modules.analyzer import compute_summary, compute_insights
 from modules.visualizer import (
     build_map, build_bar_chart, build_range_chart,
@@ -1031,35 +1031,32 @@ if submitted:
                 unsafe_allow_html=True,
             )
 
-            # Create a display dataframe with key fields
+            # Create a display dataframe — columns match spec: Address | Rent | Beds | Building | Source
             display_listings = []
             for listing in listings:
+                sqft = listing.get("sqft") or 0
+                rent = listing.get("rent") or 0
+                psf  = f"${rent / sqft:.2f}" if sqft and sqft > 0 else "—"
+                url  = listing.get("url") or ""
+                link = (
+                    f'<a href="{url}" target="_blank" '
+                    f'style="color:#1A3A6B;text-decoration:none;font-weight:600">View →</a>'
+                    if url else "—"
+                )
                 display_listings.append({
-                    "Address": listing.get("address", "N/A"),
-                    "Unit Type": listing.get("unit_type", "—"),
-                    "Rent": f"${listing.get('rent', 0):,.0f}",
-                    "$/SF": f"${listing.get('sqft', 0) and listing['rent'] / listing['sqft'] or 0:.2f}" if listing.get("sqft", 0) else "—",
-                    "Distance (mi)": f"{listing.get('distance_miles', 0):.2f}",
-                    "Source": listing.get("source", "—"),
-                    "URL": listing.get("url", ""),
+                    "Address":       listing.get("address", "N/A"),
+                    "Rent":          f"${rent:,.0f}",
+                    "Unit Type":     listing.get("unit_type", "—"),
+                    "$/SF":          psf,
+                    "Building":      listing.get("building_name") or "—",
+                    "Dist (mi)":     f"{listing.get('distance_miles', 0):.2f}",
+                    "DOM":           listing.get("days_on_market") or "—",
+                    "Source":        listing.get("source", "—"),
+                    "Link":          link,
                 })
 
             df_display = pd.DataFrame(display_listings)
-
-            # Render as clickable links if available
-            def make_link(url, text="View"):
-                if url:
-                    return f'<a href="{url}" target="_blank" style="color:#1A3A6B;text-decoration:none;font-weight:600">View →</a>'
-                return "—"
-
-            st.write(
-                df_display.to_html(
-                    escape=False,
-                    index=False,
-                    formatters={"URL": lambda x: make_link(x)},
-                ),
-                unsafe_allow_html=True,
-            )
+            st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
 
             st.divider()
 
