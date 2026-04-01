@@ -1,6 +1,6 @@
 """
 NYC Rent Comp Analyzer
-Stage 1: Input collection + geocoding + NYC context
+Stages 1–6: Input collection + geocoding + NYC context + data collection + analysis + visualizations
 """
 
 import os
@@ -11,6 +11,14 @@ import folium
 from folium.plugins import MiniMap
 from streamlit_folium import st_folium
 from dotenv import load_dotenv
+import pandas as pd
+
+from modules.data_fetcher import fetch_all_listings, UNIT_ORDER
+from modules.analyzer import compute_summary, compute_insights
+from modules.visualizer import (
+    build_map, build_bar_chart, build_range_chart,
+    build_box_chart, build_scatter_chart
+)
 
 load_dotenv()
 
@@ -873,14 +881,216 @@ if submitted:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Next-step callout ─────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="next-step">
-      ⏳ <b>Data collection coming next:</b> live rental listings from Rentcast
-      and Zillow will be plotted on this map once Stage 2 is wired in.
-      Add your <b>Rentcast</b> and <b>RapidAPI</b> keys in the sidebar to be ready.
-    </div>
-    """, unsafe_allow_html=True)
+    # ═════════════════════════════════════════════════════════════════════════════
+    # STAGES 3–6: DATA COLLECTION, ANALYSIS, VISUALIZATIONS
+    # ═════════════════════════════════════════════════════════════════════════════
+
+    # Check if we have at least one API key for data collection
+    has_rentcast = rentcast_key and rentcast_key.strip()
+    has_rapidapi = rapidapi_key and rapidapi_key.strip()
+
+    if has_rentcast or has_rapidapi:
+        st.divider()
+
+        with st.spinner("📊 Fetching rental listings…"):
+            # Fetch listings from all configured sources
+            listings, data_status = fetch_all_listings(
+                lat=lat,
+                lon=lon,
+                radius_miles=radius_miles,
+                rentcast_key=rentcast_key.strip() if has_rentcast else None,
+                rapidapi_key=rapidapi_key.strip() if has_rapidapi else None,
+                bed_filter=selected_units if selected_units else None,
+            )
+
+        # ── Data status badges ────────────────────────────────────────────────
+        st.markdown(
+            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>📊 Data Status</div>",
+            unsafe_allow_html=True,
+        )
+
+        status_html = ""
+        if data_status.get("rentcast") == "live":
+            status_html += '<span class="badge-live">✅ Rentcast</span> '
+        elif data_status.get("rentcast") == "partial":
+            status_html += '<span class="badge-partial">⚠️ Rentcast (partial)</span> '
+        else:
+            status_html += '<span class="badge-error">❌ Rentcast</span> '
+
+        if data_status.get("zillow") == "live":
+            status_html += '<span class="badge-live">✅ Zillow</span>'
+        elif data_status.get("zillow") == "partial":
+            status_html += '<span class="badge-partial">⚠️ Zillow (partial)</span>'
+        else:
+            status_html += '<span class="badge-error">❌ Zillow</span>'
+
+        st.markdown(status_html, unsafe_allow_html=True)
+
+        # ── No results state ──────────────────────────────────────────────────
+        if not listings:
+            st.warning(
+                "No rental listings found. This could mean:\n"
+                "• No active rentals within the search radius\n"
+                "• API keys are missing or invalid\n"
+                "• API rate limits or temporary service issues\n\n"
+                "**Tip:** Try expanding the search radius or verify your API keys in the sidebar."
+            )
+        else:
+            # ── Analysis ──────────────────────────────────────────────────────
+            summary_df = compute_summary(listings)
+            insights = compute_insights(listings, geo, radius_miles)
+
+            # ── Market insights ───────────────────────────────────────────────
+            st.markdown(
+                "<div style='margin-top:24px;font-size:0.72rem;font-weight:700;"
+                "letter-spacing:0.08em;text-transform:uppercase;color:#6B7280;"
+                "margin-bottom:12px'>💡 Market Insights</div>",
+                unsafe_allow_html=True,
+            )
+            for insight in insights:
+                st.markdown(f"• {insight}")
+
+            st.divider()
+
+            # ── Summary statistics table ──────────────────────────────────────
+            st.markdown(
+                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📈 Rent Statistics by Unit Type</div>",
+                unsafe_allow_html=True,
+            )
+            display_cols = ["Unit Type", "# Listings", "Avg Rent", "Median Rent", "Min Rent", "Max Rent", "Avg $/SF"]
+            st.dataframe(
+                summary_df[display_cols].set_index("Unit Type"),
+                use_container_width=True,
+                height=len(summary_df) * 35 + 38,
+            )
+
+            st.divider()
+
+            # ── Listings map ──────────────────────────────────────────────────
+            st.markdown(
+                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>🗺️ Comparable Listings Map</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption("Each colored marker represents a rental listing. Cluster markers group nearby properties.")
+
+            listings_map = build_map(
+                listings=listings,
+                center_lat=lat,
+                center_lon=lon,
+                radius_miles=radius_miles,
+                subject_label=geo["formatted_address"],
+            )
+            st_folium(
+                listings_map,
+                width="100%",
+                height=520,
+                returned_objects=[],
+                key="listings_map",
+            )
+
+            st.divider()
+
+            # ── Charts ────────────────────────────────────────────────────────
+            col_bar, col_range = st.columns(2)
+            with col_bar:
+                st.plotly_chart(
+                    build_bar_chart(summary_df),
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+            with col_range:
+                st.plotly_chart(
+                    build_range_chart(summary_df),
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+
+            col_box = st.columns(1)[0]
+            with col_box:
+                st.plotly_chart(
+                    build_box_chart(listings),
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+
+            st.plotly_chart(
+                build_scatter_chart(listings),
+                use_container_width=True,
+                config={"displayModeBar": False},
+            )
+
+            st.divider()
+
+            # ── Listings table with photos and links ───────────────────────────
+            st.markdown(
+                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📋 Detailed Listings Table</div>",
+                unsafe_allow_html=True,
+            )
+
+            # Create a display dataframe with key fields
+            display_listings = []
+            for listing in listings:
+                display_listings.append({
+                    "Address": listing.get("address", "N/A"),
+                    "Unit Type": listing.get("unit_type", "—"),
+                    "Rent": f"${listing.get('rent', 0):,.0f}",
+                    "$/SF": f"${listing.get('sqft', 0) and listing['rent'] / listing['sqft'] or 0:.2f}" if listing.get("sqft", 0) else "—",
+                    "Distance (mi)": f"{listing.get('distance_miles', 0):.2f}",
+                    "Source": listing.get("source", "—"),
+                    "URL": listing.get("url", ""),
+                })
+
+            df_display = pd.DataFrame(display_listings)
+
+            # Render as clickable links if available
+            def make_link(url, text="View"):
+                if url:
+                    return f'<a href="{url}" target="_blank" style="color:#1A3A6B;text-decoration:none;font-weight:600">View →</a>'
+                return "—"
+
+            st.write(
+                df_display.to_html(
+                    escape=False,
+                    index=False,
+                    formatters={"URL": lambda x: make_link(x)},
+                ),
+                unsafe_allow_html=True,
+            )
+
+            st.divider()
+
+            # ── Source information ────────────────────────────────────────────
+            st.markdown(
+                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>📌 Data Sources</div>",
+                unsafe_allow_html=True,
+            )
+
+            source_info = (
+                "**Rentcast** — Real-time rental marketplace aggregator covering landlord-direct, "
+                "MLS, and syndicated listings across NYC.\n\n"
+                "**Zillow** — Major national residential portal with rental inventory and estimated "
+                "values, accessed via RapidAPI.\n\n"
+                "**Note:** Both sources syndicate from StreetEasy, Apartments.com, and other regional "
+                "platforms. Listings are deduped and outliers removed to show market-representative comps."
+            )
+            st.caption(source_info)
+
+    else:
+        # ── No API keys state ─────────────────────────────────────────────────
+        st.markdown("""
+        <div class="next-step">
+          ⏳ <b>Ready for data collection:</b> Add your <b>Rentcast</b> and/or <b>RapidAPI</b> keys
+          in the sidebar to pull live rental listings and see charts, maps, and market insights.
+          <br/><br/>
+          • <b>Rentcast:</b> <a href="https://rentcast.io" target="_blank" style="color:#1A3A6B">rentcast.io</a> (free tier available)<br/>
+          • <b>RapidAPI:</b> <a href="https://rapidapi.com/apimaker/api/zillow-com1/" target="_blank" style="color:#1A3A6B">Zillow Com1</a> subscription
+        </div>
+        """, unsafe_allow_html=True)
 
 # ── Idle state ────────────────────────────────────────────────────────────────
 elif not submitted:
