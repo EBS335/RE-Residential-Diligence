@@ -1102,7 +1102,7 @@ if 'geo' in st.session_state:
         data_freshness = "Cached Data"
     else:
         with st.spinner(
-            "🔍 Scraping StreetEasy, Apartments.com, Craigslist, Zumper & RentHop…"
+            "🔍 Scraping 5 sources — Playwright stealth browser activates automatically if blocked…"
         ):
             listings, data_status = fetch_all_listings(
                 lat=lat,

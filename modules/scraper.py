@@ -307,7 +307,7 @@ def scrape_streeteasy(
     try:
         _proxy_get("https://streeteasy.com", session, proxy_key=proxy_key,
                    timeout=10, allow_redirects=True)
-        time.sleep(1.0)
+        time.sleep(random.uniform(1.0, 2.5))
     except Exception:
         pass
 
@@ -327,8 +327,14 @@ def scrape_streeteasy(
             resp = _proxy_get(url, session, proxy_key=proxy_key, timeout=20)
 
             if _is_blocked(resp):
-                status = "blocked" if not listings else "partial"
-                return listings, status
+                if not listings:
+                    # Playwright fallback — try headless browser before giving up
+                    try:
+                        from modules.playwright_scraper import pw_streeteasy
+                        return pw_streeteasy(lat, lon, radius_miles, bed_filter)
+                    except Exception:
+                        pass
+                return listings, "blocked" if not listings else "partial"
 
             soup = BeautifulSoup(resp.text, "lxml")
 
@@ -341,7 +347,7 @@ def scrape_streeteasy(
                 listings.extend(parsed)
                 if not parsed:
                     break   # last page
-                time.sleep(0.7)
+                time.sleep(random.uniform(2.0, 5.0))
                 continue
 
             # ── Strategy 2: HTML listing cards ───────────────────────────────
@@ -358,7 +364,7 @@ def scrape_streeteasy(
                 if item:
                     listings.append(item)
 
-            time.sleep(0.7)
+            time.sleep(random.uniform(2.0, 5.0))
 
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
@@ -486,6 +492,43 @@ def _apts_from_card(card, clat: float, clon: float,
         return None
 
 
+def _ap_parse_page(soup, clat: float, clon: float,
+                   bed_filter: Optional[list]) -> list:
+    """Parse an Apartments.com search results page (BeautifulSoup).
+    Tries embedded JSON first, then HTML property cards.
+    Extracted so Playwright scraper can reuse without re-fetching."""
+    listings: list = []
+    # Strategy 1: embedded JSON blobs
+    for script in soup.find_all("script"):
+        raw = script.string or ""
+        for pattern in (
+            r"window\.__listing_results\s*=\s*({.+?});\s*(?:window|var|let|const|</)",
+            r"window\.data\s*=\s*({.+?});\s*(?:window|var|let|const|</)",
+            r'"rentRange":\s*\{.{0,300}?"latitude"',
+        ):
+            match = re.search(pattern, raw, re.DOTALL)
+            if match:
+                try:
+                    blob = re.search(r"\{.+\}", match.group(0), re.DOTALL)
+                    if blob:
+                        data = json.loads(blob.group(0))
+                        listings.extend(_apts_from_json(data, clat, clon, bed_filter))
+                except Exception:
+                    pass
+    # Strategy 2: HTML property cards
+    if not listings:
+        cards = (
+            soup.find_all("article", class_=re.compile(r"placard", re.I))
+            or soup.find_all("li",    class_=re.compile(r"placard", re.I))
+            or soup.find_all(attrs={"data-listingid": True})
+        )
+        for card in cards:
+            item = _apts_from_card(card, clat, clon, bed_filter)
+            if item:
+                listings.append(item)
+    return listings
+
+
 def scrape_apartments_com(
     lat: float,
     lon: float,
@@ -513,48 +556,24 @@ def scrape_apartments_com(
             resp = _proxy_get(url, session, proxy_key=proxy_key, timeout=20)
 
             if _is_blocked(resp):
+                if not listings:
+                    # Playwright fallback — try headless browser before giving up
+                    try:
+                        from modules.playwright_scraper import pw_apartments_com
+                        return pw_apartments_com(lat, lon, radius_miles, bed_filter)
+                    except Exception:
+                        pass
                 return listings, "blocked" if not listings else "partial"
 
             soup = BeautifulSoup(resp.text, "lxml")
+            parsed = _ap_parse_page(soup, lat, lon, bed_filter)
+            listings.extend(parsed)
 
-            # ── Strategy 1: embedded JSON ─────────────────────────────────────
-            for script in soup.find_all("script"):
-                raw = script.string or ""
-                # Apartments.com sometimes embeds a window.data object
-                for pattern in (
-                    r"window\.__listing_results\s*=\s*({.+?});\s*(?:window|var|let|const|</)",
-                    r"window\.data\s*=\s*({.+?});\s*(?:window|var|let|const|</)",
-                    r'"rentRange":\s*\{.{0,300}?"latitude"',   # detect listing JSON
-                ):
-                    match = re.search(pattern, raw, re.DOTALL)
-                    if match:
-                        try:
-                            blob = re.search(r"\{.+\}", match.group(0), re.DOTALL)
-                            if blob:
-                                data = json.loads(blob.group(0))
-                                parsed = _apts_from_json(data, lat, lon, bed_filter)
-                                listings.extend(parsed)
-                        except Exception:
-                            pass
-
-            # ── Strategy 2: HTML property cards ───────────────────────────────
-            if not listings:
-                cards = (
-                    soup.find_all("article", class_=re.compile(r"placard", re.I))
-                    or soup.find_all("li",    class_=re.compile(r"placard", re.I))
-                    or soup.find_all(attrs={"data-listingid": True})
-                )
-                for card in cards:
-                    item = _apts_from_card(card, lat, lon, bed_filter)
-                    if item:
-                        listings.append(item)
-
-            # If no new listings were found, last page reached
-            page_new = len(listings)
-            if page_new == 0 and page > 1:
+            # If no new listings found, last page reached
+            if not parsed and page > 1:
                 break
 
-            time.sleep(0.9)
+            time.sleep(random.uniform(2.0, 6.0))
 
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
@@ -609,7 +628,7 @@ def scrape_craigslist(
 
             if len(cards) < 119:
                 break
-            time.sleep(0.6)
+            time.sleep(random.uniform(2.0, 6.0))
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
@@ -814,7 +833,7 @@ def scrape_renthop(lat, lon, radius_miles, bed_filter=None, proxy_key=None):
                 listings.extend(parsed)
                 if not parsed:
                     break
-                time.sleep(0.7)
+                time.sleep(random.uniform(2.0, 6.0))
                 continue
 
             cards = (
@@ -827,7 +846,7 @@ def scrape_renthop(lat, lon, radius_miles, bed_filter=None, proxy_key=None):
                 item = _parse_renthop_card(card, lat, lon, bed_filter)
                 if item:
                     listings.append(item)
-            time.sleep(0.8)
+            time.sleep(random.uniform(2.0, 6.0))
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
