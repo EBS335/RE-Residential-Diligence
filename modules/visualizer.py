@@ -72,55 +72,76 @@ def build_map(
     for item in listings:
         clr   = UNIT_COLOURS.get(item.get("unit_type", "Unknown"), "#9CA3AF")
         rent  = f"${item['rent']:,.0f}/mo"
-        dist  = f"{item['distance_miles']:.2f} mi away"
+        dist  = f"{item['distance_miles']:.2f} mi"
 
+        # ── Rich hover tooltip (visible on mouse-over, no click needed) ──────
+        beds_label = item.get("unit_type") or "Unknown"
+        addr_short = (item.get("address") or "")[:40]
+        tooltip_html = (
+            f"<div style='font-family:sans-serif;line-height:1.55;padding:2px'>"
+            f"<b style='font-size:1rem'>{rent}</b>"
+            f"&ensp;<span style='color:#374151'>{beds_label}</span><br>"
+            f"<span style='color:#374151;font-size:0.82rem'>{addr_short}</span><br>"
+            f"<span style='color:#6B7280;font-size:0.78rem'>{dist} &middot; {item.get('source','')}</span>"
+            f"</div>"
+        )
+
+        # ── Photo ─────────────────────────────────────────────────────────────
         photo_html = ""
         if item.get("photos"):
             photo_html = (
-                f'<img src="{item["photos"][0]}" width="220" '
-                f'style="border-radius:6px;margin:6px 0"/><br>'
+                f'<img src="{item["photos"][0]}" width="240" '
+                f'style="border-radius:7px;margin:6px 0 8px;display:block"/>'
             )
+
+        # ── Optional detail lines ─────────────────────────────────────────────
+        bldg_line = (
+            f'<b>Building:</b> {item["building_name"]}<br>'
+            if item.get("building_name") else ""
+        )
+        sqft_val  = item.get("sqft")
+        sqft_line = f'<b>Size:</b> {sqft_val:,} SF<br>' if sqft_val else ""
+        ppsf_line = ""
+        if sqft_val and item.get("rent"):
+            ppsf = item["rent"] / sqft_val
+            ppsf_line = f'<b>$/SF:</b> ${ppsf:.2f}<br>'
+        dom = item.get("days_on_market")
+        dom_line  = f'<b>Days on Market:</b> {dom}<br>' if dom is not None else ""
 
         link_html = ""
         if item.get("url"):
             link_html = (
                 f'<a href="{item["url"]}" target="_blank" '
-                f'style="color:#1A3A6B;font-weight:600">View listing →</a>'
+                f'style="color:#1A3A6B;font-weight:600;text-decoration:none">'
+                f'View listing →</a>'
             )
 
-        sqft_line = (
-            f'<b>Size:</b> {item["sqft"]:,} SF<br>'
-            if item.get("sqft") else ""
-        )
-        bldg_line = (
-            f'<b>Building:</b> {item["building_name"]}<br>'
-            if item.get("building_name") else ""
-        )
-
         popup_html = f"""
-        <div style="font-family:sans-serif;min-width:210px;max-width:240px">
+        <div style="font-family:sans-serif;min-width:230px;max-width:260px">
           {photo_html}
-          <span style="font-size:1.1rem;font-weight:700">{rent}</span>
-          &nbsp;<span style="color:#6B7280;font-size:0.85rem">{item.get('unit_type','')}</span>
-          <hr style="margin:6px 0"/>
+          <span style="font-size:1.15rem;font-weight:700;color:#111">{rent}</span>
+          &nbsp;<span style="color:#6B7280;font-size:0.85rem">{beds_label}</span>
+          <hr style="margin:6px 0;border-color:#E5E7EB"/>
           <b>Address:</b> {item.get('address','N/A')}<br>
-          {bldg_line}{sqft_line}
+          {bldg_line}
+          <b>Beds:</b> {item.get('bedrooms', 0)} &nbsp;
+          {sqft_line}{ppsf_line}{dom_line}
           <b>Distance:</b> {dist}<br>
           <b>Source:</b> <span style="color:#6B7280">{item.get('source','')}</span><br>
-          {link_html}
+          <div style="margin-top:7px">{link_html}</div>
         </div>
         """
 
         folium.CircleMarker(
             location=[item["lat"], item["lon"]],
-            radius=8,
+            radius=9,
             color="white",
             weight=1.5,
             fill=True,
             fill_color=clr,
             fill_opacity=0.92,
-            tooltip=f"{item.get('unit_type','')}  ·  {rent}",
-            popup=folium.Popup(popup_html, max_width=260),
+            tooltip=folium.Tooltip(tooltip_html, sticky=True),
+            popup=folium.Popup(popup_html, max_width=280),
         ).add_to(cluster)
 
     # Legend

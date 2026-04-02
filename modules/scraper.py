@@ -147,21 +147,35 @@ def _is_blocked(resp) -> bool:
 
 def _fetch_with_retry(url: str, session, proxy_key: Optional[str] = None,
                       backoff: tuple = (2, 5, 15), **kwargs):
-    """GET with exponential-backoff retry on 429/5xx and connection errors."""
+    """GET with exponential-backoff retry on 429/5xx and connection errors.
+
+    On retry exhaustion:
+    - If the last failure was a bad-status response (403/429/5xx), returns that
+      response so the caller's _is_blocked() check can classify it correctly as
+      "blocked" rather than "error".
+    - If the last failure was a connection exception, re-raises it.
+    """
     last_exc: Exception = RuntimeError("no attempts")
+    _last_blocked_resp = None
     for _wait in [0] + list(backoff):
         if _wait:
             time.sleep(_wait + random.uniform(0, 1.0))
         try:
             resp = _proxy_get(url, session, proxy_key=proxy_key, **kwargs)
-            if resp.status_code == 429 or resp.status_code >= 500:
+            if resp.status_code in (403, 429, 503) or resp.status_code >= 500:
+                _last_blocked_resp = resp
                 last_exc = Exception(f"HTTP {resp.status_code}")
                 continue
             return resp
         except _plain_requests.exceptions.Timeout:
+            _last_blocked_resp = None
             last_exc = Exception("timeout")
         except Exception as e:
+            _last_blocked_resp = None
             last_exc = e
+    # Return the blocked response so _is_blocked() in the caller runs correctly
+    if _last_blocked_resp is not None:
+        return _last_blocked_resp
     raise last_exc
 
 
@@ -397,14 +411,17 @@ def scrape_streeteasy(
             # ── Strategy 1: __NEXT_DATA__ JSON ───────────────────────────────
             nd_tag = soup.find("script", id="__NEXT_DATA__")
             if nd_tag and nd_tag.string:
-                parsed = _se_from_next_data(
-                    json.loads(nd_tag.string), lat, lon, bed_filter
-                )
-                listings.extend(parsed)
-                if not parsed:
-                    break   # last page
-                time.sleep(random.uniform(1.0, 2.5))
-                continue
+                try:
+                    parsed = _se_from_next_data(
+                        json.loads(nd_tag.string), lat, lon, bed_filter
+                    )
+                    listings.extend(parsed)
+                    if not parsed:
+                        break   # last page
+                    time.sleep(random.uniform(1.0, 2.5))
+                    continue
+                except (json.JSONDecodeError, Exception):
+                    pass  # fall through to HTML card parsing
 
             # ── Strategy 1b: RSC payload (Next.js App Router fallback) ────────
             if not nd_tag:
@@ -626,7 +643,7 @@ def scrape_apartments_com(
             bbox = f"{sw_lat},{sw_lng},{ne_lat},{ne_lng}"
             url  = f"https://www.apartments.com/new-york-ny/{page}/?bb={bbox}"
 
-            resp = _proxy_get(url, session, proxy_key=proxy_key, timeout=20)
+            resp = _fetch_with_retry(url, session, proxy_key=proxy_key, timeout=20)
 
             if _is_blocked(resp):
                 if not listings:

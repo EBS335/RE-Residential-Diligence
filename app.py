@@ -19,6 +19,7 @@ from modules.visualizer import (
     build_map, build_bar_chart, build_range_chart,
     build_box_chart, build_scatter_chart
 )
+from modules.zola_fetcher import fetch_zoning_info
 
 load_dotenv()
 
@@ -1403,6 +1404,119 @@ if 'geo' in st.session_state:
         df_display = pd.DataFrame(display_listings)
         with st.expander(f"📋 All Listings ({len(display_listings)} total)", expanded=False):
             st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
+
+        # ── NYC Zoning Information (ZOLA / PLUTO) ─────────────────────────
+        st.markdown("---")
+        st.markdown(
+            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+            "🗺️ NYC Zoning Information (ZOLA)</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Zoning and lot data via NYC Planning Labs GeoSearch + PLUTO dataset. "
+            "No API key required."
+        )
+
+        # Address lookup widget (defaults to subject property)
+        _default_zola_addr = geo.get("formatted_address", "")
+        zola_addr = st.text_input(
+            "Address to look up",
+            value=_default_zola_addr,
+            placeholder="e.g. 350 West 42nd St, Manhattan",
+            key="zola_address_input",
+            help="Enter any NYC address to retrieve zoning district, lot size, and building information from NYC Planning.",
+        )
+        _zola_btn = st.button("🔍 Look Up Zoning", key="zola_lookup_btn")
+
+        # Use session_state to cache so it doesn't re-fetch on every rerun
+        _zola_cache_key = f"_zola_{zola_addr.strip().lower()}"
+        _auto_run = (
+            _default_zola_addr
+            and _zola_cache_key not in st.session_state
+            and not _zola_btn
+        )
+
+        if _zola_btn or _auto_run:
+            if zola_addr.strip():
+                with st.spinner("Fetching zoning data from NYC Planning…"):
+                    _zinfo = fetch_zoning_info(
+                        zola_addr.strip(), lat=lat, lon=lon
+                    )
+                st.session_state[_zola_cache_key] = _zinfo
+
+        _zinfo = st.session_state.get(_zola_cache_key)
+
+        if _zinfo:
+            if "error" in _zinfo:
+                st.warning(f"Zoning lookup: {_zinfo['error']}")
+            else:
+                # Header row: BBL + ZOLA link
+                _bbl_disp = _zinfo.get("bbl", "—")
+                _zola_url = _zinfo.get("zola_url", "")
+                _matched  = _zinfo.get("matched_label", "")
+                st.markdown(
+                    f"<div style='margin-bottom:10px'>"
+                    f"<b>BBL:</b> {_bbl_disp} &nbsp;·&nbsp; "
+                    f"<b>Matched:</b> {_matched}"
+                    f"{'&nbsp;&nbsp;<a href=' + repr(_zola_url) + ' target=_blank '
+                       'style=color:#1A3A6B;font-weight:600>View on ZOLA →</a>'
+                       if _zola_url else ''}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+                _zcol1, _zcol2 = st.columns([3, 2])
+
+                with _zcol1:
+                    st.markdown("**Zoning**")
+                    _zoning_rows = [
+                        ("Zoning District",   _zinfo.get("zoning_dist", "—")),
+                        ("Commercial Overlay", _zinfo.get("overlay", "—")),
+                        ("Special District",  _zinfo.get("special_dist", "—")),
+                        ("Land Use",          _zinfo.get("land_use", "—")),
+                        ("Historic District", _zinfo.get("historic_dist", "—")),
+                        ("Landmark",          _zinfo.get("landmark", "—")),
+                    ]
+                    for _label, _val in _zoning_rows:
+                        if _val and _val != "—":
+                            st.markdown(
+                                f"<div style='display:flex;gap:8px;margin-bottom:4px'>"
+                                f"<span style='color:#6B7280;min-width:160px'>{_label}</span>"
+                                f"<b>{_val}</b></div>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                f"<div style='display:flex;gap:8px;margin-bottom:4px'>"
+                                f"<span style='color:#6B7280;min-width:160px'>{_label}</span>"
+                                f"<span style='color:#9CA3AF'>—</span></div>",
+                                unsafe_allow_html=True,
+                            )
+
+                with _zcol2:
+                    st.markdown("**Lot & Building**")
+                    _lot_rows = [
+                        ("Lot Area",       f"{_zinfo.get('lot_area_sqft','—')} SF"),
+                        ("Lot Frontage",   f"{_zinfo.get('lot_frontage_ft','—')} ft"),
+                        ("Lot Depth",      f"{_zinfo.get('lot_depth_ft','—')} ft"),
+                        ("Building Area",  f"{_zinfo.get('bldg_area_sqft','—')} SF"),
+                        ("Floors",         _zinfo.get("num_floors", "—")),
+                        ("Year Built",     _zinfo.get("year_built", "—")),
+                        ("Building Class", _zinfo.get("bldg_class", "—")),
+                        ("Res. Units",     _zinfo.get("units_res", "—")),
+                        ("Total Units",    _zinfo.get("units_total", "—")),
+                        ("Existing FAR",   _zinfo.get("far_existing", "—")),
+                    ]
+                    for _label, _val in _lot_rows:
+                        _is_blank = (not _val or str(_val).strip() in ("—", "— SF", "— ft"))
+                        st.markdown(
+                            f"<div style='display:flex;gap:8px;margin-bottom:4px'>"
+                            f"<span style='color:#6B7280;min-width:130px'>{_label}</span>"
+                            f"{'<b>' + str(_val) + '</b>' if not _is_blank else '<span style=color:#9CA3AF>—</span>'}"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
 
         # ── Photo Gallery ──────────────────────────────────────────────────
         photos_available = [l for l in listings if l.get("photos")]
