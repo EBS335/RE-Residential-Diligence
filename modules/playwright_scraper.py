@@ -23,11 +23,11 @@ from bs4 import BeautifulSoup
 # ── User-agents for Playwright sessions ──────────────────────────────────────
 _USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ]
 
 _VIEWPORTS = [
@@ -112,13 +112,15 @@ def _make_stealth_context(browser):
     ctx = browser.new_context(
         user_agent=random.choice(_USER_AGENTS),
         viewport=random.choice(_VIEWPORTS),
+        screen={"width": 1920, "height": 1080},
+        color_scheme="light",
         locale="en-US",
         timezone_id="America/New_York",
         java_script_enabled=True,
         bypass_csp=True,
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
-            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"macOS"',
         },
@@ -145,6 +147,12 @@ def _apply_stealth(page) -> None:
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['en-US', 'en'],
             });
+            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+            Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({ effectiveType: '4g', rtt: 50, downlink: 10, saveData: false }),
+            });
+            Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
             window.chrome = { runtime: {} };
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
@@ -267,7 +275,7 @@ def pw_streeteasy(lat: float, lon: float, radius_miles: float,
                 listings.extend(parsed)
                 if not parsed:
                     break
-                _human_delay(2.0, 5.0)
+                _human_delay(1.0, 2.5)
                 continue
             except Exception:
                 pass
@@ -284,7 +292,7 @@ def pw_streeteasy(lat: float, lon: float, radius_miles: float,
             item = _se_from_card(card, lat, lon, bed_filter)
             if item:
                 listings.append(item)
-        _human_delay(2.0, 5.0)
+        _human_delay(1.0, 2.5)
 
     return listings, ("live" if listings else "no_results")
 
@@ -321,6 +329,6 @@ def pw_apartments_com(lat: float, lon: float, radius_miles: float,
 
         if not parsed and page_n > 1:
             break
-        _human_delay(2.0, 5.0)
+        _human_delay(1.0, 2.5)
 
     return listings, ("live" if listings else "no_results")

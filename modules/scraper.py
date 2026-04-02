@@ -35,10 +35,10 @@ from bs4 import BeautifulSoup
 
 # ── Rotating User-Agent pool ──────────────────────────────────────────────────
 _USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
 ]
 
 # ── Base browser headers (User-Agent injected per-session) ───────────────────
@@ -57,7 +57,7 @@ _HEADERS = {
     "Sec-Fetch-Site": "none",
     "Sec-Fetch-User": "?1",
     "Cache-Control": "max-age=0",
-    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"macOS"',
 }
@@ -98,13 +98,13 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def _make_session():
     """
-    Create a curl_cffi session impersonating Chrome 124 (best TLS fingerprint),
+    Create a curl_cffi session impersonating Chrome 131 (best TLS fingerprint),
     or fall back to a plain requests.Session if curl_cffi is unavailable.
     A random User-Agent is chosen per session.
     """
     if _USE_CURL:
         sess = _cf_requests.Session()
-        sess.impersonate = "chrome124"
+        sess.impersonate = "chrome131"
     else:
         sess = _plain_requests.Session()
     sess.headers.update({**_HEADERS, "User-Agent": random.choice(_USER_AGENTS)})
@@ -143,6 +143,62 @@ def _is_blocked(resp) -> bool:
         "captcha", "ddos-guard", "access denied", "verifying you are human",
         "checking your browser", "ray id",
     ))
+
+
+def _fetch_with_retry(url: str, session, proxy_key: Optional[str] = None,
+                      backoff: tuple = (2, 5, 15), **kwargs):
+    """GET with exponential-backoff retry on 429/5xx and connection errors."""
+    last_exc: Exception = RuntimeError("no attempts")
+    for _wait in [0] + list(backoff):
+        if _wait:
+            time.sleep(_wait + random.uniform(0, 1.0))
+        try:
+            resp = _proxy_get(url, session, proxy_key=proxy_key, **kwargs)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                last_exc = Exception(f"HTTP {resp.status_code}")
+                continue
+            return resp
+        except _plain_requests.exceptions.Timeout:
+            last_exc = Exception("timeout")
+        except Exception as e:
+            last_exc = e
+    raise last_exc
+
+
+def _walk_rsc(node, out: list) -> None:
+    """Recursively collect dicts that look like listing data from RSC payloads."""
+    _DATA_KEYS = {"data", "items", "results", "listings", "pageProps",
+                  "initialData", "props", "rentals", "units"}
+    if isinstance(node, dict):
+        if _DATA_KEYS & set(node.keys()):
+            out.append(node)
+        for v in node.values():
+            if isinstance(v, (dict, list)):
+                _walk_rsc(v, out)
+    elif isinstance(node, list):
+        for item in node:
+            if isinstance(item, (dict, list)):
+                _walk_rsc(item, out)
+
+
+def _parse_rsc(rsc_text: str) -> list:
+    """Extract data objects from a Next.js RSC line-protocol payload.
+
+    RSC payloads are line-delimited; each line starts with a hex/decimal prefix
+    followed by a colon then JSON. We collect any dicts containing listing-like
+    keys so callers can attempt to parse them with existing helpers.
+    """
+    results: list = []
+    for line in rsc_text.splitlines():
+        m = re.match(r'^[0-9a-f]+:', line)
+        if not m:
+            continue
+        try:
+            parsed = json.loads(line[m.end():])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        _walk_rsc(parsed, results)
+    return results
 
 
 def _extract_price(text: str) -> int:
@@ -324,7 +380,7 @@ def scrape_streeteasy(
                 f"&search%5Bsw_lng%5D={sw_lng}"
                 f"&page={page}"
             )
-            resp = _proxy_get(url, session, proxy_key=proxy_key, timeout=20)
+            resp = _fetch_with_retry(url, session, proxy_key=proxy_key, timeout=20)
 
             if _is_blocked(resp):
                 if not listings:
@@ -347,8 +403,25 @@ def scrape_streeteasy(
                 listings.extend(parsed)
                 if not parsed:
                     break   # last page
-                time.sleep(random.uniform(2.0, 5.0))
+                time.sleep(random.uniform(1.0, 2.5))
                 continue
+
+            # ── Strategy 1b: RSC payload (Next.js App Router fallback) ────────
+            if not nd_tag:
+                try:
+                    rsc_resp = _fetch_with_retry(
+                        url, session, proxy_key=proxy_key, timeout=20,
+                        headers={**dict(session.headers), "RSC": "1",
+                                 "Next-Router-State-Tree": ""},
+                    )
+                    if rsc_resp and rsc_resp.status_code == 200:
+                        for chunk in _parse_rsc(rsc_resp.text):
+                            parsed = _se_from_next_data(
+                                {"props": {"pageProps": chunk}}, lat, lon, bed_filter
+                            )
+                            listings.extend(parsed)
+                except Exception:
+                    pass
 
             # ── Strategy 2: HTML listing cards ───────────────────────────────
             cards = (
@@ -356,7 +429,7 @@ def scrape_streeteasy(
                 or soup.find_all("article", class_=re.compile(r"listingCard", re.I))
                 or soup.find_all("div",     class_=re.compile(r"listingCard", re.I))
             )
-            if not cards:
+            if not cards and not listings:
                 break
 
             for card in cards:
@@ -364,7 +437,7 @@ def scrape_streeteasy(
                 if item:
                     listings.append(item)
 
-            time.sleep(random.uniform(2.0, 5.0))
+            time.sleep(random.uniform(1.0, 2.5))
 
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
@@ -573,7 +646,7 @@ def scrape_apartments_com(
             if not parsed and page > 1:
                 break
 
-            time.sleep(random.uniform(2.0, 6.0))
+            time.sleep(random.uniform(1.0, 2.5))
 
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
@@ -628,7 +701,7 @@ def scrape_craigslist(
 
             if len(cards) < 119:
                 break
-            time.sleep(random.uniform(2.0, 6.0))
+            time.sleep(random.uniform(1.0, 2.5))
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
@@ -833,7 +906,7 @@ def scrape_renthop(lat, lon, radius_miles, bed_filter=None, proxy_key=None):
                 listings.extend(parsed)
                 if not parsed:
                     break
-                time.sleep(random.uniform(2.0, 6.0))
+                time.sleep(random.uniform(1.0, 2.5))
                 continue
 
             cards = (
@@ -846,7 +919,7 @@ def scrape_renthop(lat, lon, radius_miles, bed_filter=None, proxy_key=None):
                 item = _parse_renthop_card(card, lat, lon, bed_filter)
                 if item:
                     listings.append(item)
-            time.sleep(random.uniform(2.0, 6.0))
+            time.sleep(random.uniform(1.0, 2.5))
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
