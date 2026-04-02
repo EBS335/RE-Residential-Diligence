@@ -20,6 +20,8 @@ from modules.visualizer import (
     build_box_chart, build_scatter_chart
 )
 from modules.zola_fetcher import fetch_zoning_info
+from modules.zoning_rules import get_zoning_rules
+from modules.massing_viz import build_massing_options
 
 load_dotenv()
 
@@ -932,8 +934,9 @@ if submitted:
     st.session_state["unit_filter"]   = selected_units
     st.session_state["rental_type"]   = rental_type
     st.session_state["address_raw"]   = address_input.strip()
-    # Clear stale listing cache so each new search always refetches
-    for _k in [k for k in list(st.session_state) if k.startswith('_listings_')]:
+    # Clear stale listing + ZOLA caches so each new search always refetches
+    for _k in [k for k in list(st.session_state)
+               if k.startswith('_listings_') or k.startswith('_zola_')]:
         del st.session_state[_k]
 
 
@@ -1413,110 +1416,299 @@ if 'geo' in st.session_state:
             "🗺️ NYC Zoning Information (ZOLA)</div>",
             unsafe_allow_html=True,
         )
+
+        # Subject property — auto-fetched, keyed by lat/lon so it updates
+        # automatically whenever the main search address changes.
+        _subject_addr   = st.session_state.get("address_raw", geo.get("formatted_address", ""))
+        _zola_subj_key  = f"_zola_subject_{lat:.5f}_{lon:.5f}"
+
+        if _zola_subj_key not in st.session_state and _subject_addr:
+            with st.spinner("Fetching zoning data from NYC Planning…"):
+                st.session_state[_zola_subj_key] = fetch_zoning_info(
+                    _subject_addr, lat=lat, lon=lon
+                )
+
+        # Active zoning info — default to subject property
+        _zinfo = st.session_state.get(_zola_subj_key)
+
+        # Optional override for a different address
+        with st.expander("🔍 Look up a different address", expanded=False):
+            _ov_col1, _ov_col2 = st.columns([4, 1])
+            with _ov_col1:
+                _ov_addr = st.text_input(
+                    "Address",
+                    key="zola_override_input",
+                    placeholder="e.g. 350 West 42nd St, Manhattan",
+                    label_visibility="collapsed",
+                )
+            with _ov_col2:
+                _ov_btn = st.button("Look Up", key="zola_lookup_btn")
+            if _ov_btn and _ov_addr.strip():
+                _ov_cache = f"_zola_ov_{_ov_addr.strip().lower()}"
+                if _ov_cache not in st.session_state:
+                    with st.spinner("Fetching…"):
+                        st.session_state[_ov_cache] = fetch_zoning_info(
+                            _ov_addr.strip(), lat=lat, lon=lon
+                        )
+                st.session_state["_zola_active_override"] = _ov_cache
+
+        # Use override if set
+        _ov_active = st.session_state.get("_zola_active_override")
+        if _ov_active and _ov_active in st.session_state:
+            _zinfo = st.session_state[_ov_active]
+            _zinfo_label = st.session_state.get("zola_override_input", "")
+        else:
+            _zinfo_label = _subject_addr
+
         st.caption(
-            "Zoning and lot data via NYC Planning Labs GeoSearch + PLUTO dataset. "
-            "No API key required."
+            f"Analyzing: **{_zinfo_label}** &nbsp;·&nbsp; "
+            "Data via NYC Planning Labs GeoSearch + PLUTO. No API key required."
         )
-
-        # Address lookup widget (defaults to subject property)
-        _default_zola_addr = geo.get("formatted_address", "")
-        zola_addr = st.text_input(
-            "Address to look up",
-            value=_default_zola_addr,
-            placeholder="e.g. 350 West 42nd St, Manhattan",
-            key="zola_address_input",
-            help="Enter any NYC address to retrieve zoning district, lot size, and building information from NYC Planning.",
-        )
-        _zola_btn = st.button("🔍 Look Up Zoning", key="zola_lookup_btn")
-
-        # Use session_state to cache so it doesn't re-fetch on every rerun
-        _zola_cache_key = f"_zola_{zola_addr.strip().lower()}"
-        _auto_run = (
-            _default_zola_addr
-            and _zola_cache_key not in st.session_state
-            and not _zola_btn
-        )
-
-        if _zola_btn or _auto_run:
-            if zola_addr.strip():
-                with st.spinner("Fetching zoning data from NYC Planning…"):
-                    _zinfo = fetch_zoning_info(
-                        zola_addr.strip(), lat=lat, lon=lon
-                    )
-                st.session_state[_zola_cache_key] = _zinfo
-
-        _zinfo = st.session_state.get(_zola_cache_key)
 
         if _zinfo:
             if "error" in _zinfo:
                 st.warning(f"Zoning lookup: {_zinfo['error']}")
             else:
-                # Header row: BBL + ZOLA link
+                # ── Header: BBL + ZOLA link ──────────────────────────────
                 _bbl_disp = _zinfo.get("bbl", "—")
                 _zola_url = _zinfo.get("zola_url", "")
                 _matched  = _zinfo.get("matched_label", "")
+                _zola_link = (
+                    f'&nbsp;&nbsp;<a href="{_zola_url}" target="_blank" '
+                    f'style="color:#1A3A6B;font-weight:600">View on ZOLA →</a>'
+                    if _zola_url else ""
+                )
                 st.markdown(
-                    f"<div style='margin-bottom:10px'>"
+                    f"<div style='margin-bottom:12px;padding:8px 12px;"
+                    f"background:#F0F4FF;border-radius:8px;border-left:3px solid #1A3A6B'>"
                     f"<b>BBL:</b> {_bbl_disp} &nbsp;·&nbsp; "
-                    f"<b>Matched:</b> {_matched}"
-                    f"{'&nbsp;&nbsp;<a href=' + repr(_zola_url) + ' target=_blank '
-                       'style=color:#1A3A6B;font-weight:600>View on ZOLA →</a>'
-                       if _zola_url else ''}"
+                    f"Borough {_zinfo.get('borough_code','—')} &nbsp;·&nbsp; "
+                    f"Block {_zinfo.get('block','—')} &nbsp;·&nbsp; "
+                    f"Lot {_zinfo.get('lot','—')}"
+                    f"{_zola_link}"
+                    f"<br><span style='color:#6B7280;font-size:0.82rem'>{_matched}</span>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
 
-                _zcol1, _zcol2 = st.columns([3, 2])
+                def _zrow(label, val, width="160px"):
+                    v = str(val) if val and str(val) != "—" else None
+                    body = f"<b>{v}</b>" if v else "<span style='color:#9CA3AF'>—</span>"
+                    return (
+                        f"<div style='display:flex;gap:8px;margin-bottom:5px'>"
+                        f"<span style='color:#6B7280;min-width:{width}'>{label}</span>"
+                        f"{body}</div>"
+                    )
 
-                with _zcol1:
-                    st.markdown("**Zoning**")
-                    _zoning_rows = [
-                        ("Zoning District",   _zinfo.get("zoning_dist", "—")),
-                        ("Commercial Overlay", _zinfo.get("overlay", "—")),
-                        ("Special District",  _zinfo.get("special_dist", "—")),
-                        ("Land Use",          _zinfo.get("land_use", "—")),
-                        ("Historic District", _zinfo.get("historic_dist", "—")),
-                        ("Landmark",          _zinfo.get("landmark", "—")),
-                    ]
-                    for _label, _val in _zoning_rows:
-                        if _val and _val != "—":
-                            st.markdown(
-                                f"<div style='display:flex;gap:8px;margin-bottom:4px'>"
-                                f"<span style='color:#6B7280;min-width:160px'>{_label}</span>"
-                                f"<b>{_val}</b></div>",
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            st.markdown(
-                                f"<div style='display:flex;gap:8px;margin-bottom:4px'>"
-                                f"<span style='color:#6B7280;min-width:160px'>{_label}</span>"
-                                f"<span style='color:#9CA3AF'>—</span></div>",
-                                unsafe_allow_html=True,
-                            )
+                zc1, zc2, zc3 = st.columns(3)
 
-                with _zcol2:
-                    st.markdown("**Lot & Building**")
-                    _lot_rows = [
-                        ("Lot Area",       f"{_zinfo.get('lot_area_sqft','—')} SF"),
-                        ("Lot Frontage",   f"{_zinfo.get('lot_frontage_ft','—')} ft"),
-                        ("Lot Depth",      f"{_zinfo.get('lot_depth_ft','—')} ft"),
-                        ("Building Area",  f"{_zinfo.get('bldg_area_sqft','—')} SF"),
-                        ("Floors",         _zinfo.get("num_floors", "—")),
-                        ("Year Built",     _zinfo.get("year_built", "—")),
-                        ("Building Class", _zinfo.get("bldg_class", "—")),
-                        ("Res. Units",     _zinfo.get("units_res", "—")),
-                        ("Total Units",    _zinfo.get("units_total", "—")),
-                        ("Existing FAR",   _zinfo.get("far_existing", "—")),
-                    ]
-                    for _label, _val in _lot_rows:
-                        _is_blank = (not _val or str(_val).strip() in ("—", "— SF", "— ft"))
+                with zc1:
+                    st.markdown("**🏙️ Zoning Districts**")
+                    st.markdown(
+                        _zrow("Primary District",  _zinfo.get("zoning_dist")) +
+                        _zrow("Secondary District",_zinfo.get("zoning_dist2")) +
+                        _zrow("Tertiary District", _zinfo.get("zoning_dist3")) +
+                        _zrow("Commercial Overlay",_zinfo.get("overlay")) +
+                        _zrow("Overlay 2",         _zinfo.get("overlay2")) +
+                        _zrow("Special District",  _zinfo.get("special_dist")) +
+                        _zrow("Special District 2",_zinfo.get("special_dist2")) +
+                        _zrow("Limited Height",    _zinfo.get("ltd_height")) +
+                        _zrow("Split Zone",        _zinfo.get("split_zone")) +
+                        _zrow("Land Use",          _zinfo.get("land_use")) +
+                        _zrow("Historic District", _zinfo.get("historic_dist")) +
+                        _zrow("Landmark",          _zinfo.get("landmark")),
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("**💰 Assessment & Ownership**")
+                    st.markdown(
+                        _zrow("Owner",           _zinfo.get("owner")) +
+                        _zrow("Tax Class",       _zinfo.get("tax_class")) +
+                        _zrow("Assessed Land",   _zinfo.get("assess_land")) +
+                        _zrow("Assessed Total",  _zinfo.get("assess_total")) +
+                        _zrow("Exemption Total", _zinfo.get("exempt_total")),
+                        unsafe_allow_html=True,
+                    )
+
+                with zc2:
+                    st.markdown("**📐 FAR — Development Rights**")
+                    st.markdown(
+                        _zrow("Residential FAR",  _zinfo.get("far_residential")) +
+                        _zrow("Commercial FAR",   _zinfo.get("far_commercial")) +
+                        _zrow("Facility FAR",     _zinfo.get("far_facility")) +
+                        _zrow("Built FAR",        _zinfo.get("far_built")) +
+                        _zrow("Existing FAR",     _zinfo.get("far_existing")),
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("**📏 Lot Dimensions**")
+                    _la = _zinfo.get("lot_area_sqft", "—")
+                    _lf = _zinfo.get("lot_frontage_ft", "—")
+                    _ld = _zinfo.get("lot_depth_ft", "—")
+                    st.markdown(
+                        _zrow("Lot Area",     f"{_la} SF" if _la != "—" else "—") +
+                        _zrow("Lot Frontage", f"{_lf} ft" if _lf != "—" else "—") +
+                        _zrow("Lot Depth",    f"{_ld} ft" if _ld != "—" else "—") +
+                        _zrow("Lot Type",     _zinfo.get("lot_type")) +
+                        _zrow("Irregular",    _zinfo.get("irr_lot")) +
+                        _zrow("Easements",    _zinfo.get("easements")),
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("**📍 Location**")
+                    st.markdown(
+                        _zrow("Community Board", _zinfo.get("community_board")) +
+                        _zrow("ZIP Code",        _zinfo.get("zip_code")) +
+                        _zrow("NTA",             _zinfo.get("nta")) +
+                        _zrow("PLUTO Address",   _zinfo.get("address_pluto")),
+                        unsafe_allow_html=True,
+                    )
+
+                with zc3:
+                    st.markdown("**🏗️ Building**")
+                    _ba  = _zinfo.get("bldg_area_sqft", "—")
+                    _bfr = _zinfo.get("bldg_frontage_ft", "—")
+                    _bdp = _zinfo.get("bldg_depth_ft", "—")
+                    st.markdown(
+                        _zrow("Building Area",    f"{_ba} SF"  if _ba  != "—" else "—") +
+                        _zrow("Bldg Frontage",    f"{_bfr} ft" if _bfr != "—" else "—") +
+                        _zrow("Bldg Depth",       f"{_bdp} ft" if _bdp != "—" else "—") +
+                        _zrow("Floors",           _zinfo.get("num_floors")) +
+                        _zrow("Num. Buildings",   _zinfo.get("num_buildings")) +
+                        _zrow("Year Built",       _zinfo.get("year_built")) +
+                        _zrow("Year Last Mod.",   _zinfo.get("year_last_mod")) +
+                        _zrow("Building Class",   _zinfo.get("bldg_class")) +
+                        _zrow("Basement",         _zinfo.get("basement")) +
+                        _zrow("Extensions",       _zinfo.get("extensions")) +
+                        _zrow("Condo Number",     _zinfo.get("condo_no")) +
+                        _zrow("Res. Units",       _zinfo.get("units_res")) +
+                        _zrow("Total Units",      _zinfo.get("units_total")),
+                        unsafe_allow_html=True,
+                    )
+
+                # ── Zoning Envelope Rules ────────────────────────────────
+                _primary_zone = _zinfo.get("zoning_dist", "")
+                _zrules = get_zoning_rules(_primary_zone)
+
+                if _zrules:
+                    st.markdown("---")
+                    st.markdown(
+                        "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                        "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                        "📐 Zoning Development Envelope</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(_zrules.get("description", ""))
+
+                    _ec1, _ec2, _ec3 = st.columns(3)
+                    def _erow(lbl, val, width="170px"):
+                        v = str(val) if val not in (None, 0, "0", "") else None
+                        body = f"<b>{v}</b>" if v else "<span style='color:#9CA3AF'>—</span>"
+                        return (
+                            f"<div style='display:flex;gap:8px;margin-bottom:5px'>"
+                            f"<span style='color:#6B7280;min-width:{width}'>{lbl}</span>"
+                            f"{body}</div>"
+                        )
+
+                    with _ec1:
+                        st.markdown("**FAR Limits**")
                         st.markdown(
-                            f"<div style='display:flex;gap:8px;margin-bottom:4px'>"
-                            f"<span style='color:#6B7280;min-width:130px'>{_label}</span>"
-                            f"{'<b>' + str(_val) + '</b>' if not _is_blank else '<span style=color:#9CA3AF>—</span>'}"
-                            f"</div>",
+                            _erow("Base FAR",       _zrules.get("base_far")) +
+                            _erow("Max FAR (bonus)", _zrules.get("max_far")) +
+                            _erow("Residential FAR",_zrules.get("res_far")) +
+                            _erow("Commercial FAR", _zrules.get("comm_far")),
                             unsafe_allow_html=True,
                         )
+                    with _ec2:
+                        st.markdown("**Height & Setbacks**")
+                        _bh = _zrules.get("base_height_ft", 0)
+                        _mh = _zrules.get("max_height_ft", 0)
+                        st.markdown(
+                            _erow("Base Height",    f"{_bh} ft" if _bh else "Sky exposure plane") +
+                            _erow("Max Height",     f"{_mh} ft" if _mh else "No absolute limit") +
+                            _erow("Front Yard",     f"{_zrules.get('front_yard_ft',0)} ft") +
+                            _erow("Rear Yard",      f"{_zrules.get('rear_yard_ft',0)} ft") +
+                            _erow("Side Yard",      f"{_zrules.get('side_yard_ft',0)} ft"),
+                            unsafe_allow_html=True,
+                        )
+                    with _ec3:
+                        st.markdown("**Rules & Controls**")
+                        _lc = _zrules.get("lot_coverage_pct", 0)
+                        st.markdown(
+                            _erow("Max Lot Coverage",  f"{_lc}%" if _lc else "—") +
+                            _erow("Contextual Rules",  "Yes" if _zrules.get("contextual") else "No") +
+                            _erow("Tower Rules",       "Yes" if _zrules.get("tower_rules") else "No") +
+                            _erow("Sky Exp. Plane",    "Yes" if _zrules.get("sky_exp_plane") else "No"),
+                            unsafe_allow_html=True,
+                        )
+
+                    # ── 3D Massing Diagrams ──────────────────────────────
+                    try:
+                        _lf_raw  = _zinfo.get("lot_frontage_ft", "0").replace(",", "")
+                        _ld_raw  = _zinfo.get("lot_depth_ft", "0").replace(",", "")
+                        _la_raw  = _zinfo.get("lot_area_sqft", "0").replace(",", "")
+                        _lf_v    = float(_lf_raw) if _lf_raw not in ("—","") else 0
+                        _ld_v    = float(_ld_raw) if _ld_raw not in ("—","") else 0
+                        _la_v    = float(_la_raw) if _la_raw not in ("—","") else 0
+                        # Fall back to frontage×depth estimate if lot area missing
+                        if _la_v <= 0 and _lf_v > 0 and _ld_v > 0:
+                            _la_v = _lf_v * _ld_v
+                        # Fall back to estimated lot dimensions if individual dims missing
+                        if _lf_v <= 0 and _la_v > 0:
+                            _lf_v = (_la_v ** 0.5) * 0.8
+                        if _ld_v <= 0 and _la_v > 0:
+                            _ld_v = _la_v / max(10, _lf_v)
+                    except (ValueError, AttributeError):
+                        _lf_v = _ld_v = _la_v = 0
+
+                    if _lf_v > 0 and _ld_v > 0 and _la_v > 0:
+                        st.markdown("---")
+                        st.markdown(
+                            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                            "🏗️ Massing Options (Based on Zoning)</div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(
+                            f"Lot: {_lf_v:.0f}′ × {_ld_v:.0f}′ = {_la_v:,.0f} SF  ·  "
+                            f"District: {_primary_zone}  ·  "
+                            f"Max buildable: {_la_v * _zrules['base_far']:,.0f} SF "
+                            f"(FAR {_zrules['base_far']})"
+                        )
+
+                        _mass_key = f"_massing_{_bbl_disp}"
+                        if _mass_key not in st.session_state:
+                            st.session_state[_mass_key] = build_massing_options(
+                                _lf_v, _ld_v, _la_v, _primary_zone, _zrules
+                            )
+                        _options = st.session_state.get(_mass_key, [])
+
+                        if _options:
+                            _mcols = st.columns(len(_options))
+                            for _mc, _opt in zip(_mcols, _options):
+                                with _mc:
+                                    st.markdown(f"**{_opt['name']}**")
+                                    st.plotly_chart(
+                                        _opt["fig"],
+                                        use_container_width=True,
+                                        config={"displayModeBar": False},
+                                        key=f"mass_{_opt['name'].replace(' ','_')}",
+                                    )
+                                    _m1, _m2 = st.columns(2)
+                                    with _m1:
+                                        st.metric("Total Area",   f"{_opt['total_sqft']:,} SF")
+                                        st.metric("Floors",        str(_opt["floors"]))
+                                    with _m2:
+                                        st.metric("Floor Plate",  f"{_opt['typical_floor_sqft']:,} SF")
+                                        st.metric("Height",       f"{_opt['height_ft']} ft")
+                                    st.caption(_opt["description"])
+                    else:
+                        st.info(
+                            "Lot dimensions not available in PLUTO for this property. "
+                            "Massing diagrams require frontage, depth, and lot area data."
+                        )
+                elif _primary_zone:
+                    st.info(
+                        f"Zoning rules for **{_primary_zone}** are not in our reference table. "
+                        f"[View full zoning details on ZOLA]({_zola_url})"
+                    )
 
         # ── Photo Gallery ──────────────────────────────────────────────────
         photos_available = [l for l in listings if l.get("photos")]

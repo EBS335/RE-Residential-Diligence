@@ -62,6 +62,31 @@ BLDG_CLASS_LABELS = {
     "Z": "Miscellaneous",
 }
 
+LOT_TYPE_LABELS = {
+    "1": "Corner",
+    "2": "Through",
+    "3": "Interior",
+    "4": "Other",
+    "5": "Inside (Condo)",
+}
+
+BSMT_CODE_LABELS = {
+    "1": "Below-Grade (Unfinished)",
+    "2": "Below-Grade (Finished)",
+    "3": "Above-Grade (Basement)",
+    "4": "Above-Grade (Finished)",
+    "5": "None",
+}
+
+TAX_CLASS_LABELS = {
+    "1":  "Class 1 — 1-3 Family Residential",
+    "2":  "Class 2 — Multi-Family Residential",
+    "2a": "Class 2A — Walk-Up (4–6 units)",
+    "2b": "Class 2B — Walk-Up (7–10 units)",
+    "2c": "Class 2C — Walk-Up (11+ units)",
+    "4":  "Class 4 — Commercial / Industrial",
+}
+
 
 def _bldg_class_label(code: str) -> str:
     if not code:
@@ -159,8 +184,8 @@ def fetch_zoning_info(address: str, lat: float = None, lon: float = None) -> dic
     """
     Full pipeline: address → BBL (GeoSearch) → lot/zoning data (PLUTO).
 
-    Returns a structured dict:
-      - On success: zoning, lot, building fields + zola_url
+    Returns a comprehensive structured dict with all available PLUTO fields:
+      - On success: zoning, FAR limits, lot, building, assessment, location fields
       - On failure: {"error": "..."} with a human-readable message
     """
     geo = geosearch_bbl(address, lat, lon)
@@ -193,35 +218,107 @@ def fetch_zoning_info(address: str, lat: float = None, lon: float = None) -> dic
         except (TypeError, ValueError):
             return default
 
+    def _dollar(key: str, default: str = "—") -> str:
+        val = pluto.get(key)
+        try:
+            n = float(val)
+            if n == 0:
+                return default
+            return f"${n:,.0f}"
+        except (TypeError, ValueError):
+            return default
+
+    def _far(key: str, default: str = "—") -> str:
+        val = pluto.get(key)
+        try:
+            n = float(val)
+            if n == 0:
+                return default
+            return f"{n:.2f}"
+        except (TypeError, ValueError):
+            return default
+
+    tc = _v("taxclass", "")
+    lt = _v("lottype", "")
+    bc = _v("bsmtcode", "")
+
     return {
-        # Identification
+        # ── Identification ──────────────────────────────────────────────────
         "bbl":              geo["bbl"],
         "matched_label":    geo["label"],
         "zola_url":         bbl_to_zola_url(geo["bbl"]),
-        # Zoning
-        "zoning_dist":      _v("zonedist1"),
-        "overlay":          _v("overlay1"),
-        "special_dist":     _v("spdist1"),
-        # Lot dimensions
-        "lot_area_sqft":    _num("lotarea"),
-        "lot_frontage_ft":  _num("lotfront"),
-        "lot_depth_ft":     _num("lotdepth"),
-        # Building
-        "bldg_area_sqft":   _num("bldgarea"),
-        "num_floors":       _v("numfloors"),
-        "year_built":       _v("yearbuilt"),
-        "bldg_class":       _bldg_class_label(_v("bldgclass", "")),
-        "land_use":         LAND_USE_LABELS.get(lu_code, _v("landuse")),
-        # Units
-        "units_res":        _num("unitsres"),
-        "units_total":      _num("unitstotal"),
-        # FAR (existing development)
-        "far_existing":     _v("far"),
-        # Historic / landmark
-        "historic_dist":    _v("histdist"),
-        "landmark":         _v("landmark"),
-        # Raw BBL parts for display
         "borough_code":     geo["bbl"][0],
         "block":            geo["bbl"][1:6].lstrip("0") or "0",
         "lot":              geo["bbl"][6:].lstrip("0") or "0",
+
+        # ── Primary Zoning ─────────────────────────────────────────────────
+        "zoning_dist":      _v("zonedist1"),
+        "overlay":          _v("overlay1"),
+        "overlay2":         _v("overlay2"),
+        "special_dist":     _v("spdist1"),
+        "special_dist2":    _v("spdist2"),
+        "special_dist3":    _v("spdist3"),
+        "ltd_height":       _v("ltdheight"),
+        "split_zone":       _v("splitzone"),
+
+        # ── Secondary / Tertiary Zoning (split lots) ───────────────────────
+        "zoning_dist2":     _v("zonedist2"),
+        "zoning_dist3":     _v("zonedist3"),
+        "zoning_dist4":     _v("zonedist4"),
+
+        # ── FAR — Permitted Development Rights ────────────────────────────
+        "far_residential":  _far("residfar"),
+        "far_commercial":   _far("commfar"),
+        "far_facility":     _far("facilfar"),
+        "far_built":        _far("builtfar"),
+        "far_existing":     _far("far"),
+
+        # ── Lot Dimensions ─────────────────────────────────────────────────
+        "lot_area_sqft":    _num("lotarea"),
+        "lot_frontage_ft":  _num("lotfront"),
+        "lot_depth_ft":     _num("lotdepth"),
+        "lot_type":         LOT_TYPE_LABELS.get(lt, lt) if lt else "—",
+        "irr_lot":          _v("irrlotcode"),
+        "easements":        _num("easements"),
+
+        # ── Building ───────────────────────────────────────────────────────
+        "bldg_area_sqft":   _num("bldgarea"),
+        "bldg_frontage_ft": _num("bldgfront"),
+        "bldg_depth_ft":    _num("bldgdepth"),
+        "num_floors":       _v("numfloors"),
+        "num_buildings":    _num("numbuildings"),
+        "year_built":       _v("yearbuilt"),
+        "year_last_mod":    _v("yearlastmod"),
+        "bldg_class":       _bldg_class_label(_v("bldgclass", "")),
+        "basement":         BSMT_CODE_LABELS.get(bc, bc) if bc else "—",
+        "extensions":       _v("ext"),
+        "condo_no":         _v("condono"),
+        "land_use":         LAND_USE_LABELS.get(lu_code, _v("landuse")),
+
+        # ── Units ──────────────────────────────────────────────────────────
+        "units_res":        _num("unitsres"),
+        "units_total":      _num("unitstotal"),
+
+        # ── Ownership ──────────────────────────────────────────────────────
+        "owner":            _v("owner"),
+        "tax_class":        TAX_CLASS_LABELS.get(tc.lower(), tc) if tc else "—",
+
+        # ── Assessment Values ──────────────────────────────────────────────
+        "assess_land":      _dollar("assessland"),
+        "assess_total":     _dollar("assesstot"),
+        "exempt_total":     _dollar("exempttot"),
+
+        # ── Location Metadata ──────────────────────────────────────────────
+        "community_board":  _v("cb2010"),
+        "zip_code":         _v("zipcode"),
+        "nta":              _v("nta"),
+        "sanborn":          _v("sanborn"),
+        "address_pluto":    _v("address"),
+
+        # ── Historic & Landmark ────────────────────────────────────────────
+        "historic_dist":    _v("histdist"),
+        "landmark":         _v("landmark"),
+
+        # ── Raw PLUTO row (for debugging / future use) ─────────────────────
+        "_raw": pluto,
     }

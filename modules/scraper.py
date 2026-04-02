@@ -142,6 +142,11 @@ def _is_blocked(resp) -> bool:
         "cf-browser-verification", "just a moment", "enable javascript",
         "captcha", "ddos-guard", "access denied", "verifying you are human",
         "checking your browser", "ray id",
+        # Modern Cloudflare Turnstile / challenge variants
+        "turnstile", "cf_chl_opt", "challenge-platform",
+        "robot or human", "please wait while",
+        "security check", "cf-challenge",
+        "i am not a robot", "are you a robot",
     ))
 
 
@@ -373,13 +378,14 @@ def scrape_streeteasy(
     session = _make_session()
     session.headers.update({"Referer": "https://streeteasy.com/"})
 
-    # Warm-up: visit homepage to get session cookies (reduces bot score)
-    try:
-        _proxy_get("https://streeteasy.com", session, proxy_key=proxy_key,
-                   timeout=10, allow_redirects=True)
-        time.sleep(random.uniform(1.0, 2.5))
-    except Exception:
-        pass
+    # Warm-up: build a realistic browsing session before scraping
+    for _wu_url in ("https://streeteasy.com", "https://streeteasy.com/for-rent/nyc"):
+        try:
+            _proxy_get(_wu_url, session, proxy_key=proxy_key,
+                       timeout=10, allow_redirects=True)
+            time.sleep(random.uniform(1.0, 2.0))
+        except Exception:
+            break
 
     listings: list = []
 
@@ -459,6 +465,12 @@ def scrape_streeteasy(
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
+            if not listings:
+                try:
+                    from modules.playwright_scraper import pw_streeteasy
+                    return pw_streeteasy(lat, lon, radius_miles, bed_filter)
+                except Exception:
+                    pass
             return listings, "error" if not listings else "partial"
 
     return listings, ("live" if listings else "no_results")
@@ -668,6 +680,12 @@ def scrape_apartments_com(
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
         except Exception:
+            if not listings:
+                try:
+                    from modules.playwright_scraper import pw_apartments_com
+                    return pw_apartments_com(lat, lon, radius_miles, bed_filter)
+                except Exception:
+                    pass
             return listings, "error" if not listings else "partial"
 
     return listings, ("live" if listings else "no_results")
