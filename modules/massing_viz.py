@@ -60,7 +60,7 @@ _CLR_HIGH_3  = "rgba(185,28,28,0.45)"
 
 def _box_mesh(x0: float, y0: float, z0: float,
               x1: float, y1: float, z1: float,
-              color: str = _CLR_MASS_1,
+              color: str = _CLR_LOW_1,
               name: str = "",
               show_legend: bool = True) -> go.Mesh3d:
     """

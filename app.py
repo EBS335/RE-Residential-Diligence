@@ -4,6 +4,7 @@ Stages 1–6: Input collection + geocoding + NYC context + data collection + ana
 """
 
 import os
+import re
 import time
 import requests
 import streamlit as st
@@ -30,6 +31,16 @@ from modules.unit_mix import (
 from modules.risk_matrix import MACRO_RISKS, get_micro_risks
 
 load_dotenv()
+
+
+# ── Lot adjacency helper ──────────────────────────────────────────────────────
+
+def _is_adjacent(bbl_a: str, bbl_b: str) -> bool:
+    """Return True if two BBLs are on the same block (same borough + block digits)."""
+    a = re.sub(r"\D", "", str(bbl_a))
+    b = re.sub(r"\D", "", str(bbl_b))
+    return len(a) == 10 and len(b) == 10 and a[:6] == b[:6]
+
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -1704,6 +1715,89 @@ if 'geo' in st.session_state:
                     unsafe_allow_html=True,
                 )
 
+                # ── Adjacent Lot Aggregation ──────────────────────────────
+                _subj_bbl = _zinfo.get("bbl", "")
+                with st.expander("🏘️ Add Adjacent Lots", expanded=False):
+                    st.caption(
+                        "Enter addresses of neighboring lots on the same block. "
+                        "Adjacent lots will be merged into a combined parcel for massing analysis."
+                    )
+                    # Input rows for up to 3 additional lots
+                    _adj_addrs = st.session_state.get("_adj_lots_inputs", ["", "", ""])
+                    _new_addrs = []
+                    for _ai in range(3):
+                        _ac1, _ac2 = st.columns([4, 1])
+                        with _ac1:
+                            _ainput = st.text_input(
+                                f"Adjacent Lot {_ai + 1}",
+                                value=_adj_addrs[_ai] if _ai < len(_adj_addrs) else "",
+                                key=f"_adj_lot_input_{_ai}",
+                                placeholder="e.g. 123 Main St, Brooklyn, NY",
+                                label_visibility="collapsed",
+                            )
+                        with _ac2:
+                            _alookup = st.button("Look Up", key=f"_adj_lot_btn_{_ai}")
+                        _new_addrs.append(_ainput)
+
+                        if _alookup and _ainput.strip():
+                            _adj_cache_key = f"_adj_lot_{_ainput.strip().lower()}"
+                            if _adj_cache_key not in st.session_state:
+                                with st.spinner(f"Looking up lot {_ai + 1}…"):
+                                    st.session_state[_adj_cache_key] = fetch_zoning_info(
+                                        _ainput.strip(), lat=lat, lon=lon
+                                    )
+
+                        # Show result if cached
+                        _adj_ck = f"_adj_lot_{_ainput.strip().lower()}" if _ainput.strip() else None
+                        if _adj_ck and _adj_ck in st.session_state:
+                            _adj_res = st.session_state[_adj_ck]
+                            if _adj_res and "error" not in _adj_res:
+                                _adj_bbl = _adj_res.get("bbl", "")
+                                _adj_lf  = _adj_res.get("lot_frontage_ft", "—")
+                                _adj_ld  = _adj_res.get("lot_depth_ft", "—")
+                                _adj_la  = _adj_res.get("lot_area_sqft", "—")
+                                _adj_ok  = _is_adjacent(_subj_bbl, _adj_bbl)
+                                _status  = "✅ Adjacent (same block)" if _adj_ok else "⚠️ Different block — won't be merged"
+                                st.markdown(
+                                    f"<div style='font-size:0.78rem;padding:4px 8px;"
+                                    f"background:#F9FAFB;border-radius:6px;border:1px solid #E5E7EB;margin-bottom:4px'>"
+                                    f"BBL: <b>{_adj_bbl}</b> &nbsp;·&nbsp; "
+                                    f"{_adj_lf} ft × {_adj_ld} ft = {_adj_la} SF &nbsp;·&nbsp; {_status}"
+                                    f"</div>",
+                                    unsafe_allow_html=True,
+                                )
+                            elif _adj_res and "error" in _adj_res:
+                                st.warning(f"Lot {_ai + 1}: {_adj_res['error']}")
+                            else:
+                                st.warning(f"Lot {_ai + 1}: Not found.")
+
+                    st.session_state["_adj_lots_inputs"] = _new_addrs
+
+                    # Collect all valid adjacent lots
+                    _valid_adj = []
+                    for _ainput in _new_addrs:
+                        if not _ainput.strip():
+                            continue
+                        _adj_ck = f"_adj_lot_{_ainput.strip().lower()}"
+                        _adj_res = st.session_state.get(_adj_ck)
+                        if _adj_res and "error" not in _adj_res:
+                            _adj_bbl = _adj_res.get("bbl", "")
+                            if _is_adjacent(_subj_bbl, _adj_bbl):
+                                _valid_adj.append(_adj_res)
+
+                    if _valid_adj:
+                        st.success(f"{len(_valid_adj)} adjacent lot(s) found — will be merged with subject parcel.")
+                        st.session_state["_adj_lots_use_combined"] = st.checkbox(
+                            "Use combined lot for massing analysis",
+                            value=st.session_state.get("_adj_lots_use_combined", True),
+                            key="_adj_lots_use_combined_cb",
+                        )
+                        st.session_state["_adj_lots_valid"] = _valid_adj
+                    else:
+                        st.session_state["_adj_lots_valid"] = []
+                        if any(a.strip() for a in _new_addrs):
+                            st.info("No adjacent lots found on the same block yet. Use 'Look Up' for each address.")
+
                 def _zrow(label, val, width="160px"):
                     v = str(val) if val and str(val) != "—" else None
                     body = f"<b>{v}</b>" if v else "<span style='color:#9CA3AF'>—</span>"
@@ -1853,21 +1947,42 @@ if 'geo' in st.session_state:
                         )
 
                     # ── 10 Massing Scenario Tiles ────────────────────────
-                    try:
-                        _lf_raw  = str(_zinfo.get("lot_frontage_ft", "0")).replace(",", "")
-                        _ld_raw  = str(_zinfo.get("lot_depth_ft", "0")).replace(",", "")
-                        _la_raw  = str(_zinfo.get("lot_area_sqft", "0")).replace(",", "")
-                        _lf_v    = float(_lf_raw) if _lf_raw not in ("—","") else 0
-                        _ld_v    = float(_ld_raw) if _ld_raw not in ("—","") else 0
-                        _la_v    = float(_la_raw) if _la_raw not in ("—","") else 0
-                        if _la_v <= 0 and _lf_v > 0 and _ld_v > 0:
-                            _la_v = _lf_v * _ld_v
-                        if _lf_v <= 0 and _la_v > 0:
-                            _lf_v = (_la_v ** 0.5) * 0.8
-                        if _ld_v <= 0 and _la_v > 0:
-                            _ld_v = _la_v / max(10, _lf_v)
-                    except (ValueError, AttributeError):
-                        _lf_v = _ld_v = _la_v = 0
+
+                    # Parse base lot dimensions from subject property
+                    def _parse_dim(val):
+                        try:
+                            s = str(val).replace(",", "")
+                            return float(s) if s not in ("—", "", "None") else 0.0
+                        except (ValueError, TypeError):
+                            return 0.0
+
+                    _lf_v = _parse_dim(_zinfo.get("lot_frontage_ft", 0))
+                    _ld_v = _parse_dim(_zinfo.get("lot_depth_ft", 0))
+                    _la_v = _parse_dim(_zinfo.get("lot_area_sqft", 0))
+                    if _la_v <= 0 and _lf_v > 0 and _ld_v > 0:
+                        _la_v = _lf_v * _ld_v
+                    if _lf_v <= 0 and _la_v > 0:
+                        _lf_v = (_la_v ** 0.5) * 0.8
+                    if _ld_v <= 0 and _la_v > 0:
+                        _ld_v = _la_v / max(10, _lf_v)
+
+                    # Apply adjacent lot aggregation if enabled
+                    _valid_adj = st.session_state.get("_adj_lots_valid", [])
+                    _use_combined = (
+                        _valid_adj and
+                        st.session_state.get("_adj_lots_use_combined", True)
+                    )
+                    _using_combined = False
+                    if _use_combined:
+                        _all_lots = [_zinfo] + _valid_adj
+                        _comb_lf = sum(_parse_dim(l.get("lot_frontage_ft", 0)) for l in _all_lots)
+                        _comb_ld = max(_parse_dim(l.get("lot_depth_ft", 0)) for l in _all_lots)
+                        _comb_la = sum(_parse_dim(l.get("lot_area_sqft", 0)) for l in _all_lots)
+                        if _comb_lf > 0 and _comb_ld > 0 and _comb_la > 0:
+                            _lf_v = _comb_lf
+                            _ld_v = _comb_ld
+                            _la_v = _comb_la
+                            _using_combined = True
 
                     if _lf_v > 0 and _ld_v > 0 and _la_v > 0:
                         st.markdown("---")
@@ -1877,15 +1992,22 @@ if 'geo' in st.session_state:
                         )
 
                         _far_used = _zrules.get("res_far") or _zrules.get("base_far", 0)
+                        _lot_label = (
+                            f"Combined Lot ({1 + len(_valid_adj)} parcels): "
+                            if _using_combined else "Lot: "
+                        )
                         st.caption(
-                            f"Lot: {_lf_v:.0f}′ × {_ld_v:.0f}′ = {_la_v:,.0f} SF  ·  "
+                            f"{_lot_label}{_lf_v:.0f}′ × {_ld_v:.0f}′ = {_la_v:,.0f} SF  ·  "
                             f"District: {_primary_zone}  ·  "
                             f"Base FAR: {_zrules.get('base_far',0)}  ·  "
                             f"Max buildable: {_la_v * _far_used:,.0f} SF"
                         )
 
-                        # Build / retrieve massing options
-                        _mass_key = f"_massing_{_bbl_disp}"
+                        # Build / retrieve massing options (separate cache key for combined lots)
+                        _mass_key = (
+                            f"_massing_{_bbl_disp}_combined_{len(_valid_adj)}"
+                            if _using_combined else f"_massing_{_bbl_disp}"
+                        )
                         if _mass_key not in st.session_state:
                             st.session_state[_mass_key] = build_massing_options(
                                 _lf_v, _ld_v, _la_v, _primary_zone, _zrules
