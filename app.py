@@ -22,6 +22,12 @@ from modules.visualizer import (
 from modules.zola_fetcher import fetch_zoning_info
 from modules.zoning_rules import get_zoning_rules
 from modules.massing_viz import build_massing_options
+from modules.comps_research import search_competing_devs
+from modules.unit_mix import (
+    get_avg_sf, optimize_unit_mix, compute_revenue,
+    avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf,
+)
+from modules.risk_matrix import MACRO_RISKS, get_micro_risks
 
 load_dotenv()
 
@@ -193,7 +199,7 @@ html, body, [data-testid="stAppViewContainer"] {
 .pill-error   { background:#FEE2E2; color:#991B1B; padding:4px 12px; border-radius:20px;
                 font-size:0.74rem; font-weight:700; display:inline-block; }
 
-/* ── Photo gallery ── */
+/* ── Photo gallery (legacy grid) ── */
 .photo-card {
     background: white;
     border: 1px solid #E5E7EB;
@@ -214,6 +220,85 @@ html, body, [data-testid="stAppViewContainer"] {
     line-height: 1.35;
 }
 .photo-caption b { color: #111827; }
+
+/* ── Photo carousel (horizontal scroll) ── */
+.gallery-scroll-row {
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
+    overflow-x: auto;
+    padding: 4px 0 12px 0;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: #D1D5DB transparent;
+}
+.gallery-scroll-row::-webkit-scrollbar { height: 5px; }
+.gallery-scroll-row::-webkit-scrollbar-track { background: transparent; }
+.gallery-scroll-row::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 4px; }
+.gallery-card {
+    flex: 0 0 190px;
+    min-width: 190px;
+    background: white;
+    border: 1px solid #E5E7EB;
+    border-radius: 10px;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    transition: box-shadow 0.15s, transform 0.15s;
+    display: block;
+}
+.gallery-card:hover {
+    box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+    transform: translateY(-2px);
+}
+.gallery-card img {
+    width: 100%;
+    height: 130px;
+    object-fit: cover;
+    display: block;
+}
+.gallery-card .gc-caption {
+    padding: 8px 10px 10px;
+    font-size: 0.76rem;
+    color: #374151;
+    line-height: 1.35;
+}
+.gallery-card .gc-caption b { color: #111827; font-size: 0.82rem; }
+.gallery-card .gc-badge {
+    display: inline-block;
+    background: #EFF6FF;
+    color: #1D4ED8;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    margin-top: 4px;
+}
+
+/* ── Risk badges ── */
+.risk-low  { background:#DCFCE7; color:#15803D; padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; }
+.risk-med  { background:#FEF9C3; color:#854D0E; padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; }
+.risk-high { background:#FEE2E2; color:#991B1B; padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; }
+
+/* ── Massing tile ── */
+.massing-tile {
+    background: white;
+    border: 1px solid #E5E7EB;
+    border-radius: 12px;
+    padding: 12px;
+    margin-bottom: 10px;
+}
+
+/* ── Risk matrix table ── */
+.risk-table { width:100%; border-collapse:collapse; font-size:0.80rem; }
+.risk-table th { background:#F9FAFB; color:#6B7280; font-weight:700; padding:8px 10px;
+                 text-align:left; border-bottom:2px solid #E5E7EB; }
+.risk-table td { padding:8px 10px; border-bottom:1px solid #F3F4F6; color:#111827; vertical-align:top; }
+.risk-table tr:last-child td { border-bottom:none; }
+.prob-low  { color:#15803D; font-weight:700; }
+.prob-med  { color:#B45309; font-weight:700; }
+.prob-high { color:#B91C1C; font-weight:700; }
 
 /* ── Borough comparison table ── */
 .bcomp-table {
@@ -1408,6 +1493,134 @@ if 'geo' in st.session_state:
         with st.expander(f"📋 All Listings ({len(display_listings)} total)", expanded=False):
             st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
 
+        # ── Photo Gallery (horizontal scroll carousel) ─────────────────────
+        _photos_avail = [l for l in listings if l.get("photos")]
+        if _photos_avail:
+            st.markdown("---")
+            st.markdown(
+                "<div class='section-label'>🖼️ Photo Gallery</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"{len(_photos_avail)} listings have photos · "
+                "Scroll right to see more · Click any card to view listing"
+            )
+
+            def _gallery_card(listing: dict) -> str:
+                photo   = listing["photos"][0] if listing["photos"] else ""
+                rent    = listing.get("rent", 0)
+                utype   = listing.get("unit_type", "")
+                addr    = listing.get("address", "")[:34]
+                src     = listing.get("source", "")
+                url     = listing.get("url", "") or "#"
+                sqft    = listing.get("sqft")
+                sqft_s  = f" · {sqft:,.0f} SF" if sqft else ""
+                return (
+                    f'<a href="{url}" target="_blank" class="gallery-card">'
+                    f'<img src="{photo}" alt="{addr}" loading="lazy" '
+                    f'onerror="this.style.display=\'none\'">'
+                    f'<div class="gc-caption">'
+                    f'<b>${rent:,.0f}/mo</b> · {utype}{sqft_s}<br>'
+                    f'<span style="color:#6B7280">{addr}</span><br>'
+                    f'<span class="gc-badge">{src}</span>'
+                    f'</div></a>'
+                )
+
+            # Row 1 — sorted by rent ascending (most affordable first)
+            _row1 = sorted(_photos_avail, key=lambda x: x.get("rent", 0))[:12]
+            # Row 2 — sorted by rent descending (most expensive)
+            _row2 = sorted(_photos_avail, key=lambda x: x.get("rent", 0), reverse=True)[:12]
+
+            _row1_html = "".join(_gallery_card(l) for l in _row1)
+            _row2_html = "".join(_gallery_card(l) for l in _row2)
+
+            st.markdown(
+                f"<div style='margin-bottom:4px;font-size:0.72rem;color:#6B7280;font-weight:600'>"
+                f"MOST AFFORDABLE</div>"
+                f"<div class='gallery-scroll-row'>{_row1_html}</div>"
+                f"<div style='margin-bottom:4px;margin-top:6px;font-size:0.72rem;color:#6B7280;font-weight:600'>"
+                f"PREMIUM LISTINGS</div>"
+                f"<div class='gallery-scroll-row'>{_row2_html}</div>",
+                unsafe_allow_html=True,
+            )
+
+        # ── Competing / Comparable Developments ────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            "<div class='section-label'>🏗️ Competing & Comparable Developments</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"Recent or under-construction residential developments in {neighborhood}, "
+            "sourced from public news and real estate databases."
+        )
+
+        _comps_key = f"_comps_{neighborhood.lower()}_{zip_code}"
+        if _comps_key not in st.session_state:
+            with st.spinner(f"Researching competing developments in {neighborhood}…"):
+                st.session_state[_comps_key] = search_competing_devs(
+                    neighborhood, borough, lat, lon, zip_code
+                )
+        _comp_devs = st.session_state.get(_comps_key, [])
+
+        if _comp_devs:
+            # Map
+            _comp_map = folium.Map(
+                location=[lat, lon],
+                zoom_start=14,
+                tiles="CartoDB positron",
+            )
+            folium.Marker(
+                [lat, lon],
+                tooltip="Subject Property",
+                icon=folium.Icon(color="red", icon="home", prefix="fa"),
+            ).add_to(_comp_map)
+            for _cd in _comp_devs:
+                if _cd.get("lat") and _cd.get("lon"):
+                    _popup_html = (
+                        f"<b>{_cd['name']}</b><br>"
+                        f"{_cd.get('address','')}<br>"
+                        + (f"~{_cd['units']} units<br>" if _cd.get("units") else "")
+                        + (f"Est. ${_cd['est_rent_min']:,}–${_cd['est_rent_max']:,}/mo<br>"
+                           if _cd.get("est_rent_min") else "")
+                        + (f"<a href='{_cd['source_url']}' target='_blank'>Source →</a>"
+                           if _cd.get("source_url") else "")
+                    )
+                    folium.Marker(
+                        [_cd["lat"], _cd["lon"]],
+                        tooltip=_cd["name"][:40],
+                        popup=folium.Popup(_popup_html, max_width=260),
+                        icon=folium.Icon(color="purple", icon="building", prefix="fa"),
+                    ).add_to(_comp_map)
+
+            _cm1, _cm2 = st.columns([3, 2])
+            with _cm1:
+                st_folium(_comp_map, width=None, height=340,
+                          returned_objects=[], key="comps_map")
+            with _cm2:
+                _cd_rows = []
+                for _cd in _comp_devs:
+                    _rent_s = "—"
+                    if _cd.get("est_rent_min") and _cd.get("est_rent_max"):
+                        _rent_s = f"${_cd['est_rent_min']:,}–${_cd['est_rent_max']:,}"
+                    elif _cd.get("est_rent_min"):
+                        _rent_s = f"${_cd['est_rent_min']:,}+"
+                    _cd_rows.append({
+                        "Development": _cd.get("name", "—")[:35],
+                        "Address":     _cd.get("address", "—")[:30],
+                        "Units":       _cd.get("units", "—") or "—",
+                        "Est. Rent":   _rent_s,
+                    })
+                if _cd_rows:
+                    _cd_df = pd.DataFrame(_cd_rows)
+                    st.dataframe(_cd_df, use_container_width=True, hide_index=True,
+                                 height=min(340, 40 + 35 * len(_cd_rows)))
+        else:
+            st.info(
+                "No competing development data found for this neighborhood. "
+                "This may be due to limited search results or a network issue."
+            )
+
         # ── NYC Zoning Information (ZOLA / PLUTO) ─────────────────────────
         st.markdown("---")
         st.markdown(
@@ -1639,18 +1852,16 @@ if 'geo' in st.session_state:
                             unsafe_allow_html=True,
                         )
 
-                    # ── 3D Massing Diagrams ──────────────────────────────
+                    # ── 10 Massing Scenario Tiles ────────────────────────
                     try:
-                        _lf_raw  = _zinfo.get("lot_frontage_ft", "0").replace(",", "")
-                        _ld_raw  = _zinfo.get("lot_depth_ft", "0").replace(",", "")
-                        _la_raw  = _zinfo.get("lot_area_sqft", "0").replace(",", "")
+                        _lf_raw  = str(_zinfo.get("lot_frontage_ft", "0")).replace(",", "")
+                        _ld_raw  = str(_zinfo.get("lot_depth_ft", "0")).replace(",", "")
+                        _la_raw  = str(_zinfo.get("lot_area_sqft", "0")).replace(",", "")
                         _lf_v    = float(_lf_raw) if _lf_raw not in ("—","") else 0
                         _ld_v    = float(_ld_raw) if _ld_raw not in ("—","") else 0
                         _la_v    = float(_la_raw) if _la_raw not in ("—","") else 0
-                        # Fall back to frontage×depth estimate if lot area missing
                         if _la_v <= 0 and _lf_v > 0 and _ld_v > 0:
                             _la_v = _lf_v * _ld_v
-                        # Fall back to estimated lot dimensions if individual dims missing
                         if _lf_v <= 0 and _la_v > 0:
                             _lf_v = (_la_v ** 0.5) * 0.8
                         if _ld_v <= 0 and _la_v > 0:
@@ -1661,18 +1872,19 @@ if 'geo' in st.session_state:
                     if _lf_v > 0 and _ld_v > 0 and _la_v > 0:
                         st.markdown("---")
                         st.markdown(
-                            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
-                            "🏗️ Massing Options (Based on Zoning)</div>",
+                            "<div class='section-label'>🏗️ Design & Massing Scenarios</div>",
                             unsafe_allow_html=True,
                         )
+
+                        _far_used = _zrules.get("res_far") or _zrules.get("base_far", 0)
                         st.caption(
                             f"Lot: {_lf_v:.0f}′ × {_ld_v:.0f}′ = {_la_v:,.0f} SF  ·  "
                             f"District: {_primary_zone}  ·  "
-                            f"Max buildable: {_la_v * _zrules['base_far']:,.0f} SF "
-                            f"(FAR {_zrules['base_far']})"
+                            f"Base FAR: {_zrules.get('base_far',0)}  ·  "
+                            f"Max buildable: {_la_v * _far_used:,.0f} SF"
                         )
 
+                        # Build / retrieve massing options
                         _mass_key = f"_massing_{_bbl_disp}"
                         if _mass_key not in st.session_state:
                             st.session_state[_mass_key] = build_massing_options(
@@ -1680,25 +1892,182 @@ if 'geo' in st.session_state:
                             )
                         _options = st.session_state.get(_mass_key, [])
 
+                        # Compute avg rents from comps data for revenue projections
+                        _avg_rents = avg_rents_from_listings(listings)
+
                         if _options:
-                            _mcols = st.columns(len(_options))
-                            for _mc, _opt in zip(_mcols, _options):
-                                with _mc:
-                                    st.markdown(f"**{_opt['name']}**")
-                                    st.plotly_chart(
-                                        _opt["fig"],
-                                        use_container_width=True,
-                                        config={"displayModeBar": False},
-                                        key=f"mass_{_opt['name'].replace(' ','_')}",
-                                    )
-                                    _m1, _m2 = st.columns(2)
-                                    with _m1:
-                                        st.metric("Total Area",   f"{_opt['total_sqft']:,} SF")
-                                        st.metric("Floors",        str(_opt["floors"]))
-                                    with _m2:
-                                        st.metric("Floor Plate",  f"{_opt['typical_floor_sqft']:,} SF")
-                                        st.metric("Height",       f"{_opt['height_ft']} ft")
-                                    st.caption(_opt["description"])
+                            # ── Risk badge helper ────────────────────────
+                            def _risk_badge(rl: str) -> str:
+                                if rl == "LOW":
+                                    return "<span class='risk-low'>🟢 Low Risk</span>"
+                                elif rl == "HIGH":
+                                    return "<span class='risk-high'>🔴 High Risk</span>"
+                                return "<span class='risk-med'>🟡 Med Risk</span>"
+
+                            # ── Tile renderer ────────────────────────────
+                            def _render_tile(opt: dict, key_suffix: str):
+                                rl = opt.get("risk_level", "MED")
+                                st.markdown(
+                                    f"<div style='background:white;border:1px solid #E5E7EB;"
+                                    f"border-radius:12px;padding:10px 10px 6px'>"
+                                    f"{_risk_badge(rl)}"
+                                    f"<div style='font-weight:700;font-size:0.85rem;margin:6px 0 2px'>"
+                                    f"{opt['name']}</div></div>",
+                                    unsafe_allow_html=True,
+                                )
+                                st.plotly_chart(
+                                    opt["fig"],
+                                    use_container_width=True,
+                                    config={"displayModeBar": False},
+                                    key=f"mass_{key_suffix}",
+                                )
+                                _ta1, _ta2 = st.columns(2)
+                                with _ta1:
+                                    st.metric("Gross Area",     f"{opt.get('total_sqft',0):,} SF")
+                                    st.metric("Net Rentable",   f"{opt.get('net_rentable_sqft',0):,} SF")
+                                with _ta2:
+                                    st.metric("Height",         f"{opt.get('height_ft',0)} ft")
+                                    st.metric("Floors",         str(opt.get("floors", 0)))
+
+                                # Strategy + description
+                                st.markdown(
+                                    f"<div style='font-size:0.75rem;color:#374151;margin:6px 0 2px'>"
+                                    f"<b>Strategy:</b> {opt.get('strategy','')}</div>"
+                                    f"<div style='font-size:0.73rem;color:#6B7280'>{opt.get('description','')}</div>",
+                                    unsafe_allow_html=True,
+                                )
+
+                                # Unit mix + financials expander
+                                with st.expander("📊 Unit Mix & Financials", expanded=False):
+                                    _nrsf = opt.get("net_rentable_sqft", 0)
+                                    _is_c = opt.get("is_conversion", False)
+                                    if _nrsf > 0:
+                                        _umix = optimize_unit_mix(_nrsf, neighborhood)
+                                        _rev  = compute_revenue(
+                                            _umix, _avg_rents,
+                                            risk_level=rl, borough=borough
+                                        )
+                                        # Avg SF table
+                                        _avg_sf_tbl = get_avg_sf(neighborhood)
+                                        st.markdown(
+                                            f"**Unit Mix** "
+                                            f"({'Conversion' if _is_c else 'New Build'}, "
+                                            f"{int(opt.get('loss_factor',0.15)*100)}% loss factor)"
+                                        )
+                                        _mix_rows = []
+                                        for _ut in ["Studio","1 Bed","2 Bed","3 Bed","4+ Bed"]:
+                                            if _ut in _umix and _umix[_ut]["count"] > 0:
+                                                _ui = _umix[_ut]
+                                                _mix_rows.append({
+                                                    "Unit": _ut,
+                                                    "Count": _ui["count"],
+                                                    "Avg SF": f"{_ui['avg_sf']:,.0f}",
+                                                    "% of Units": f"{_ui['pct_units']*100:.0f}%",
+                                                    "Monthly Rent": f"${_avg_rents.get(_ut, 0):,.0f}" if _avg_rents.get(_ut) else "—",
+                                                })
+                                        if _mix_rows:
+                                            st.dataframe(
+                                                pd.DataFrame(_mix_rows),
+                                                use_container_width=True,
+                                                hide_index=True,
+                                            )
+                                        st.markdown("**Revenue Projection**")
+                                        _fin_rows = [
+                                            {"Metric": "Gross Annual Rent",  "Value": f"${_rev['gross_annual_rent']:,.0f}"},
+                                            {"Metric": f"EGI ({int(_rev['occupancy_used']*100)}% occ.)", "Value": f"${_rev['egi']:,.0f}"},
+                                            {"Metric": "Operating Expenses (35%)", "Value": f"${_rev['opex']:,.0f}"},
+                                            {"Metric": "Net Operating Income",     "Value": f"${_rev['noi']:,.0f}"},
+                                            {"Metric": f"Est. Cap Value ({_rev['cap_rate_used']*100:.2f}% cap)", "Value": f"${_rev['est_cap_value']:,.0f}"},
+                                        ]
+                                        st.dataframe(
+                                            pd.DataFrame(_fin_rows),
+                                            use_container_width=True,
+                                            hide_index=True,
+                                        )
+                                        # Avg SF assumptions note
+                                        _hood_sf = get_avg_sf(neighborhood)
+                                        st.caption(
+                                            f"Avg SF assumptions for {neighborhood}: "
+                                            + " | ".join(f"{k}: {v:,.0f}" for k,v in _hood_sf.items())
+                                        )
+
+                            # ── Display tiles by risk tier ───────────────
+                            for _tier, _tier_label, _tier_color in [
+                                ("LOW",  "🟢 Low Risk Scenarios",    "#DCFCE7"),
+                                ("MED",  "🟡 Medium Risk Scenarios", "#FEF9C3"),
+                                ("HIGH", "🔴 High Risk Scenarios",   "#FEE2E2"),
+                            ]:
+                                _tier_opts = [o for o in _options if o.get("risk_level") == _tier]
+                                if not _tier_opts:
+                                    continue
+                                st.markdown(
+                                    f"<div style='background:{_tier_color};border-radius:8px;"
+                                    f"padding:6px 14px;margin:16px 0 8px;font-weight:700;font-size:0.85rem'>"
+                                    f"{_tier_label}</div>",
+                                    unsafe_allow_html=True,
+                                )
+                                _tcols = st.columns(len(_tier_opts))
+                                for _tc, _topt in zip(_tcols, _tier_opts):
+                                    with _tc:
+                                        _render_tile(
+                                            _topt,
+                                            f"{_topt['name'].replace(' ','_').replace('/','_')}_{_bbl_disp}",
+                                        )
+
+                            # ── Side-by-side comparison panel ───────────
+                            st.markdown("---")
+                            st.markdown(
+                                "<div class='section-label'>📐 Side-by-Side Comparison</div>",
+                                unsafe_allow_html=True,
+                            )
+                            _all_names = [o["name"] for o in _options]
+                            _selected_names = st.multiselect(
+                                "Select 2–3 scenarios to compare",
+                                _all_names,
+                                max_selections=3,
+                                key=f"massing_compare_{_bbl_disp}",
+                                help="Pick any 2 or 3 scenarios to view side by side with full metrics.",
+                            )
+                            if len(_selected_names) >= 2:
+                                _sel_opts = [o for o in _options if o["name"] in _selected_names]
+                                _cmp_cols = st.columns(len(_sel_opts))
+                                for _cc, _so in zip(_cmp_cols, _sel_opts):
+                                    with _cc:
+                                        st.markdown(
+                                            f"{_risk_badge(_so.get('risk_level','MED'))} "
+                                            f"**{_so['name']}**",
+                                            unsafe_allow_html=True,
+                                        )
+                                        st.plotly_chart(
+                                            _so["fig"],
+                                            use_container_width=True,
+                                            config={"displayModeBar": False},
+                                            key=f"cmp_{_so['name'].replace(' ','_')}_{_bbl_disp}",
+                                        )
+                                        _cmp_data = [
+                                            ("Gross Area",    f"{_so.get('total_sqft',0):,} SF"),
+                                            ("Net Rentable",  f"{_so.get('net_rentable_sqft',0):,} SF"),
+                                            ("Height",        f"{_so.get('height_ft',0)} ft"),
+                                            ("Floors",        str(_so.get("floors",0))),
+                                            ("Floor Plate",   f"{_so.get('typical_floor_sqft',0):,} SF"),
+                                            ("Loss Factor",   f"{int(_so.get('loss_factor',0.15)*100)}%"),
+                                        ]
+                                        for _ck, _cv in _cmp_data:
+                                            st.markdown(
+                                                f"<div style='display:flex;justify-content:space-between;"
+                                                f"border-bottom:1px solid #F3F4F6;padding:4px 0;"
+                                                f"font-size:0.79rem'>"
+                                                f"<span style='color:#6B7280'>{_ck}</span>"
+                                                f"<b>{_cv}</b></div>",
+                                                unsafe_allow_html=True,
+                                            )
+                                        st.markdown(
+                                            f"<div style='margin-top:8px;font-size:0.73rem;color:#374151'>"
+                                            f"{_so.get('strategy','')}</div>",
+                                            unsafe_allow_html=True,
+                                        )
+                            elif _selected_names:
+                                st.caption("Select at least 2 scenarios to enable comparison.")
                     else:
                         st.info(
                             "Lot dimensions not available in PLUTO for this property. "
@@ -1710,46 +2079,61 @@ if 'geo' in st.session_state:
                         f"[View full zoning details on ZOLA]({_zola_url})"
                     )
 
-        # ── Photo Gallery ──────────────────────────────────────────────────
-        photos_available = [l for l in listings if l.get("photos")]
-        if photos_available:
-            st.markdown("---")
+        # ── Macro + Micro Risk Matrix ──────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            "<div class='section-label'>⚠️ Investment Risk Analysis</div>",
+            unsafe_allow_html=True,
+        )
+
+        _risk_c1, _risk_c2 = st.columns([3, 2])
+
+        with _risk_c1:
+            st.markdown("**Macro Risks — NYC Market**")
+
+            def _prob_class(p: str) -> str:
+                pl = p.lower()
+                if "high" in pl: return "prob-high"
+                if "med"  in pl: return "prob-med"
+                return "prob-low"
+
+            _macro_rows = "".join(
+                f"<tr>"
+                f"<td><b>{r['category']}</b></td>"
+                f"<td class='{_prob_class(r['probability'])}'>{r['probability']}</td>"
+                f"<td class='{_prob_class(r['impact'])}'>{r['impact']}</td>"
+                f"<td style='color:#374151'>{r['description'][:120]}…</td>"
+                f"<td style='color:#6B7280;font-size:0.75rem'>{r['mitigation'][:100]}…</td>"
+                f"</tr>"
+                for r in MACRO_RISKS
+            )
             st.markdown(
-                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>🖼️ Photo Gallery</div>",
+                f"<table class='risk-table'>"
+                f"<thead><tr><th>Risk Factor</th><th>Prob.</th><th>Impact</th>"
+                f"<th>Description</th><th>Mitigation</th></tr></thead>"
+                f"<tbody>{_macro_rows}</tbody></table>",
                 unsafe_allow_html=True,
             )
-            st.caption(f"{len(photos_available)} listings have photos available.")
 
-            cols_per_row = 3
-            rows = [
-                photos_available[i : i + cols_per_row]
-                for i in range(0, min(len(photos_available), 24), cols_per_row)
-            ]
-            for row_items in rows:
-                cols = st.columns(cols_per_row)
-                for col, listing in zip(cols, row_items):
-                    photo_url = listing["photos"][0] if listing["photos"] else None
-                    if not photo_url:
-                        continue
-                    rent_label = f"${listing.get('rent', 0):,.0f}/mo"
-                    utype      = listing.get("unit_type", "")
-                    addr       = listing.get("address", "")[:45]
-                    src        = listing.get("source", "")
-                    list_url   = listing.get("url", "")
-                    with col:
-                        st.markdown(f"""
-                        <div class="photo-card">
-                          <img src="{photo_url}" alt="{addr}"
-                               onerror="this.style.display='none'"/>
-                          <div class="photo-caption">
-                            <b>{rent_label}</b> · {utype}<br>
-                            {addr}<br>
-                            <span style="color:#9CA3AF">{src}</span>
-                            {"&nbsp;·&nbsp;<a href='" + list_url + "' target='_blank' style='color:#1A3A6B;font-weight:600'>View →</a>" if list_url else ""}
-                          </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+        with _risk_c2:
+            st.markdown(f"**Micro Risks — {neighborhood}**")
+            _micro_risks = get_micro_risks(neighborhood, borough)
+            for _mr in _micro_risks:
+                _pc = _prob_class(_mr.get("probability", ""))
+                _ic = _prob_class(_mr.get("impact", ""))
+                st.markdown(
+                    f"<div style='padding:10px;border:1px solid #E5E7EB;border-radius:8px;margin-bottom:8px;background:white'>"
+                    f"<div style='display:flex;gap:8px;align-items:center;margin-bottom:4px'>"
+                    f"<b style='font-size:0.83rem'>{_mr['category']}</b>"
+                    f"&nbsp;<span class='{_pc}' style='padding:1px 7px;border-radius:10px;font-size:0.68rem;font-weight:700'>"
+                    f"Prob: {_mr.get('probability','—')}</span>"
+                    f"&nbsp;<span class='{_ic}' style='padding:1px 7px;border-radius:10px;font-size:0.68rem;font-weight:700'>"
+                    f"Impact: {_mr.get('impact','—')}</span></div>"
+                    f"<div style='font-size:0.78rem;color:#374151;margin-bottom:4px'>{_mr['description']}</div>"
+                    f"<div style='font-size:0.74rem;color:#6B7280'><i>Mitigation:</i> {_mr['mitigation']}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
 
     # ── Source section ─────────────────────────────────────────────────────
     st.markdown("---")
