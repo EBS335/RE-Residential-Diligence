@@ -236,14 +236,19 @@ def search_competing_devs(
     """
     queries = [
         f'"{neighborhood}" NYC new apartment development rental 2024 2025',
-        f'"{neighborhood}" {borough} luxury residential building construction "units"',
-        f'"{neighborhood}" NYC "new development" rental "opening" site:therealdeal.com OR site:curbed.com OR site:6sqft.com',
+        f'"{neighborhood}" {borough} residential building construction "units" "stories"',
+        (
+            f'"{neighborhood}" NYC "new development" OR "under construction" OR "delivered" '
+            f'site:therealdeal.com OR site:yimbynewyork.com OR site:commercialobserver.com '
+            f'OR site:curbed.com OR site:6sqft.com OR site:nypost.com'
+        ),
+        f'"{neighborhood}" {borough} rental development 2023 2024 2025 apartments "new building"',
     ]
     if zip_code:
-        queries.append(f'{zip_code} "new construction" apartment rental NYC')
+        queries.append(f'{zip_code} "new construction" apartment rental NYC site:streeteasy.com OR site:zillow.com')
 
     raw_results: list[dict] = []
-    for q in queries[:3]:
+    for q in queries[:4]:
         raw_results.extend(_ddg_search(q))
         time.sleep(_SLEEP)
 

@@ -1,6 +1,6 @@
 """
-NYC Rent Comp Analyzer
-Stages 1–6: Input collection + geocoding + NYC context + data collection + analysis + visualizations
+Development Diligence Analysis
+NYC development diligence platform: rental comps, zoning, ACRIS, massing scenarios, risk analysis.
 """
 
 import os
@@ -22,8 +22,9 @@ from modules.visualizer import (
 )
 from modules.zola_fetcher import fetch_zoning_info
 from modules.zoning_rules import get_zoning_rules
-from modules.massing_viz import build_massing_options
+from modules.massing_viz import build_massing_options, floor_plate_fig
 from modules.comps_research import search_competing_devs
+from modules.acris_fetcher import fetch_acris
 from modules.unit_mix import (
     get_avg_sf, optimize_unit_mix, compute_revenue,
     avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf,
@@ -44,7 +45,7 @@ def _is_adjacent(bbl_a: str, bbl_b: str) -> bool:
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="NYC Rent Comp Analyzer",
+    page_title="Development Diligence Analysis",
     page_icon="🏙️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -901,10 +902,10 @@ with st.sidebar:
 
 st.markdown("""
 <div class="app-header">
-  <h1>🏙️ NYC Rent Comp Analyzer</h1>
+  <h1>🏗️ Development Diligence Analysis</h1>
   <p>
-    Professional rental market intelligence for real estate development
-    &amp; investment diligence — enter any NYC address to begin.
+    Full-stack NYC development diligence — rental comps, zoning &amp; ACRIS research,
+    massing scenarios, risk analysis, and unit economics. Enter any NYC address to begin.
   </p>
 </div>
 """, unsafe_allow_html=True)
@@ -1617,15 +1618,25 @@ if 'geo' in st.session_state:
                     elif _cd.get("est_rent_min"):
                         _rent_s = f"${_cd['est_rent_min']:,}+"
                     _cd_rows.append({
-                        "Development": _cd.get("name", "—")[:35],
-                        "Address":     _cd.get("address", "—")[:30],
+                        "Development": _cd.get("name", "—")[:40],
+                        "Address":     _cd.get("address", "—")[:35],
                         "Units":       _cd.get("units", "—") or "—",
                         "Est. Rent":   _rent_s,
+                        "Source":      _cd.get("source_url", "") or "",
                     })
                 if _cd_rows:
                     _cd_df = pd.DataFrame(_cd_rows)
-                    st.dataframe(_cd_df, use_container_width=True, hide_index=True,
-                                 height=min(340, 40 + 35 * len(_cd_rows)))
+                    st.dataframe(
+                        _cd_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(340, 40 + 35 * len(_cd_rows)),
+                        column_config={
+                            "Source": st.column_config.LinkColumn(
+                                "Source", display_text="View →"
+                            )
+                        },
+                    )
         else:
             st.info(
                 "No competing development data found for this neighborhood. "
@@ -1714,6 +1725,87 @@ if 'geo' in st.session_state:
                     f"</div>",
                     unsafe_allow_html=True,
                 )
+
+                # ── ACRIS Property History ───────────────────────────────
+                _acris_key = f"_acris_{_bbl_disp}"
+                if _acris_key not in st.session_state and _bbl_disp != "—":
+                    with st.spinner("Fetching ACRIS document history…"):
+                        st.session_state[_acris_key] = fetch_acris(_bbl_disp)
+                _acris = st.session_state.get(_acris_key, {})
+                _acris_sum = _acris.get("summary", {}) if _acris else {}
+
+                if _acris_sum:
+                    _ac1, _ac2, _ac3, _ac4 = st.columns(4)
+                    def _acris_card(col, icon, label, value, sub=""):
+                        with col:
+                            st.markdown(
+                                f"<div style='background:white;border:1px solid #E5E7EB;"
+                                f"border-radius:10px;padding:10px 14px;margin-bottom:8px'>"
+                                f"<div style='font-size:0.68rem;color:#6B7280;font-weight:700;"
+                                f"text-transform:uppercase;letter-spacing:0.06em'>{icon} {label}</div>"
+                                f"<div style='font-size:1.05rem;font-weight:700;color:#111827;"
+                                f"margin:2px 0'>{value}</div>"
+                                f"<div style='font-size:0.72rem;color:#9CA3AF'>{sub}</div>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
+
+                    _sale_price = _acris_sum.get("latest_sale_price")
+                    _sale_date  = _acris_sum.get("latest_sale_date", "—") or "—"
+                    _acris_card(_ac1, "🏷️", "Last Sale",
+                                f"${_sale_price:,.0f}" if _sale_price else "—",
+                                _sale_date[:7] if _sale_date != "—" else "")
+
+                    _mtge_amt = _acris_sum.get("active_mortgage_amt")
+                    _acris_card(_ac2, "🏦", "Mortgage",
+                                f"${_mtge_amt:,.0f}" if _mtge_amt else "—",
+                                (_acris_sum.get("active_lender") or "")[:28])
+
+                    _acris_card(_ac3, "✈️", "Air Rights",
+                                "Available" if _acris_sum.get("has_air_rights") else "None found",
+                                f"{len(_acris.get('air_rights',[]))} doc(s)" if _acris_sum.get("has_air_rights") else "")
+
+                    _acris_card(_ac4, "📋", "UCC / Liens",
+                                str(_acris_sum.get("open_liens", 0)),
+                                f"{_acris_sum.get('total_docs', 0)} total docs")
+
+                    _acris_url = _acris.get("acris_url", "")
+                    if _acris_url:
+                        st.caption(
+                            f"Document history from [NYC ACRIS]({_acris_url}) · "
+                            f"{_acris_sum.get('total_docs', 0)} recorded documents"
+                        )
+
+                    with st.expander("📜 Full Property History (ACRIS)", expanded=False):
+                        _all_docs = _acris.get("documents", [])
+                        if _all_docs:
+                            _doc_rows = []
+                            for _d in _all_docs[:60]:
+                                _parties_str = "; ".join(
+                                    f"{p['role']}: {p['name']}" for p in _d.get("parties", [])
+                                )
+                                _amt = _d.get("amount")
+                                _doc_rows.append({
+                                    "Date":      _d.get("date", "—"),
+                                    "Doc Type":  _d.get("doc_type", "—"),
+                                    "Amount":    f"${_amt:,.0f}" if _amt and _amt > 0 else "—",
+                                    "Parties":   _parties_str[:60] or "—",
+                                    "Doc Link":  _d.get("doc_url", ""),
+                                })
+                            _doc_df = pd.DataFrame(_doc_rows)
+                            st.dataframe(
+                                _doc_df,
+                                use_container_width=True,
+                                hide_index=True,
+                                height=min(500, 40 + 35 * len(_doc_rows)),
+                                column_config={
+                                    "Doc Link": st.column_config.LinkColumn(
+                                        "Doc Link", display_text="View →"
+                                    )
+                                },
+                            )
+                        else:
+                            st.info("No ACRIS documents found for this BBL.")
 
                 # ── Adjacent Lot Aggregation ──────────────────────────────
                 _subj_bbl = _zinfo.get("bbl", "")
@@ -1946,6 +2038,62 @@ if 'geo' in st.session_state:
                             unsafe_allow_html=True,
                         )
 
+                    # ── Zoning Bullet-Point Summary ──────────────────────
+                    st.markdown("---")
+                    st.markdown(
+                        "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                        "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                        "📋 Key Zoning Requirements & Approval Triggers</div>",
+                        unsafe_allow_html=True,
+                    )
+                    _bullets = []
+                    _bfar = _zrules.get("base_far", 0)
+                    _mfar = _zrules.get("max_far", 0)
+                    _rfar = _zrules.get("res_far", 0)
+                    _bh   = _zrules.get("base_height_ft", 0)
+                    _mh   = _zrules.get("max_height_ft", 0)
+                    _fr   = _zrules.get("front_yard_ft", 0)
+                    _rr   = _zrules.get("rear_yard_ft", 0)
+                    _sy   = _zrules.get("side_yard_ft", 0)
+                    _lc   = _zrules.get("lot_coverage_pct", 0)
+                    _bullets.append(
+                        f"**FAR:** Base {_bfar} (max {_mfar} with bonuses)"
+                        + (f" · Residential FAR {_rfar}" if _rfar else "")
+                    )
+                    if _zrules.get("sky_exp_plane"):
+                        _bullets.append("**Height:** Sky Exposure Plane governs envelope — buildings must step back from the street wall above base height (slope: 2.7:1 horizontal). No fixed height limit.")
+                    elif _bh and _mh and _bh != _mh:
+                        _bullets.append(f"**Height:** Base (street wall) {_bh} ft · Maximum {_mh} ft after setback · Contextual street wall required")
+                    elif _mh:
+                        _bullets.append(f"**Height:** Maximum {_mh} ft (absolute limit)")
+                    if _fr or _rr or _sy:
+                        _bullets.append(f"**Setbacks:** Front yard {_fr} ft · Rear yard {_rr} ft · Side yard {_sy} ft per side")
+                    if _lc:
+                        _bullets.append(f"**Lot Coverage:** Maximum {_lc}% of lot area")
+                    if _zrules.get("contextual"):
+                        _bullets.append("**Contextual District:** Street wall height and setback must match prevailing neighborhood context — community board review likely")
+                    if _zrules.get("tower_rules"):
+                        _bullets.append("**Tower-on-Base:** Open space at grade required (typically 20–30% of lot) · Tower floor plate constraints apply")
+                    if _mfar > _bfar:
+                        _bullets.append(f"**Bonus FAR ({_mfar} max):** Available via Inclusionary Housing (MIH/IH) — 20–25% affordable units required. May require ULURP / CPC approval")
+                    _sp = _zinfo.get("special_dist") or _zinfo.get("special_dist2")
+                    if _sp and _sp != "—":
+                        _bullets.append(f"**Special District ({_sp}):** Additional design, use, and bulk regulations apply — consult NYC Planning special district text")
+                    _hist = _zinfo.get("historic_dist")
+                    if _hist and _hist != "—":
+                        _bullets.append(f"**Historic District ({_hist}):** Landmarks Preservation Commission (LPC) review required for any exterior changes or new construction")
+                    _bullets.append("**Approval Path:** As-of-right developments file only DOB permit. Bonus FAR, special permits, or variances require ULURP (typically 12–18 months)")
+                    _bullets_html = "".join(f"<li style='margin-bottom:5px;font-size:0.82rem;color:#374151'>{b}</li>" for b in _bullets)
+                    st.markdown(
+                        f"<ul style='padding-left:18px;margin:0'>{_bullets_html}</ul>",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        f"Rules per NYC Zoning Resolution for {_primary_zone}. "
+                        + (f"Verify on [ZOLA →]({_zola_url})" if _zola_url else "Verify on NYC ZOLA.")
+                        + " · Data sourced from [NYC Open Data / PLUTO](https://opendata.cityofnewyork.us)."
+                    )
+
                     # ── 10 Massing Scenario Tiles ────────────────────────
 
                     # Parse base lot dimensions from subject property
@@ -2003,6 +2151,44 @@ if 'geo' in st.session_state:
                             f"Max buildable: {_la_v * _far_used:,.0f} SF"
                         )
 
+                        # ── Existing Building Callout ─────────────────────
+                        _ex_yr   = _zinfo.get("year_built", "—") or "—"
+                        _ex_flrs = _zinfo.get("num_floors", "—") or "—"
+                        _ex_ba   = _zinfo.get("bldg_area_sqft", "—") or "—"
+                        _ex_cls  = _zinfo.get("bldg_class", "—") or "—"
+                        _ex_units= _zinfo.get("units_res", "—") or "—"
+                        _ex_lmod = _zinfo.get("year_last_mod", "—") or "—"
+                        if _ex_yr != "—":
+                            st.markdown(
+                                f"<div style='background:#F0FDF4;border:1px solid #BBF7D0;"
+                                f"border-radius:8px;padding:10px 14px;margin-bottom:12px'>"
+                                f"<span style='font-size:0.72rem;font-weight:700;color:#15803D;"
+                                f"text-transform:uppercase;letter-spacing:0.06em'>📦 Existing Structure</span>"
+                                f"<div style='margin-top:4px;font-size:0.84rem;color:#374151'>"
+                                f"<b>Class {_ex_cls}</b> &nbsp;·&nbsp; Built <b>{_ex_yr}</b>"
+                                f" (last mod. {_ex_lmod}) &nbsp;·&nbsp; "
+                                f"<b>{_ex_flrs}</b> floors &nbsp;·&nbsp; "
+                                f"<b>{_ex_ba} SF</b> gross &nbsp;·&nbsp; "
+                                f"<b>{_ex_units}</b> residential units"
+                                f"</div></div>",
+                                unsafe_allow_html=True,
+                            )
+
+                        # Existing building dict for Option 1 (Gut Renovation)
+                        _existing_bldg = {
+                            "floors":     float(str(_ex_flrs).replace(",","")) if str(_ex_flrs).replace(",","").replace(".","").isdigit() else 0,
+                            "area":       _parse_dim(_ex_ba),
+                            "year_built": _ex_yr,
+                        }
+
+                        # Lot widths for combined boundary visualization
+                        _lot_widths = None
+                        if _using_combined:
+                            _lot_widths = (
+                                [_parse_dim(_zinfo.get("lot_frontage_ft", 0))] +
+                                [_parse_dim(l.get("lot_frontage_ft", 0)) for l in _valid_adj]
+                            )
+
                         # Build / retrieve massing options (separate cache key for combined lots)
                         _mass_key = (
                             f"_massing_{_bbl_disp}_combined_{len(_valid_adj)}"
@@ -2010,12 +2196,62 @@ if 'geo' in st.session_state:
                         )
                         if _mass_key not in st.session_state:
                             st.session_state[_mass_key] = build_massing_options(
-                                _lf_v, _ld_v, _la_v, _primary_zone, _zrules
+                                _lf_v, _ld_v, _la_v, _primary_zone, _zrules,
+                                lot_widths=_lot_widths,
+                                existing_bldg=_existing_bldg if _existing_bldg["floors"] > 0 else None,
                             )
                         _options = st.session_state.get(_mass_key, [])
 
                         # Compute avg rents from comps data for revenue projections
                         _avg_rents = avg_rents_from_listings(listings)
+
+                        if _options:
+                            # ── Summary Metrics Table ─────────────────────
+                            _sum_rows = []
+                            for _o in _options:
+                                _sum_rows.append({
+                                    "#":          _o.get("number", ""),
+                                    "Scenario":   _o.get("name", "—"),
+                                    "Risk":       _o.get("risk_level", "—"),
+                                    "Stories":    _o.get("floors", 0),
+                                    "Height (ft)":_o.get("height_ft", 0),
+                                    "Gross SF":   _o.get("total_sqft", 0),
+                                    "Net SF":     _o.get("net_rentable_sqft", 0),
+                                    "Loss %":     f"{int(_o.get('loss_factor',0.15)*100)}%",
+                                })
+                            _sum_df = pd.DataFrame(_sum_rows)
+                            with st.expander("📊 All Scenarios — Summary Table", expanded=True):
+                                st.dataframe(
+                                    _sum_df,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={
+                                        "#":           st.column_config.NumberColumn("#", width="small"),
+                                        "Gross SF":    st.column_config.NumberColumn("Gross SF", format="%d"),
+                                        "Net SF":      st.column_config.NumberColumn("Net SF",   format="%d"),
+                                        "Stories":     st.column_config.NumberColumn("Stories",  format="%d"),
+                                        "Height (ft)": st.column_config.NumberColumn("Height (ft)", format="%d"),
+                                    },
+                                )
+
+                            # ── Thumbnail Grid (2 rows × 5) ───────────────
+                            st.markdown(
+                                "<div style='font-size:0.78rem;font-weight:700;color:#374151;"
+                                "margin:16px 0 6px'>Scenario Diagrams — All 10</div>",
+                                unsafe_allow_html=True,
+                            )
+                            _thumb_cols_a = st.columns(5)
+                            _thumb_cols_b = st.columns(5)
+                            for _ti, _topt in enumerate(_options[:10]):
+                                _tcol = _thumb_cols_a[_ti] if _ti < 5 else _thumb_cols_b[_ti - 5]
+                                with _tcol:
+                                    st.caption(f"**{_topt.get('number','')}.** {_topt['name'].split('. ',1)[-1][:28]}")
+                                    st.plotly_chart(
+                                        _topt["fig"],
+                                        use_container_width=True,
+                                        config={"displayModeBar": False, "staticPlot": True},
+                                        key=f"thumb_{_ti}_{_bbl_disp}",
+                                    )
 
                         if _options:
                             # ── Risk badge helper ────────────────────────
@@ -2051,67 +2287,83 @@ if 'geo' in st.session_state:
                                     st.metric("Height",         f"{opt.get('height_ft',0)} ft")
                                     st.metric("Floors",         str(opt.get("floors", 0)))
 
-                                # Strategy + description
-                                st.markdown(
-                                    f"<div style='font-size:0.75rem;color:#374151;margin:6px 0 2px'>"
-                                    f"<b>Strategy:</b> {opt.get('strategy','')}</div>"
-                                    f"<div style='font-size:0.73rem;color:#6B7280'>{opt.get('description','')}</div>",
-                                    unsafe_allow_html=True,
-                                )
+                                # Strategy + description (collapsible)
+                                with st.expander("📋 Strategy & Description", expanded=False):
+                                    st.markdown(f"**Strategy:** {opt.get('strategy','')}")
+                                    st.markdown(opt.get('description',''))
 
-                                # Unit mix + financials expander
-                                with st.expander("📊 Unit Mix & Financials", expanded=False):
+                                # Unit mix + financials + floor plates
+                                with st.expander("📊 Unit Mix, Financials & Floor Plans", expanded=False):
+                                    _tab_mix, _tab_fp = st.tabs(["💰 Unit Mix & Financials", "🏢 Floor Plates"])
                                     _nrsf = opt.get("net_rentable_sqft", 0)
                                     _is_c = opt.get("is_conversion", False)
-                                    if _nrsf > 0:
-                                        _umix = optimize_unit_mix(_nrsf, neighborhood)
-                                        _rev  = compute_revenue(
-                                            _umix, _avg_rents,
-                                            risk_level=rl, borough=borough
-                                        )
-                                        # Avg SF table
-                                        _avg_sf_tbl = get_avg_sf(neighborhood)
-                                        st.markdown(
-                                            f"**Unit Mix** "
-                                            f"({'Conversion' if _is_c else 'New Build'}, "
-                                            f"{int(opt.get('loss_factor',0.15)*100)}% loss factor)"
-                                        )
-                                        _mix_rows = []
-                                        for _ut in ["Studio","1 Bed","2 Bed","3 Bed","4+ Bed"]:
-                                            if _ut in _umix and _umix[_ut]["count"] > 0:
-                                                _ui = _umix[_ut]
-                                                _mix_rows.append({
-                                                    "Unit": _ut,
-                                                    "Count": _ui["count"],
-                                                    "Avg SF": f"{_ui['avg_sf']:,.0f}",
-                                                    "% of Units": f"{_ui['pct_units']*100:.0f}%",
-                                                    "Monthly Rent": f"${_avg_rents.get(_ut, 0):,.0f}" if _avg_rents.get(_ut) else "—",
-                                                })
-                                        if _mix_rows:
+                                    with _tab_mix:
+                                        if _nrsf > 0:
+                                            _umix = optimize_unit_mix(_nrsf, neighborhood)
+                                            _rev  = compute_revenue(
+                                                _umix, _avg_rents,
+                                                risk_level=rl, borough=borough
+                                            )
+                                            st.markdown(
+                                                f"**Unit Mix** "
+                                                f"({'Conversion' if _is_c else 'New Build'}, "
+                                                f"{int(opt.get('loss_factor',0.15)*100)}% loss factor)"
+                                            )
+                                            _mix_rows = []
+                                            for _ut in ["Studio","1 Bed","2 Bed","3 Bed","4+ Bed"]:
+                                                if _ut in _umix and _umix[_ut]["count"] > 0:
+                                                    _ui = _umix[_ut]
+                                                    _mix_rows.append({
+                                                        "Unit": _ut,
+                                                        "Count": _ui["count"],
+                                                        "Avg SF": f"{_ui['avg_sf']:,.0f}",
+                                                        "% of Units": f"{_ui['pct_units']*100:.0f}%",
+                                                        "Monthly Rent": f"${_avg_rents.get(_ut, 0):,.0f}" if _avg_rents.get(_ut) else "—",
+                                                    })
+                                            if _mix_rows:
+                                                st.dataframe(
+                                                    pd.DataFrame(_mix_rows),
+                                                    use_container_width=True,
+                                                    hide_index=True,
+                                                )
+                                            st.markdown("**Revenue Projection**")
+                                            _fin_rows = [
+                                                {"Metric": "Gross Annual Rent",  "Value": f"${_rev['gross_annual_rent']:,.0f}"},
+                                                {"Metric": f"EGI ({int(_rev['occupancy_used']*100)}% occ.)", "Value": f"${_rev['egi']:,.0f}"},
+                                                {"Metric": "Operating Expenses (35%)", "Value": f"${_rev['opex']:,.0f}"},
+                                                {"Metric": "Net Operating Income",     "Value": f"${_rev['noi']:,.0f}"},
+                                                {"Metric": f"Est. Cap Value ({_rev['cap_rate_used']*100:.2f}% cap)", "Value": f"${_rev['est_cap_value']:,.0f}"},
+                                            ]
                                             st.dataframe(
-                                                pd.DataFrame(_mix_rows),
+                                                pd.DataFrame(_fin_rows),
                                                 use_container_width=True,
                                                 hide_index=True,
                                             )
-                                        st.markdown("**Revenue Projection**")
-                                        _fin_rows = [
-                                            {"Metric": "Gross Annual Rent",  "Value": f"${_rev['gross_annual_rent']:,.0f}"},
-                                            {"Metric": f"EGI ({int(_rev['occupancy_used']*100)}% occ.)", "Value": f"${_rev['egi']:,.0f}"},
-                                            {"Metric": "Operating Expenses (35%)", "Value": f"${_rev['opex']:,.0f}"},
-                                            {"Metric": "Net Operating Income",     "Value": f"${_rev['noi']:,.0f}"},
-                                            {"Metric": f"Est. Cap Value ({_rev['cap_rate_used']*100:.2f}% cap)", "Value": f"${_rev['est_cap_value']:,.0f}"},
-                                        ]
-                                        st.dataframe(
-                                            pd.DataFrame(_fin_rows),
-                                            use_container_width=True,
-                                            hide_index=True,
-                                        )
-                                        # Avg SF assumptions note
-                                        _hood_sf = get_avg_sf(neighborhood)
-                                        st.caption(
-                                            f"Avg SF assumptions for {neighborhood}: "
-                                            + " | ".join(f"{k}: {v:,.0f}" for k,v in _hood_sf.items())
-                                        )
+                                            _hood_sf = get_avg_sf(neighborhood)
+                                            st.caption(
+                                                f"Avg SF assumptions for {neighborhood}: "
+                                                + " | ".join(f"{k}: {v:,.0f}" for k,v in _hood_sf.items())
+                                            )
+                                    with _tab_fp:
+                                        _fp_w = max(20.0, opt.get("footprint_sqft", 400) ** 0.5)
+                                        _fp_d = max(20.0, opt.get("footprint_sqft", 400) / max(1, _fp_w))
+                                        _is_mu = opt.get("name","").lower().find("mixed") >= 0
+                                        _fpc1, _fpc2 = st.columns(2)
+                                        with _fpc1:
+                                            st.plotly_chart(
+                                                floor_plate_fig(_fp_w, _fp_d, is_ground=True, is_mixed_use=_is_mu),
+                                                use_container_width=True,
+                                                config={"displayModeBar": False},
+                                                key=f"fp_gnd_{key_suffix}",
+                                            )
+                                        with _fpc2:
+                                            st.plotly_chart(
+                                                floor_plate_fig(_fp_w, _fp_d, is_ground=False),
+                                                use_container_width=True,
+                                                config={"displayModeBar": False},
+                                                key=f"fp_upr_{key_suffix}",
+                                            )
+                                        st.caption("Indicative floor plate layout — unit sizes and placement are schematic.")
 
                             # ── Display tiles by risk tier ───────────────
                             for _tier, _tier_label, _tier_color in [
@@ -2224,8 +2476,8 @@ if 'geo' in st.session_state:
                 f"<td><b>{r['category']}</b></td>"
                 f"<td class='{_prob_class(r['probability'])}'>{r['probability']}</td>"
                 f"<td class='{_prob_class(r['impact'])}'>{r['impact']}</td>"
-                f"<td style='color:#374151'>{r['description'][:120]}…</td>"
-                f"<td style='color:#6B7280;font-size:0.75rem'>{r['mitigation'][:100]}…</td>"
+                f"<td style='color:#374151;word-wrap:break-word'>{r['description']}</td>"
+                f"<td style='color:#6B7280;font-size:0.75rem;word-wrap:break-word'>{r['mitigation']}</td>"
                 f"</tr>"
                 for r in MACRO_RISKS
             )
@@ -2398,7 +2650,7 @@ else:
 st.markdown("""
 <hr style="margin-top:48px;border-color:#E5E7EB"/>
 <div style="text-align:center;color:#9CA3AF;font-size:0.75rem;padding:12px 0">
-  NYC Rent Comp Analyzer · Inputs, Geocoding &amp; Interactive Map ·
+  Development Diligence Analysis · NYC Planning, PLUTO, ACRIS &amp; Market Data ·
   For internal real estate diligence use only · Not financial advice
 </div>
 """, unsafe_allow_html=True)
