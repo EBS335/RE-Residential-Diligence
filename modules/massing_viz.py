@@ -318,25 +318,25 @@ def _make_fig(lot_front, lot_depth, traces, title, height_ft, rules):
 
 def _lot_boundary_traces(lot_widths: list, lot_depth: float) -> list:
     """
-    Draw dotted vertical lines showing individual lot boundaries within a combined parcel.
+    Draw horizontal lines on the XY ground plane showing individual lot boundaries.
     Only called when multiple lots are merged. Draws N-1 lines (skips the outer edges).
     """
     traces = []
     x_offset = 0.0
+    first = True
     for w in lot_widths[:-1]:
         x_offset += float(w)
-        # Draw 4 vertical posts at the lot boundary line
-        for ypos in [0, lot_depth * 0.33, lot_depth * 0.66, lot_depth]:
-            traces.append(go.Scatter3d(
-                x=[x_offset, x_offset],
-                y=[ypos, ypos],
-                z=[0, 80],
-                mode="lines",
-                line=dict(color="#6366F1", width=2),
-                name="Lot Boundary" if (ypos == 0 and x_offset == lot_widths[0]) else "",
-                showlegend=(ypos == 0 and x_offset == lot_widths[0]),
-                hoverinfo="skip",
-            ))
+        traces.append(go.Scatter3d(
+            x=[x_offset, x_offset],
+            y=[0, lot_depth],
+            z=[1, 1],
+            mode="lines",
+            line=dict(color="#6366F1", width=4),
+            name="Lot Boundary" if first else "",
+            showlegend=first,
+            hoverinfo="skip",
+        ))
+        first = False
     return traces
 
 
@@ -392,6 +392,7 @@ def _scenario_dict(name, risk_level, description, strategy,
     """Build the standard scenario result dict."""
     total_sqft       = int(lot_area * far)
     net_rentable     = int(total_sqft * (1 - loss_factor))
+    units_est        = max(1, int(net_rentable / 750))
     return {
         "number":             number,
         "name":               name,
@@ -406,6 +407,7 @@ def _scenario_dict(name, risk_level, description, strategy,
         "footprint_sqft":     max(1, int(footprint_sqft)),
         "loss_factor":        loss_factor,
         "net_rentable_sqft":  net_rentable,
+        "units_est":          units_est,
         "is_conversion":      is_conversion,
     }
 
@@ -633,16 +635,16 @@ def _option_5(lot_front, lot_depth, lot_area, rules, m) -> dict:
         risk_level="MED",
         number=5,
         description=(
-            f"65% buildable footprint rising to {height:.0f} ft ({floors} floors). "
+            f"**65% buildable footprint** rising to **{height:.0f} ft** (**{floors} floors**). "
             "Open space at grade improves amenity access. Standard R6–R8 development "
-            "envelope — balances density with outdoor amenity."
+            "envelope — balances density with outdoor amenity at **90% FAR utilization**."
         ),
         strategy=(
             "Mid-to-high-rise approach with open-space bonus potential. "
-            "Appeals to amenity-driven renters. Strong NOI relative to construction cost."
+            "Appeals to amenity-driven renters. **Strong NOI** relative to construction cost."
         ),
         fig=fig,
-        lot_area=lot_area, far=far * 0.65,
+        lot_area=lot_area, far=far * 0.90,
         height_ft=height, footprint_sqft=w*d,
         floors=floors, typical_floor_sqft=w*d,
         loss_factor=0.15,
@@ -778,13 +780,13 @@ def _option_8(lot_front, lot_depth, lot_area, rules, m) -> dict:
         risk_level="HIGH",
         number=8,
         description=(
-            f"55% footprint tower rising to {height:.0f} ft ({floors} floors), "
-            "utilizing maximum permitted residential FAR. Full air rights build-out "
+            f"**55% footprint** tower rising to **{height:.0f} ft** (**{floors} floors**), "
+            "utilizing **maximum permitted residential FAR**. Full air rights build-out "
             "maximizes rentable area and exit value."
         ),
         strategy=(
-            "Maximizes gross value and rental income. Requires deep equity, robust "
-            "construction budget, and premium rents to pencil. Best for institutional capital."
+            "Maximizes **gross value** and rental income. Requires deep equity, robust "
+            "construction budget, and premium rents to pencil. Best for **institutional capital**."
         ),
         fig=fig,
         lot_area=lot_area, far=far,
@@ -806,8 +808,10 @@ def _option_9(lot_front, lot_depth, lot_area, rules, m) -> dict:
     d = max(10.0, b_depth * fp_ratio)
     x0 = sy + (b_front - w) / 2
     y0 = fr + (b_depth - d) / 2
-    height = max_h * 1.2 if max_h > 0 else base_h * 3
-    height = min(400.0, max(100.0, height))
+    # Derive height from full FAR utilization on the slim footprint
+    fp_sqft = w * d
+    far_height = (far * lot_area / fp_sqft) * f2f if fp_sqft > 0 else 0
+    height = min(400.0, max(100.0, far_height if far_height > 0 else (max_h * 1.2 if max_h > 0 else base_h * 3)))
     floors = max(1, int(height / f2f))
 
     x_center = sy + b_front / 2
@@ -827,17 +831,17 @@ def _option_9(lot_front, lot_depth, lot_area, rules, m) -> dict:
         risk_level="HIGH",
         number=9,
         description=(
-            f"Ultra-slim 30% footprint tower rising to {height:.0f} ft ({floors} floors). "
+            f"**Ultra-slim 30% footprint** tower rising to **{height:.0f} ft** (**{floors} floors**). "
             "Maximizes height over footprint for view premium and luxury positioning. "
-            "Requires favorable sky exposure plane or tower rules."
+            "**Full FAR utilization** on slender floor plate — requires favorable sky exposure plane or tower rules."
         ),
         strategy=(
-            "Luxury/condo-conversion pricing premium on upper floors. "
+            "**Luxury/condo-conversion** pricing premium on upper floors. "
             "High construction cost per SF offset by top-floor revenue. "
-            "Best for sites with unobstructed views or air rights acquisitions."
+            "Best for sites with unobstructed views or **air rights acquisitions**."
         ),
         fig=fig,
-        lot_area=lot_area, far=far * fp_ratio,
+        lot_area=lot_area, far=far * 1.0,
         height_ft=height, footprint_sqft=w*d,
         floors=floors, typical_floor_sqft=w*d,
         loss_factor=0.15,
@@ -876,14 +880,14 @@ def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
         risk_level="HIGH",
         number=10,
         description=(
-            f"Full 60% footprint development using Inclusionary Housing (IH/MIH) "
-            f"+20% FAR bonus, reaching {height:.0f} ft ({floors} floors). "
+            f"**Full 60% footprint** development using **Inclusionary Housing (IH/MIH) "
+            f"+20% FAR bonus**, reaching **{height:.0f} ft** (**{floors} floors**). "
             "20–25% of units must be affordable (MIH Option 1 or 2)."
         ),
         strategy=(
-            "Unlocks additional FAR and potential public subsidy (421-a/485-x successor). "
+            "Unlocks additional FAR and potential **public subsidy (421-a/485-x successor)**. "
             "Maximizes gross value while satisfying affordability requirements. "
-            "Requires ULURP or MIH compliance — plan for 18-month review timeline."
+            "Requires ULURP or MIH compliance — plan for **18-month review timeline**."
         ),
         fig=fig,
         lot_area=lot_area, far=bonus_far,
@@ -969,9 +973,9 @@ def floor_plate_fig(
             textfont=dict(size=9, color="#6B7280"), hoverinfo="skip",
         ))
     else:
-        # Upper floor: corridor down center, units on each side
-        # Corridor
-        corr_w = max(5.0, footprint_w * 0.10)
+        # Upper floor: corridor down center, elevator/stair core, units on each side
+        # Corridor (12% of footprint width)
+        corr_w = max(6.0, footprint_w * 0.12)
         cx0 = footprint_w / 2 - corr_w / 2
         cx1 = footprint_w / 2 + corr_w / 2
         traces.append(go.Scatter(
@@ -982,11 +986,29 @@ def floor_plate_fig(
             name="Corridor", showlegend=True, hoverinfo="skip",
         ))
 
-        # Unit sizes (ft): Studio ~22×25, 1Bed ~28×30, 2Bed ~30×38
+        # Elevator/stair core: centered in corridor, ~30% of depth
+        core_h = min(footprint_d * 0.30, 30.0)
+        core_y0 = footprint_d / 2 - core_h / 2
+        core_y1 = footprint_d / 2 + core_h / 2
+        traces.append(go.Scatter(
+            x=[cx0, cx1, cx1, cx0, cx0],
+            y=[core_y0, core_y0, core_y1, core_y1, core_y0],
+            mode="lines", line=dict(color="#6B7280", width=2),
+            fill="toself", fillcolor="rgba(107,114,128,0.40)",
+            name="Elev/Stair Core", showlegend=True, hoverinfo="skip",
+        ))
+        traces.append(go.Scatter(
+            x=[footprint_w / 2], y=[footprint_d / 2],
+            mode="text", text=["CORE"], showlegend=False,
+            textfont=dict(size=9, color="#FFFFFF"),
+            hoverinfo="skip",
+        ))
+
+        # Unit sizes (ft): Studio 25×28, 1Bed 30×35, 2Bed 35×42
         unit_specs = [
-            ("Studio", 22, 25, "rgba(16,185,129,0.30)", "#059669"),
-            ("1 Bed",  28, 30, "rgba(59,130,246,0.30)", "#2563EB"),
-            ("2 Bed",  30, 38, "rgba(245,158,11,0.30)", "#D97706"),
+            ("Studio", 25, 28, "rgba(16,185,129,0.30)", "#059669"),
+            ("1 Bed",  30, 35, "rgba(59,130,246,0.30)", "#2563EB"),
+            ("2 Bed",  35, 42, "rgba(245,158,11,0.30)", "#D97706"),
         ]
 
         # Left side units (window on left)
@@ -996,6 +1018,7 @@ def floor_plate_fig(
         while y_cur < side_d_avail - 10:
             uw, ud, fc, lc = unit_specs[utype_idx % len(unit_specs)][1:]
             ulabel = unit_specs[utype_idx % len(unit_specs)][0]
+            approx_sf = int(uw * ud)
             ud = min(ud, side_d_avail - y_cur)
             if ud < 10:
                 break
@@ -1007,14 +1030,14 @@ def floor_plate_fig(
                 mode="lines", line=dict(color=lc, width=1),
                 fill="toself", fillcolor=fc,
                 name=ulabel,
-                showlegend=(y_cur < 5),  # only first occurrence in legend
+                showlegend=(y_cur < 5),
                 legendgroup=ulabel,
-                hoverinfo="skip",
+                hovertemplate=f"<b>{ulabel}</b><br>~{approx_sf} SF<extra></extra>",
             ))
             traces.append(go.Scatter(
                 x=[(x0u+x1u)/2], y=[y_cur + ud/2],
-                mode="text", text=[ulabel], showlegend=False,
-                textfont=dict(size=8, color="#374151"),
+                mode="text", text=[f"{ulabel}<br>~{approx_sf} SF"], showlegend=False,
+                textfont=dict(size=10, color="#374151"),
                 hoverinfo="skip",
             ))
             y_cur += ud + 2.0
@@ -1026,6 +1049,7 @@ def floor_plate_fig(
         while y_cur < side_d_avail - 10:
             uw, ud, fc, lc = unit_specs[utype_idx % len(unit_specs)][1:]
             ulabel = unit_specs[utype_idx % len(unit_specs)][0]
+            approx_sf = int(uw * ud)
             ud = min(ud, side_d_avail - y_cur)
             if ud < 10:
                 break
@@ -1039,12 +1063,12 @@ def floor_plate_fig(
                 name=ulabel,
                 showlegend=False,
                 legendgroup=ulabel,
-                hoverinfo="skip",
+                hovertemplate=f"<b>{ulabel}</b><br>~{approx_sf} SF<extra></extra>",
             ))
             traces.append(go.Scatter(
                 x=[(x0u+x1u)/2], y=[y_cur + ud/2],
-                mode="text", text=[ulabel], showlegend=False,
-                textfont=dict(size=8, color="#374151"),
+                mode="text", text=[f"{ulabel}<br>~{approx_sf} SF"], showlegend=False,
+                textfont=dict(size=10, color="#374151"),
                 hoverinfo="skip",
             ))
             y_cur += ud + 2.0
@@ -1053,7 +1077,7 @@ def floor_plate_fig(
     label = "Ground Floor Plan" if is_ground else "Typical Upper Floor Plan"
     fig = go.Figure(data=traces)
     fig.update_layout(
-        title=dict(text=label, font=dict(size=11, color="#111827"), x=0.5),
+        title=dict(text=label, font=dict(size=13, color="#111827"), x=0.5),
         xaxis=dict(
             range=[-2, footprint_w + 2], showgrid=False,
             zeroline=False, showticklabels=False,
@@ -1063,11 +1087,11 @@ def floor_plate_fig(
             range=[-2, footprint_d + 2], showgrid=False,
             zeroline=False, showticklabels=False,
         ),
-        margin=dict(l=0, r=0, t=30, b=0),
-        height=260,
+        margin=dict(l=0, r=0, t=36, b=0),
+        height=380,
         paper_bgcolor="rgba(248,249,250,1)",
         plot_bgcolor="rgba(248,249,250,1)",
-        legend=dict(x=1.01, y=0.99, font=dict(size=8)),
+        legend=dict(x=1.01, y=0.99, font=dict(size=10)),
     )
     return fig
 

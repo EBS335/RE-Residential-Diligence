@@ -173,7 +173,7 @@ def bbl_to_zola_url(bbl: str) -> str:
     """
     bbl_clean = re.sub(r"\D", "", str(bbl))
     if len(bbl_clean) != 10:
-        return "https://zola.planning.nyc.gov/"
+        return ""
     borough = bbl_clean[0]
     block   = bbl_clean[1:6].lstrip("0") or "0"
     lot     = bbl_clean[6:10].lstrip("0") or "0"

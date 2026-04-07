@@ -34,15 +34,17 @@ _MAX_DOCS = 200  # cap to avoid huge payloads
 _ACRIS_BASE_URL = "https://a836-acris.nyc.gov/DS/DocumentSearch/DocumentDetail?doc_id="
 
 
-def _parse_bbl(bbl: str) -> tuple[str, str, str] | None:
-    """Split 10-digit BBL into (borough, block_padded, lot_padded)."""
+def _parse_bbl(bbl: str) -> tuple[str, str, str, str, str] | None:
+    """Split 10-digit BBL into (borough, block_padded, lot_padded, block_int, lot_int)."""
     clean = re.sub(r"\D", "", str(bbl))
     if len(clean) != 10:
         return None
-    borough = clean[0]
-    block   = clean[1:6]   # already zero-padded 5 digits
-    lot     = clean[6:10]  # already zero-padded 4 digits
-    return borough, block, lot
+    borough    = clean[0]
+    block_pad  = clean[1:6]          # zero-padded: "00167"
+    lot_pad    = clean[6:10]         # zero-padded: "0001"
+    block_int  = block_pad.lstrip("0") or "0"   # Socrata expects integer string
+    lot_int    = lot_pad.lstrip("0") or "0"
+    return borough, block_pad, lot_pad, block_int, lot_int
 
 
 def _get(url: str, params: dict) -> list[dict]:
@@ -99,27 +101,42 @@ def fetch_acris(bbl: str) -> dict:
     if not parsed:
         return {"error": f"Invalid BBL: {bbl}", "documents": [], "deeds": [], "mortgages": [], "ucc": [], "air_rights": [], "summary": {}}
 
-    borough, block, lot = parsed
+    borough, block_pad, lot_pad, block_int, lot_int = parsed
 
-    # Build ACRIS search URL for the property
+    # Build ACRIS search URL for the property (human-facing link)
     acris_url = (
         f"https://a836-acris.nyc.gov/DS/DocumentSearch/BBL?"
-        f"borough_id={borough}&block={block.lstrip('0') or '0'}&lot={lot.lstrip('0') or '0'}"
+        f"borough_id={borough}&block={block_int}&lot={lot_int}"
     )
 
-    # Fetch document master (all documents for this BBL)
-    params = {"borough": borough, "block": block, "lot": lot, "$order": "document_date DESC"}
-    raw_docs = _get(_DOC_MASTER_URL, params)
+    # Fetch document master — try integer-style first (what ACRIS Socrata expects),
+    # then fall back to zero-padded, then to full BBL $where clause.
+    _empty = {"documents": [], "deeds": [], "mortgages": [], "ucc": [], "air_rights": [],
+              "summary": {"total_docs": 0, "latest_sale_price": None, "latest_sale_date": None,
+                          "latest_buyer": None, "active_mortgage_amt": None,
+                          "active_lender": None, "open_liens": 0, "has_air_rights": False},
+              "acris_url": acris_url, "error": None}
+
+    raw_docs = _get(_DOC_MASTER_URL, {
+        "borough": borough, "block": block_int, "lot": lot_int,
+        "$order": "document_date DESC", "$limit": _MAX_DOCS,
+    })
+    if not raw_docs:
+        # Fallback: zero-padded block/lot
+        raw_docs = _get(_DOC_MASTER_URL, {
+            "borough": borough, "block": block_pad, "lot": lot_pad,
+            "$order": "document_date DESC", "$limit": _MAX_DOCS,
+        })
+    if not raw_docs:
+        # Fallback: full 10-digit BBL via $where
+        bbl_clean = re.sub(r"\D", "", str(bbl))
+        raw_docs = _get(_DOC_MASTER_URL, {
+            "$where": f"bbl='{bbl_clean}'",
+            "$order": "document_date DESC", "$limit": _MAX_DOCS,
+        })
 
     if not raw_docs:
-        return {
-            "documents": [], "deeds": [], "mortgages": [], "ucc": [], "air_rights": [],
-            "summary": {"total_docs": 0, "latest_sale_price": None, "latest_sale_date": None,
-                        "latest_buyer": None, "active_mortgage_amt": None,
-                        "active_lender": None, "open_liens": 0, "has_air_rights": False},
-            "acris_url": acris_url,
-            "error": None,
-        }
+        return {**_empty, "acris_url": acris_url}
 
     # Categorize and enrich documents
     documents, deeds, mortgages, ucc_list, air_list = [], [], [], [], []

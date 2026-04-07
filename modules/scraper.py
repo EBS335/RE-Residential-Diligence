@@ -134,11 +134,11 @@ def _proxy_get(url: str, session, proxy_key: Optional[str] = None,
 
 
 def _is_blocked(resp) -> bool:
-    """Detect Cloudflare / bot-protection challenge pages."""
+    """Detect Cloudflare / bot-protection challenge pages or soft blocks (empty results)."""
     if resp.status_code in (403, 429, 503):
         return True
     snip = resp.text[:4000].lower()
-    return any(kw in snip for kw in (
+    hard_block = any(kw in snip for kw in (
         "cf-browser-verification", "just a moment", "enable javascript",
         "captcha", "ddos-guard", "access denied", "verifying you are human",
         "checking your browser", "ray id",
@@ -148,6 +148,21 @@ def _is_blocked(resp) -> bool:
         "security check", "cf-challenge",
         "i am not a robot", "are you a robot",
     ))
+    if hard_block:
+        return True
+    # Soft block: HTTP 200 but no content / empty results page
+    if resp.status_code == 200 and len(resp.text) < 500:
+        return True
+    return False
+
+
+def _persist_cookies(session, resp) -> None:
+    """Merge cookies from response into session for subsequent requests."""
+    try:
+        for name, value in resp.cookies.items():
+            session.cookies.set(name, value)
+    except Exception:
+        pass
 
 
 def _fetch_with_retry(url: str, session, proxy_key: Optional[str] = None,
@@ -376,18 +391,25 @@ def scrape_streeteasy(
     ne_lat, ne_lng, sw_lat, sw_lng = _bbox(lat, lon, radius_miles)
 
     session = _make_session()
-    session.headers.update({"Referer": "https://streeteasy.com/"})
 
-    # Warm-up: build a realistic browsing session before scraping
-    for _wu_url in ("https://streeteasy.com", "https://streeteasy.com/for-rent/nyc"):
+    # Warm-up: realistic referer chain — homepage → rentals → search
+    _se_warmup = [
+        ("https://streeteasy.com", None),
+        ("https://streeteasy.com/for-rent/nyc", "https://streeteasy.com/"),
+    ]
+    for _wu_url, _wu_ref in _se_warmup:
         try:
-            _proxy_get(_wu_url, session, proxy_key=proxy_key,
-                       timeout=10, allow_redirects=True)
-            time.sleep(random.uniform(1.0, 2.0))
+            if _wu_ref:
+                session.headers.update({"Referer": _wu_ref})
+            _wu_resp = _proxy_get(_wu_url, session, proxy_key=proxy_key,
+                                  timeout=12, allow_redirects=True)
+            _persist_cookies(session, _wu_resp)
+            time.sleep(random.uniform(1.5, 3.0))
         except Exception:
             break
 
     listings: list = []
+    _prev_url = "https://streeteasy.com/for-rent/nyc"
 
     for page in range(1, 6):
         try:
@@ -400,7 +422,10 @@ def scrape_streeteasy(
                 f"&search%5Bsw_lng%5D={sw_lng}"
                 f"&page={page}"
             )
+            session.headers.update({"Referer": _prev_url})
             resp = _fetch_with_retry(url, session, proxy_key=proxy_key, timeout=20)
+            _persist_cookies(session, resp)
+            _prev_url = url
 
             if _is_blocked(resp):
                 if not listings:
@@ -424,7 +449,7 @@ def scrape_streeteasy(
                     listings.extend(parsed)
                     if not parsed:
                         break   # last page
-                    time.sleep(random.uniform(1.0, 2.5))
+                    time.sleep(random.uniform(2.5, 5.0))
                     continue
                 except (json.JSONDecodeError, Exception):
                     pass  # fall through to HTML card parsing
@@ -460,7 +485,7 @@ def scrape_streeteasy(
                 if item:
                     listings.append(item)
 
-            time.sleep(random.uniform(1.0, 2.5))
+            time.sleep(random.uniform(2.5, 5.0))
 
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"
@@ -645,17 +670,39 @@ def scrape_apartments_com(
     ne_lat, ne_lng, sw_lat, sw_lng = _bbox(lat, lon, radius_miles)
 
     session = _make_session()
-    session.headers.update({"Referer": "https://www.apartments.com/"})
+
+    # Warm-up: homepage → city search before hitting paginated results
+    _ap_warmup = [
+        ("https://www.apartments.com", None),
+        ("https://www.apartments.com/new-york-ny/", "https://www.apartments.com/"),
+    ]
+    for _wu_url, _wu_ref in _ap_warmup:
+        try:
+            if _wu_ref:
+                session.headers.update({"Referer": _wu_ref})
+            _wu_resp = _proxy_get(_wu_url, session, proxy_key=proxy_key,
+                                  timeout=12, allow_redirects=True)
+            _persist_cookies(session, _wu_resp)
+            time.sleep(random.uniform(1.5, 3.0))
+        except Exception:
+            break
 
     listings: list = []
+    _prev_ap_url = "https://www.apartments.com/new-york-ny/"
 
     for page in range(1, 5):
         try:
-            # bbox format: sw_lat,sw_lng,ne_lat,ne_lng
+            # bbox format: sw_lat,sw_lng,ne_lat,ne_lng (SW first, then NE)
             bbox = f"{sw_lat},{sw_lng},{ne_lat},{ne_lng}"
             url  = f"https://www.apartments.com/new-york-ny/{page}/?bb={bbox}"
 
+            session.headers.update({
+                "Referer": _prev_ap_url,
+                "X-Requested-With": "XMLHttpRequest",
+            })
             resp = _fetch_with_retry(url, session, proxy_key=proxy_key, timeout=20)
+            _persist_cookies(session, resp)
+            _prev_ap_url = url
 
             if _is_blocked(resp):
                 if not listings:
@@ -675,7 +722,7 @@ def scrape_apartments_com(
             if not parsed and page > 1:
                 break
 
-            time.sleep(random.uniform(1.0, 2.5))
+            time.sleep(random.uniform(2.5, 5.0))
 
         except _plain_requests.exceptions.Timeout:
             return listings, "timeout" if not listings else "partial"

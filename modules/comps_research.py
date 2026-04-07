@@ -268,3 +268,49 @@ def search_competing_devs(
         geocoded.append(_geocode_dev(dev, neighborhood, borough))
 
     return geocoded
+
+
+def generate_pipeline_summary(devs: list[dict], neighborhood: str) -> str:
+    """
+    Generate a 2–3 sentence development pipeline summary from a list of devs.
+
+    Args:
+        devs: list returned by search_competing_devs()
+        neighborhood: neighborhood name for context
+
+    Returns a markdown-formatted summary string.
+    """
+    if not devs:
+        return f"No competing developments identified in {neighborhood}."
+
+    total = len(devs)
+    geocoded = sum(1 for d in devs if d.get("geocoded"))
+    total_units = sum(d.get("units", 0) or 0 for d in devs)
+
+    # Categorize by snippet keywords
+    _delivered, _pipeline, _planned = 0, 0, 0
+    for d in devs:
+        snip = (d.get("snippet", "") or "").lower()
+        if any(kw in snip for kw in ("delivered", "complete", "opened", "leasing")):
+            _delivered += 1
+        elif any(kw in snip for kw in ("under construction", "construction", "breaking ground")):
+            _pipeline += 1
+        elif any(kw in snip for kw in ("planned", "proposed", "approved", "permit")):
+            _planned += 1
+
+    parts = [
+        f"**{total} competing development{'s' if total != 1 else ''}** identified in {neighborhood}."
+    ]
+    if _delivered or _pipeline or _planned:
+        status_parts = []
+        if _delivered:
+            status_parts.append(f"**{_delivered} recently delivered**")
+        if _pipeline:
+            status_parts.append(f"**{_pipeline} under construction**")
+        if _planned:
+            status_parts.append(f"**{_planned} planned/proposed**")
+        parts.append(", ".join(status_parts) + ".")
+    if total_units > 0:
+        parts.append(f"Estimated **{total_units:,} total units** across identified projects.")
+
+    return " ".join(parts)
