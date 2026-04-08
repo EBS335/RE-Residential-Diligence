@@ -17,16 +17,14 @@ import plotly.graph_objects as go
 
 from modules.data_fetcher import fetch_all_listings
 from modules.analyzer import compute_summary, compute_insights
-from modules.visualizer import (
-    build_map, build_bar_chart, build_range_chart,
-    build_box_chart, build_scatter_chart
-)
+from modules.visualizer import build_map, build_bar_chart, build_range_chart
 from modules.zola_fetcher import fetch_zoning_info
-from modules.zoning_rules import get_zoning_rules
+from modules.zoning_rules import get_zoning_rules, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info
 from modules.massing_viz import build_massing_options, floor_plate_fig
 from modules.comps_research import search_competing_devs, generate_pipeline_summary
 from modules.neighborhood_fetcher import fetch_neighborhood_data
 from modules.acris_fetcher import fetch_acris
+from modules.articles_fetcher import fetch_nearby_articles
 from modules.unit_mix import (
     get_avg_sf, optimize_unit_mix, compute_revenue,
     avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf,
@@ -451,11 +449,11 @@ TRANSIT_HUBS = {
 # ── 2024/2025 NYC borough median rents (published market benchmarks) ──────────
 # Source: StreetEasy / Zillow / NYC Rent Guidelines Board Q4 2024
 BOROUGH_BENCHMARKS = {
-    "Manhattan": {"Studio": 3_200, "1 Bed": 4_200, "2 Bed": 5_800, "3 Bed": 7_500, "4+ Bed": 10_000},
-    "Brooklyn":  {"Studio": 2_500, "1 Bed": 3_200, "2 Bed": 4_100, "3 Bed": 5_500, "4+ Bed":  7_200},
-    "Queens":    {"Studio": 2_000, "1 Bed": 2_600, "2 Bed": 3_200, "3 Bed": 4_000, "4+ Bed":  5_500},
-    "Bronx":     {"Studio": 1_700, "1 Bed": 2_100, "2 Bed": 2_600, "3 Bed": 3_200, "4+ Bed":  4_200},
-    "Staten Island": {"Studio": 1_600, "1 Bed": 1_900, "2 Bed": 2_400, "3 Bed": 3_000, "4+ Bed": 3_800},
+    "Manhattan":   {"Studio": 2_950, "1 Bed": 4_100, "2 Bed": 5_500, "3 Bed": 7_200, "4+ Bed": 9_800},
+    "Brooklyn":    {"Studio": 2_400, "1 Bed": 3_100, "2 Bed": 4_100, "3 Bed": 5_200, "4+ Bed": 6_900},
+    "Queens":      {"Studio": 1_950, "1 Bed": 2_550, "2 Bed": 3_200, "3 Bed": 4_100, "4+ Bed": 5_200},
+    "Bronx":       {"Studio": 1_600, "1 Bed": 2_000, "2 Bed": 2_600, "3 Bed": 3_200, "4+ Bed": 4_100},
+    "Staten Island": {"Studio": 1_575, "1 Bed": 1_875, "2 Bed": 2_375, "3 Bed": 2_950, "4+ Bed": 3_700},
 }
 
 
@@ -1073,10 +1071,14 @@ if 'geo' in st.session_state:
         transit_tag = ' &nbsp;<span style="background:#DBEAFE;color:#1D4ED8;border-radius:20px;padding:3px 10px;font-size:0.75rem;font-weight:700;">🚇 Transit Hub</span>'
 
     # ── Info card ─────────────────────────────────────────────────────────────
+    _hn = geo.get("house_number", "").strip()
+    _sn = geo.get("street_name", "").strip().upper()
+    _addr_std = f"{_hn} {_sn}".strip() + f", {borough}, NY {zip_code}" if (_hn or _sn) else geo.get("formatted_address", "")
     st.markdown(f"""
     <div class="geo-card">
       <div class="geo-card-title">📍 Geocoding Result &nbsp; {badge}{demand_tag}{transit_tag}</div>
-      <div class="geo-address">{geo['formatted_address']}</div>
+      <div class="geo-address">{_addr_std}</div>
+      <div style="font-size:0.82rem;color:#6B7280;margin:2px 0 8px">{neighborhood} &nbsp;·&nbsp; {borough}</div>
       <div class="geo-row">
         <div class="geo-chip">
           🏙️ &nbsp;<span class="geo-chip-label">Borough</span>&nbsp; {borough}
@@ -1417,8 +1419,8 @@ if 'geo' in st.session_state:
                   <tbody>{bcomp_rows}</tbody>
                 </table>
                 <div style="font-size:0.70rem;color:#9CA3AF;margin-top:6px">
-                  * Borough medians from StreetEasy / NYC Rent Guidelines Board Q4 2024.
-                  Use as directional benchmark only.
+                  * Borough medians: <a href="https://streeteasy.com/blog/market-reports/" target="_blank" style="color:#6B7280">StreetEasy Market Reports Q4 2024</a> / NYC Rent Guidelines Board 2024.
+                  Directional benchmark only — verify with current market data.
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -1473,11 +1475,6 @@ if 'geo' in st.session_state:
         with col_range:
             st.plotly_chart(build_range_chart(summary_df),
                             use_container_width=True, config={"displayModeBar": False})
-
-        st.plotly_chart(build_box_chart(listings),
-                        use_container_width=True, config={"displayModeBar": False})
-        st.plotly_chart(build_scatter_chart(listings),
-                        use_container_width=True, config={"displayModeBar": False})
 
         # ── All Listings Table (collapsible) ──────────────────────────────
         st.markdown("---")
@@ -1575,27 +1572,75 @@ if 'geo' in st.session_state:
             _hb_com  = _hood_data.get("commercial", "")
             _hb_list = _hood_data.get("bullets", [])
             _hb_src  = _hood_data.get("sources", [])
+            _res_d   = _hood_data.get("res_data", {})
+            _ret_d   = _hood_data.get("retail_data", {})
+            _com_d   = _hood_data.get("commercial_data", {})
 
-            if _hb_res or _hb_com or _hb_list:
-                _hn1, _hn2 = st.columns(2)
-                with _hn1:
-                    if _hb_res:
-                        st.markdown("**🏠 Residential Market**")
+            if _hb_res or _hb_com or _hb_list or _res_d.get("studio_rent") or _ret_d.get("asking_rent_psf"):
+                # ── Structured data cards ──────────────────────────────────
+                _hc1, _hc2, _hc3 = st.columns(3)
+                with _hc1:
+                    st.markdown("**🏠 Residential Rents**")
+                    _res_rows = [
+                        ("Studio",    _res_d.get("studio_rent")),
+                        ("1 Bed",     _res_d.get("one_bd_rent")),
+                        ("2 Bed",     _res_d.get("two_bd_rent")),
+                        ("3 Bed",     _res_d.get("three_bd_rent")),
+                    ]
+                    _any_res = any(v for _, v in _res_rows)
+                    if _any_res:
+                        for _label, _val in _res_rows:
+                            _vstr = f"${_val:,}/mo" if _val else "—"
+                            st.markdown(
+                                f"<div style='display:flex;justify-content:space-between;font-size:0.83rem;"
+                                f"padding:2px 0;border-bottom:1px solid #F3F4F6'>"
+                                f"<span style='color:#6B7280'>{_label}</span>"
+                                f"<b>{_vstr}</b></div>",
+                                unsafe_allow_html=True,
+                            )
+                        if _res_d.get("condo_psf"):
+                            st.caption(f"Condo: ${_res_d['condo_psf']:,}/SF")
+                    else:
+                        if _hb_res:
+                            st.markdown(f"<div style='font-size:0.84rem;color:#374151;padding:4px 0'>{_hb_res[:200]}</div>", unsafe_allow_html=True)
+                with _hc2:
+                    st.markdown("**🏪 Retail Rents**")
+                    if _ret_d.get("asking_rent_psf"):
                         st.markdown(
-                            f"<div style='font-size:0.84rem;color:#374151;padding:8px 0'>{_hb_res}</div>",
+                            f"<div style='font-size:1.1rem;font-weight:700;color:#111827'>"
+                            f"${_ret_d['asking_rent_psf']:,} <span style='font-size:0.75rem;font-weight:400;color:#6B7280'>/SF/yr asking</span></div>",
                             unsafe_allow_html=True,
                         )
-                    if _hb_com:
-                        st.markdown("**🏪 Commercial / Retail**")
+                    if _ret_d.get("vacancy_pct"):
+                        st.caption(f"Vacancy: {_ret_d['vacancy_pct']:.1f}%")
+                    if _ret_d.get("tenant_types"):
                         st.markdown(
-                            f"<div style='font-size:0.84rem;color:#374151;padding:8px 0'>{_hb_com}</div>",
+                            " ".join(f"<span style='background:#EEF2FF;color:#4338CA;border-radius:12px;padding:2px 8px;font-size:0.72rem;margin:2px'>{t}</span>" for t in _ret_d["tenant_types"]),
                             unsafe_allow_html=True,
                         )
-                with _hn2:
-                    if _hb_list:
-                        st.markdown("**📊 Market Insights**")
-                        for _b in _hb_list[:8]:
-                            st.markdown(f"- {_b}")
+                    if not _ret_d.get("asking_rent_psf") and _hb_com:
+                        st.markdown(f"<div style='font-size:0.84rem;color:#374151;padding:4px 0'>{_hb_com[:200]}</div>", unsafe_allow_html=True)
+                with _hc3:
+                    st.markdown("**🏢 Commercial / Office**")
+                    if _com_d.get("asking_rent_psf"):
+                        st.markdown(
+                            f"<div style='font-size:1.1rem;font-weight:700;color:#111827'>"
+                            f"${_com_d['asking_rent_psf']:,} <span style='font-size:0.75rem;font-weight:400;color:#6B7280'>/SF/yr asking</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                    if _com_d.get("vacancy_pct"):
+                        st.caption(f"Vacancy: {_com_d['vacancy_pct']:.1f}%")
+                    if _com_d.get("tenant_types"):
+                        st.markdown(
+                            " ".join(f"<span style='background:#F0F9FF;color:#0369A1;border-radius:12px;padding:2px 8px;font-size:0.72rem;margin:2px'>{t}</span>" for t in _com_d["tenant_types"]),
+                            unsafe_allow_html=True,
+                        )
+
+                # ── Market Insights ────────────────────────────────────────
+                if _hb_list:
+                    st.markdown("**📊 Market Insights**")
+                    for _b in _hb_list[:6]:
+                        st.markdown(f"- {_b}")
 
                 if _hb_src:
                     with st.expander(f"Sources ({len(_hb_src)})", expanded=False):
@@ -1700,6 +1745,46 @@ if 'geo' in st.session_state:
                 "No competing development data found for this neighborhood. "
                 "This may be due to limited search results or a network issue."
             )
+
+        # ── Recent News & Transactions ─────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            "<div class='section-label'>📰 Recent News & Transactions</div>",
+            unsafe_allow_html=True,
+        )
+        _articles_key = f"_articles_{address_input.strip()[:40].lower()}_{neighborhood.lower()}"
+        if _articles_key not in st.session_state:
+            with st.spinner("Searching real estate news…"):
+                st.session_state[_articles_key] = fetch_nearby_articles(
+                    address_input.strip(), neighborhood, borough
+                )
+        _articles = st.session_state.get(_articles_key, [])
+
+        if _articles:
+            _art_cols = st.columns(2)
+            for _ai, _art in enumerate(_articles[:8]):
+                _src = _art.get("source", {})
+                _bg  = _src.get("bg", "#6B7280")
+                _fg  = _src.get("fg", "#FFFFFF")
+                _lbl = _src.get("label", "Web")
+                _dt  = _art.get("date_approx", "")
+                with _art_cols[_ai % 2]:
+                    st.markdown(
+                        f"<div style='background:white;border:1px solid #E5E7EB;"
+                        f"border-radius:10px;padding:10px 14px;margin-bottom:8px'>"
+                        f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>"
+                        f"<span style='background:{_bg};color:{_fg};border-radius:10px;padding:2px 8px;font-size:0.68rem;font-weight:700'>{_lbl}</span>"
+                        f"<span style='font-size:0.68rem;color:#9CA3AF'>{_dt}</span>"
+                        f"</div>"
+                        f"<div style='font-size:0.82rem;font-weight:600;color:#111827;margin-bottom:4px'>"
+                        f"<a href='{_art['url']}' target='_blank' style='color:#111827;text-decoration:none'>"
+                        f"{_art['title'][:80]}{'…' if len(_art['title']) > 80 else ''}</a></div>"
+                        f"<div style='font-size:0.75rem;color:#6B7280;line-height:1.4'>{_art.get('snippet','')[:150]}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.info(f"No news articles found for {neighborhood}. Results may be limited by search availability.")
 
         # ── NYC Zoning Information (ZOLA / PLUTO) ─────────────────────────
         st.markdown("---")
@@ -1830,10 +1915,14 @@ if 'geo' in st.session_state:
                                 f"{_acris_sum.get('total_docs', 0)} total docs")
 
                     _acris_url = _acris.get("acris_url", "")
+                    _acris_block = str(_zinfo.get("block", "")).zfill(5)
+                    _acris_lot   = str(_zinfo.get("lot", "")).zfill(4)
+                    _acris_bbl_label = f"Block: {_acris_block} · Lot: {_acris_lot}" if _acris_block.strip("0") else ""
                     if _acris_url:
                         st.caption(
                             f"Document history from [NYC ACRIS]({_acris_url}) · "
                             f"{_acris_sum.get('total_docs', 0)} recorded documents"
+                            + (f" · {_acris_bbl_label}" if _acris_bbl_label else "")
                         )
 
                     with st.expander("📜 Full Property History (ACRIS)", expanded=False):
@@ -2000,12 +2089,38 @@ if 'geo' in st.session_state:
                         _bullets.append("**Tower-on-Base:** Open space at grade required (typically 20–30% of lot) · Tower floor plate constraints apply")
                     if _mfar > _bfar:
                         _bullets.append(f"**Bonus FAR ({_mfar} max):** Available via Inclusionary Housing (MIH/IH) — 20–25% affordable units required. May require ULURP / CPC approval")
-                    _sp = _zinfo.get("special_dist") or _zinfo.get("special_dist2")
-                    if _sp and _sp != "—":
-                        _bullets.append(f"**Special District ({_sp}):** Additional design, use, and bulk regulations apply — consult NYC Planning special district text")
+                    # Overlay district
+                    _overlay = _zinfo.get("overlay") or ""
+                    if _overlay and _overlay != "—":
+                        _ov_info = COMMERCIAL_OVERLAYS.get(_overlay, {})
+                        _ov_uses = _ov_info.get("uses", "local retail and service establishments")
+                        _ov_far  = _ov_info.get("comm_far", "")
+                        _ov_far_str = f" · Commercial FAR up to {_ov_far}" if _ov_far else ""
+                        _bullets.append(f"**Commercial Overlay ({_overlay}):** Permits {_ov_uses}{_ov_far_str}. Activates ground-floor commercial on this residential lot.")
+                    # Special district
+                    for _sp_key in ["special_dist", "special_dist2", "special_dist3"]:
+                        _sp = _zinfo.get(_sp_key)
+                        if _sp and _sp != "—":
+                            _sp_info = get_special_district_info(_sp)
+                            if _sp_info:
+                                _bullets.append(
+                                    f"**Special District ({_sp} — {_sp_info['name']}):** "
+                                    f"{_sp_info['description'][:120]}… "
+                                    f"[NYC Planning →]({_sp_info['url']})"
+                                )
+                            else:
+                                _bullets.append(f"**Special District ({_sp}):** Additional design, use, and bulk regulations apply — consult NYC Planning special district text")
+                    # Historic district
                     _hist = _zinfo.get("historic_dist")
                     if _hist and _hist != "—":
-                        _bullets.append(f"**Historic District ({_hist}):** Landmarks Preservation Commission (LPC) review required for any exterior changes or new construction")
+                        _bullets.append(
+                            f"**Historic District ({_hist}):** LPC review required for any exterior changes or new construction. "
+                            f"[LPC website →](https://www.nyc.gov/site/lpc/index.page)"
+                        )
+                    # Split zone
+                    if _zinfo.get("split_zone") == "Y":
+                        _z2 = _zinfo.get("zoning_dist2", "")
+                        _bullets.append(f"**Split Zone:** Lot straddles {_primary_zone} and {_z2 or 'a secondary zone'} — most restrictive standards apply per NYC ZR.")
                     _bullets.append("**Approval Path:** As-of-right developments file only DOB permit. Bonus FAR, special permits, or variances require ULURP (typically 12–18 months)")
                     _bullets_html = "".join(f"<li style='margin-bottom:5px;font-size:0.82rem;color:#374151'>{b}</li>" for b in _bullets)
                     st.markdown(
@@ -2088,7 +2203,7 @@ if 'geo' in st.session_state:
                             _zrow("Building Area",    f"{_ba} SF"  if _ba  != "—" else "—") +
                             _zrow("Bldg Frontage",    f"{_bfr} ft" if _bfr != "—" else "—") +
                             _zrow("Bldg Depth",       f"{_bdp} ft" if _bdp != "—" else "—") +
-                            _zrow("Floors",           zi.get("num_floors")) +
+                            _zrow("Floors",           (lambda v: str(int(float(str(v).replace(",","")))) if v and str(v).replace(",","").replace(".","").isdigit() else v)(zi.get("num_floors"))) +
                             _zrow("Num. Buildings",   zi.get("num_buildings")) +
                             _zrow("Year Built",       zi.get("year_built")) +
                             _zrow("Year Last Mod.",   zi.get("year_last_mod")) +
@@ -2228,7 +2343,8 @@ if 'geo' in st.session_state:
 
                         # ── Existing Building Callout ─────────────────────
                         _ex_yr   = _zinfo.get("year_built", "—") or "—"
-                        _ex_flrs = _zinfo.get("num_floors", "—") or "—"
+                        _ex_flrs_raw = _zinfo.get("num_floors", "—") or "—"
+                        _ex_flrs = (str(int(float(str(_ex_flrs_raw).replace(",","")))) if str(_ex_flrs_raw).replace(",","").replace(".","").isdigit() else _ex_flrs_raw)
                         _ex_ba   = _zinfo.get("bldg_area_sqft", "—") or "—"
                         _ex_cls  = _zinfo.get("bldg_class", "—") or "—"
                         _ex_units= _zinfo.get("units_res", "—") or "—"
@@ -2264,16 +2380,85 @@ if 'geo' in st.session_state:
                                 [_parse_dim(l.get("lot_frontage_ft", 0)) for l in _valid_adj]
                             )
 
-                        # Build / retrieve massing options (separate cache key for combined lots)
+                        # ── Development Refinement Options ───────────────
+                        with st.expander("⚙️ Development Refinement Options", expanded=False):
+                            _rc1, _rc2 = st.columns(2)
+                            with _rc1:
+                                _dev_focus = st.radio(
+                                    "Development Focus (Primary Use)",
+                                    ["Residential", "Commercial", "Retail"],
+                                    index=["Residential", "Commercial", "Retail"].index(
+                                        st.session_state.get("dev_focus", "Residential")
+                                    ),
+                                    horizontal=True,
+                                    key="dev_focus",
+                                )
+                            with _rc2:
+                                _sub_comps = st.multiselect(
+                                    "Sub-Components",
+                                    ["Ground Floor Retail", "Commercial Office", "Residential Above"],
+                                    default=st.session_state.get("dev_sub_comps", ["Ground Floor Retail"]),
+                                    key="dev_sub_comps",
+                                )
+                            # Neighbor toggle
+                            _show_nbrs = st.checkbox(
+                                "Show neighboring properties in massing diagrams",
+                                value=st.session_state.get("show_nbr_toggle", False),
+                                key="show_nbr_toggle",
+                            )
+
+                        _dev_focus  = st.session_state.get("dev_focus", "Residential")
+                        _sub_comps  = st.session_state.get("dev_sub_comps", ["Ground Floor Retail"])
+                        _show_nbrs  = st.session_state.get("show_nbr_toggle", False)
+                        _sub_key    = "_".join(sorted(_sub_comps))
+
+                        # Fetch neighbor lots from PLUTO if toggle enabled
+                        _nbr_lots: list = []
+                        if _show_nbrs and _zinfo.get("block") and _zinfo.get("borough_code"):
+                            _nbr_cache_key = f"_nbr_{_zinfo.get('block')}_{_zinfo.get('borough_code')}"
+                            if _nbr_cache_key not in st.session_state:
+                                try:
+                                    import requests as _req
+                                    _nbr_resp = _req.get(
+                                        "https://data.cityofnewyork.us/resource/64uk-42ks.json",
+                                        params={
+                                            "$where": f"block='{_zinfo.get('block')}' AND borocode='{_zinfo.get('borough_code')}'",
+                                            "$select": "lot,address,lotfront,lotdepth,bldgarea,numfloors,heightroof,bldgclass",
+                                            "$limit": "20",
+                                        },
+                                        timeout=8,
+                                    )
+                                    _nbr_raw = _nbr_resp.json() if _nbr_resp.ok else []
+                                    # Tag each with side relative to subject lot
+                                    _subj_lot_int = int(re.sub(r"\D", "", str(_zinfo.get("lot", "0"))) or "0")
+                                    for _nb in _nbr_raw:
+                                        _nb_lot = int(re.sub(r"\D", "", str(_nb.get("lot", "0"))) or "0")
+                                        if _nb_lot != _subj_lot_int:
+                                            _nb["_side"] = "left" if _nb_lot < _subj_lot_int else "right"
+                                    st.session_state[_nbr_cache_key] = [
+                                        nb for nb in _nbr_raw if nb.get("_side")
+                                    ]
+                                except Exception:
+                                    st.session_state[_nbr_cache_key] = []
+                            _nbr_lots = st.session_state.get(_nbr_cache_key, [])
+
+                        # Build / retrieve massing options
                         _mass_key = (
-                            f"_massing_{_bbl_disp}_combined_{len(_valid_adj)}"
-                            if _using_combined else f"_massing_{_bbl_disp}"
+                            f"_massing_{_bbl_disp}_comb{len(_valid_adj)}"
+                            f"_f{_dev_focus}_s{_sub_key}_n{int(_show_nbrs)}"
+                            if _using_combined else
+                            f"_massing_{_bbl_disp}"
+                            f"_f{_dev_focus}_s{_sub_key}_n{int(_show_nbrs)}"
                         )
                         if _mass_key not in st.session_state:
                             st.session_state[_mass_key] = build_massing_options(
                                 _lf_v, _ld_v, _la_v, _primary_zone, _zrules,
                                 lot_widths=_lot_widths,
                                 existing_bldg=_existing_bldg if _existing_bldg["floors"] > 0 else None,
+                                focus=_dev_focus,
+                                sub_components=_sub_comps,
+                                show_neighbors=_show_nbrs,
+                                neighbor_lots=_nbr_lots,
                             )
                         _options = st.session_state.get(_mass_key, [])
 
@@ -2282,20 +2467,29 @@ if 'geo' in st.session_state:
 
                         if _options:
                             # ── Summary Metrics Table ─────────────────────
+                            _max_far_val = _zrules.get("max_far") or _zrules.get("base_far", 0)
+                            _max_bldg_sf = int(_la_v * _max_far_val) if _max_far_val > 0 else 0
                             _sum_rows = []
                             for _o in _options:
-                                _net_sf = _o.get("net_rentable_sqft", 0)
-                                _units  = _o.get("units_est", max(1, int(_net_sf / 750)))
+                                _net_sf    = _o.get("net_rentable_sqft", 0)
+                                _gross_sf  = _o.get("total_sqft", 0)
+                                _units     = _o.get("units_est", max(1, int(_net_sf / 750)))
+                                _far_used_pct = (
+                                    f"{int(_gross_sf / _max_bldg_sf * 100)}%"
+                                    if _max_bldg_sf > 0 else "—"
+                                )
                                 _sum_rows.append({
-                                    "#":          _o.get("number", ""),
-                                    "Scenario":   _o.get("name", "—"),
-                                    "Risk":       _o.get("risk_level", "—"),
-                                    "Stories":    _o.get("floors", 0),
-                                    "Height (ft)":_o.get("height_ft", 0),
-                                    "Gross SF":   _o.get("total_sqft", 0),
-                                    "Net SF":     _net_sf,
-                                    "Est. Units": _units,
-                                    "Loss %":     f"{int(_o.get('loss_factor',0.15)*100)}%",
+                                    "#":           _o.get("number", ""),
+                                    "Scenario":    _o.get("name", "—"),
+                                    "Risk":        _o.get("risk_level", "—"),
+                                    "Stories":     _o.get("floors", 0),
+                                    "Height (ft)": _o.get("height_ft", 0),
+                                    "Gross SF":    _gross_sf,
+                                    "Max Bldg SF": _max_bldg_sf,
+                                    "FAR Used":    _far_used_pct,
+                                    "Net SF":      _net_sf,
+                                    "Est. Units":  _units,
+                                    "Loss %":      f"{int(_o.get('loss_factor',0.15)*100)}%",
                                 })
                             _sum_df = pd.DataFrame(_sum_rows)
                             with st.expander("📊 All Scenarios — Summary Table", expanded=True):
@@ -2306,40 +2500,14 @@ if 'geo' in st.session_state:
                                     column_config={
                                         "#":           st.column_config.NumberColumn("#", width="small"),
                                         "Gross SF":    st.column_config.NumberColumn("Gross SF", format="%d"),
+                                        "Max Bldg SF": st.column_config.NumberColumn("Max Bldg SF", format="%d",
+                                                        help=f"Max buildable SF = lot area × max FAR ({_max_far_val})"),
                                         "Net SF":      st.column_config.NumberColumn("Net SF",   format="%d"),
                                         "Est. Units":  st.column_config.NumberColumn("Est. Units", format="%d"),
                                         "Stories":     st.column_config.NumberColumn("Stories",  format="%d"),
                                         "Height (ft)": st.column_config.NumberColumn("Height (ft)", format="%d"),
                                     },
                                 )
-
-                            # ── Thumbnail Grid (2 rows × 5) ───────────────
-                            st.markdown(
-                                "<div style='font-size:0.78rem;font-weight:700;color:#374151;"
-                                "margin:16px 0 6px'>Scenario Diagrams — All 10</div>",
-                                unsafe_allow_html=True,
-                            )
-                            _bbl_safe = re.sub(r"[^a-zA-Z0-9]", "_", str(_bbl_disp))
-                            _thumb_cols_a = st.columns(5)
-                            _thumb_cols_b = st.columns(5)
-                            for _ti, _topt in enumerate(_options[:10]):
-                                _tcol = _thumb_cols_a[_ti] if _ti < 5 else _thumb_cols_b[_ti - 5]
-                                with _tcol:
-                                    _tname = _topt['name'].split('. ', 1)[-1]
-                                    st.caption(f"**{_topt.get('number','')}** {_tname[:30]}")
-                                    _thumb_fig = go.Figure(_topt["fig"])
-                                    _thumb_fig.update_layout(
-                                        height=170,
-                                        margin=dict(l=0, r=0, t=20, b=0),
-                                        legend=dict(visible=False),
-                                        title=dict(text="", font=dict(size=9)),
-                                    )
-                                    st.plotly_chart(
-                                        _thumb_fig,
-                                        use_container_width=True,
-                                        config={"displayModeBar": False},
-                                        key=f"thumb_{_ti}_{_bbl_safe}",
-                                    )
 
                         if _options:
                             # ── Risk badge helper ────────────────────────
@@ -2674,6 +2842,70 @@ if 'geo' in st.session_state:
                     "Data from PLUTO (NYC Open Data), DOB BIS, Google Maps. "
                     "Assessment is indicative only — verify via full physical inspection."
                 )
+
+    # ── All Applicable Zoning Districts ───────────────────────────────────
+    if "_zinfo" in dir() and _zinfo:
+        _dist_entries = []
+        for _dk in ["zoning_dist", "zoning_dist2", "zoning_dist3"]:
+            _dv = _zinfo.get(_dk)
+            if _dv and _dv != "—":
+                _dr = get_zoning_rules(_dv)
+                _dist_entries.append(("zone", _dv, _dr))
+        for _ok in ["overlay", "overlay2"]:
+            _ov = _zinfo.get(_ok)
+            if _ov and _ov != "—":
+                _ov_info = COMMERCIAL_OVERLAYS.get(_ov)
+                _dist_entries.append(("overlay", _ov, _ov_info))
+        for _sk in ["special_dist", "special_dist2", "special_dist3"]:
+            _sv = _zinfo.get(_sk)
+            if _sv and _sv != "—":
+                _sp_info = get_special_district_info(_sv)
+                _dist_entries.append(("special", _sv, _sp_info))
+        _lh = _zinfo.get("ltd_height")
+        if _lh and _lh != "—":
+            _dist_entries.append(("limited_height", _lh, None))
+        _hd = _zinfo.get("historic_dist")
+        if _hd and _hd != "—":
+            _dist_entries.append(("historic", _hd, None))
+
+        if _dist_entries:
+            st.markdown("---")
+            st.markdown(
+                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                "🗂️ All Applicable Zoning Designations</div>",
+                unsafe_allow_html=True,
+            )
+            for _dtype, _dcode, _ddata in _dist_entries:
+                if _dtype == "zone" and _ddata:
+                    with st.expander(f"📐 {_dcode} — {_ddata.get('description', '')[:60]}", expanded=False):
+                        _zc1, _zc2 = st.columns(2)
+                        with _zc1:
+                            st.markdown(f"**Base FAR:** {_ddata.get('base_far')} · **Max FAR:** {_ddata.get('max_far')}")
+                            st.markdown(f"**Res. FAR:** {_ddata.get('res_far')} · **Comm. FAR:** {_ddata.get('comm_far', 0)}")
+                            st.markdown(f"**Base Height:** {_ddata.get('base_height_ft', 0)} ft · **Max Height:** {_ddata.get('max_height_ft', 0) or 'SEP'} ft")
+                        with _zc2:
+                            st.markdown(f"**Front Yard:** {_ddata.get('front_yard_ft', 0)} ft · **Rear Yard:** {_ddata.get('rear_yard_ft', 0)} ft · **Side Yard:** {_ddata.get('side_yard_ft', 0)} ft")
+                            st.markdown(f"**Max Lot Coverage:** {_ddata.get('lot_coverage_pct', 0) or '—'}%")
+                            st.markdown(f"**Contextual:** {'Yes' if _ddata.get('contextual') else 'No'} · **Sky Exp. Plane:** {'Yes' if _ddata.get('sky_exp_plane') else 'No'}")
+                        st.markdown(f"[NYC Zoning Text →](https://zoning.nyc.gov/) · [View on ZOLA →](https://zola.planning.nyc.gov/)")
+                elif _dtype == "overlay" and _ddata:
+                    with st.expander(f"🏪 Commercial Overlay {_dcode}", expanded=False):
+                        st.markdown(f"**Permitted Uses:** {_ddata.get('uses', 'local retail and service')}")
+                        st.markdown(f"**Commercial FAR:** {_ddata.get('comm_far', '—')}")
+                        st.markdown("[NYC Commercial Overlay Guide →](https://zoning.nyc.gov/)")
+                elif _dtype == "special" and _ddata:
+                    with st.expander(f"⭐ Special District {_dcode} — {_ddata.get('name', '')}", expanded=False):
+                        st.markdown(_ddata.get("description", ""))
+                        st.markdown(f"[NYC Planning Special District Text →]({_ddata.get('url', 'https://zoning.nyc.gov/')})")
+                elif _dtype == "limited_height":
+                    with st.expander(f"📏 Limited Height District {_dcode}", expanded=False):
+                        st.markdown(f"Limited height districts restrict building heights below the otherwise applicable zoning limits. Verify maximum height with NYC Planning for district **{_dcode}**.")
+                        st.markdown("[NYC Planning →](https://zoning.nyc.gov/)")
+                elif _dtype == "historic":
+                    with st.expander(f"🏛️ Historic District — {_dcode}", expanded=False):
+                        st.markdown(f"**{_dcode}** is a designated NYC Landmark or Historic District under LPC jurisdiction. All exterior alterations, demolitions, and new construction require a Certificate of Appropriateness (CofA) from the Landmarks Preservation Commission.")
+                        st.markdown("[LPC Website →](https://www.nyc.gov/site/lpc/index.page) · [LPC Search →](https://www.nyc.gov/site/lpc/designations/designation-reports.page)")
 
     # ── Source section ─────────────────────────────────────────────────────
     st.markdown("---")

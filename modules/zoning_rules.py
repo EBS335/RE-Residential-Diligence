@@ -583,3 +583,213 @@ def get_zoning_rules(district: str) -> dict | None:
 def all_districts() -> list[str]:
     """Return a sorted list of all known zoning district codes."""
     return sorted(_RULES.keys())
+
+
+# ── Special Districts Lookup ──────────────────────────────────────────────────
+# Maps NYC special purpose district codes → {name, description, url}
+# Source: NYC Planning Zoning Resolution, Article IX
+
+SPECIAL_DISTRICTS: dict[str, dict] = {
+    "SB": {
+        "name": "Special Battery Park City District",
+        "description": (
+            "Governs development in Battery Park City, Lower Manhattan. Requires compliance "
+            "with Battery Park City Authority design guidelines. Strict height, setback, and "
+            "ground-floor retail activation requirements."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-1",
+    },
+    "SCD": {
+        "name": "Special Coney Island District",
+        "description": (
+            "Encourages amusement and entertainment uses in Coney Island, Brooklyn. Includes "
+            "mandatory ground-floor entertainment uses and signage requirements along Surf Avenue. "
+            "Mixed-use residential and entertainment development promoted."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-5",
+    },
+    "SCE": {
+        "name": "Special Coastal Risk District",
+        "description": (
+            "Applies in flood-prone coastal areas. Requires ground-floor flood mitigation, "
+            "elevated mechanical systems, and limits certain ground-floor uses. Properties "
+            "may require FEMA flood zone compliance for financing."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-4",
+    },
+    "SCI": {
+        "name": "Special Clinton District",
+        "description": (
+            "Protects the Clinton neighborhood (Hell's Kitchen) in Manhattan. Restricts "
+            "demolition of residential buildings, requires replacement housing, and limits "
+            "commercial development on residential streets."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-9",
+    },
+    "SDI": {
+        "name": "Special Downtown Jamaica District",
+        "description": (
+            "Promotes transit-oriented mixed-use development around Jamaica Station, Queens. "
+            "Higher FARs near transit, ground-floor retail activation required on major corridors, "
+            "and streamlined approval for mixed-income housing."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-32",
+    },
+    "SG": {
+        "name": "Special Garment Center District",
+        "description": (
+            "Protects garment and light industrial space in Midtown Manhattan. Restrictions on "
+            "conversion of manufacturing loft space to non-industrial use. Floor area requirements "
+            "for preserving production space in certain sub-areas."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-12",
+    },
+    "SHP": {
+        "name": "Special Hunts Point District",
+        "description": (
+            "Promotes food distribution and manufacturing uses in Hunts Point, Bronx. "
+            "Restrictions on residential development in core industrial areas. "
+            "Focus on job retention in food supply chain facilities."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-43",
+    },
+    "SHY": {
+        "name": "Special Hudson Yards District",
+        "description": (
+            "Governs Manhattan's far West Side redevelopment. Includes FAR bonuses for public "
+            "space, mandatory ground-floor retail, phased development requirements, and "
+            "transit improvements tied to the 7 train extension. Very high permitted densities."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-33",
+    },
+    "SL": {
+        "name": "Special Lincoln Square District",
+        "description": (
+            "Applies to the Lincoln Center area on Manhattan's Upper West Side. Permits "
+            "higher densities near cultural institutions, requires theatrical/cultural uses "
+            "on certain sites, and includes specific streetscape requirements."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-8",
+    },
+    "SLI": {
+        "name": "Special Little Italy District",
+        "description": (
+            "Protects the historic character of Little Italy in Lower Manhattan. Limits "
+            "building heights, requires ground-floor retail consistent with the neighborhood's "
+            "cultural character, and restricts certain modern commercial uses."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-15",
+    },
+    "SMD": {
+        "name": "Special Midtown District",
+        "description": (
+            "Governs development in Midtown Manhattan's commercial core. Includes FAR "
+            "bonuses for public plazas, subway improvements, and theater preservation. "
+            "Sub-areas include Theater Sub-district, Fifth Avenue Sub-district, and "
+            "Grand Central Sub-district with specific use and bulk controls."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-17",
+    },
+    "SMP": {
+        "name": "Special Manhattan Parking District",
+        "description": (
+            "Restricts new accessory parking facilities in high-density Midtown areas to "
+            "reduce traffic congestion and encourage transit use. Limits on parking spaces "
+            "per building."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-13",
+    },
+    "SN": {
+        "name": "Special Natural Area District",
+        "description": (
+            "Protects environmentally sensitive natural features including ridgelines, "
+            "shorelines, and vegetation. Development must minimize disturbance to natural "
+            "topography and vegetation. Common in Staten Island and outer-borough hillside areas."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-16",
+    },
+    "SOC": {
+        "name": "Special Ocean Parkway District",
+        "description": (
+            "Applies along Ocean Parkway in Brooklyn. Preserves the historic character of "
+            "the parkway boulevard by restricting parking strips along the frontage and "
+            "maintaining consistent setbacks and landscaping."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-10",
+    },
+    "SP": {
+        "name": "Special Forest Hills Special District",
+        "description": (
+            "Preserves the historic garden city character of Forest Hills Gardens, Queens. "
+            "Strict controls on demolition, additions, and new construction to maintain "
+            "the neighborhood's English garden-style design."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-23",
+    },
+    "SRD": {
+        "name": "Special Sheepshead Bay / Brighton Beach District",
+        "description": (
+            "Governs development along the Sheepshead Bay waterfront. Restrictions on "
+            "building heights and uses near the bay to maintain recreational and "
+            "maritime character."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-11",
+    },
+    "SSQ": {
+        "name": "Special Union Square District",
+        "description": (
+            "Promotes active ground-floor retail and transit-oriented uses around Union "
+            "Square in Manhattan. FAR bonuses for subway station improvements and "
+            "public space activation."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-31",
+    },
+    "SWC": {
+        "name": "Special West Chelsea District",
+        "description": (
+            "Governs the High Line corridor in West Chelsea, Manhattan. Promotes mixed-use "
+            "development with ground-floor retail, arts-related uses, and High Line "
+            "access improvements. Includes FAR transfer provisions for High Line bonus."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-34",
+    },
+    "SWSS": {
+        "name": "Special West Side Sub-district",
+        "description": (
+            "Part of the larger Hudson Yards framework. Addresses areas west of Tenth "
+            "Avenue with specific height, setback, and use mix requirements tied to "
+            "public open space improvements."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-33",
+    },
+    "S125": {
+        "name": "Special 125th Street District",
+        "description": (
+            "Promotes economic vitality and cultural preservation along 125th Street (Harlem's "
+            "main commercial corridor) in Manhattan. Requires ground-floor active uses, "
+            "minimum commercial depths, and cultural facilities on certain sites."
+        ),
+        "url": "https://zoning.nyc.gov/article-ix/chapter-37",
+    },
+}
+
+# Commercial overlay use permissions
+COMMERCIAL_OVERLAYS: dict[str, dict] = {
+    "C1-1": {"uses": "local retail and personal service establishments", "comm_far": 1.0},
+    "C1-2": {"uses": "local retail and personal service establishments", "comm_far": 1.0},
+    "C1-3": {"uses": "local retail and personal service establishments", "comm_far": 1.0},
+    "C1-4": {"uses": "local retail and personal service establishments", "comm_far": 2.0},
+    "C1-5": {"uses": "local retail and personal service establishments", "comm_far": 2.0},
+    "C2-1": {"uses": "local retail, personal services, and community facilities", "comm_far": 1.0},
+    "C2-2": {"uses": "local retail, personal services, and community facilities", "comm_far": 1.0},
+    "C2-3": {"uses": "local retail, personal services, and community facilities", "comm_far": 1.0},
+    "C2-4": {"uses": "local retail, personal services, community facilities, and automotive services", "comm_far": 2.0},
+    "C2-5": {"uses": "local retail, personal services, community facilities, and automotive services", "comm_far": 2.0},
+}
+
+
+def get_special_district_info(code: str) -> dict | None:
+    """Return info dict for a special district code, or None if unknown."""
+    if not code:
+        return None
+    return SPECIAL_DISTRICTS.get(str(code).strip().upper())

@@ -10,20 +10,19 @@ Each scenario includes:
   - Faded dashed zoning envelope overlay (height limits, setback planes, SEP)
 
 Scenarios:
-  LOW RISK
+  LOW RISK (2)
     1. Gut Renovation / Adaptive Reuse        (25% loss factor)
     2. Contextual Infill — Base Height         (15% loss factor)
+  MEDIUM RISK (3)
     3. Low-Rise Residential (2–3 stories)      (15% loss factor)
-  MEDIUM RISK
     4. Mid-Rise Mixed-Use                      (15% loss factor)
     5. Standard Residential Tower              (15% loss factor)
-    6. Courtyard Apartment                     (15% loss factor)
-    7. Stacked Townhouse / Rowhouse            (15% loss factor)
-  HIGH RISK
-    8. Max FAR Residential Tower               (15% loss factor)
-    9. Slender Luxury Tower                    (15% loss factor)
-   10. Full Development — Max Bonus FAR (IH)   (15% loss factor)
-  - Zoning rules (FAR, height limits, setbacks from zoning_rules.py)
+  HIGH RISK (5)
+    6. Max FAR — 60% Footprint                 (15% loss factor)
+    7. Max FAR — 75% Footprint, Lower Height   (15% loss factor)
+    8. Max FAR — Full Coverage + Stepped       (15% loss factor)
+    9. Max FAR + IH/MIH Bonus (+20% FAR)       (15% loss factor)
+   10. Height Maximizer — Slender Tower        (15% loss factor)
 
 Each returns a go.Figure that can be rendered with st.plotly_chart().
 """
@@ -42,18 +41,23 @@ _CLR_ENV     = "rgba(180,180,180,0.50)"   # zoning envelope overlay
 # LOW risk — greens
 _CLR_LOW_1   = "rgba(16,185,129,0.38)"
 _CLR_LOW_2   = "rgba(52,211,153,0.38)"
-_CLR_LOW_3   = "rgba(110,231,183,0.38)"
 
 # MED risk — ambers
 _CLR_MED_1   = "rgba(245,158,11,0.42)"
 _CLR_MED_2   = "rgba(251,191,36,0.42)"
 _CLR_MED_3   = "rgba(253,224,71,0.42)"
-_CLR_MED_4   = "rgba(234,179,8,0.42)"
 
 # HIGH risk — reds
 _CLR_HIGH_1  = "rgba(239,68,68,0.45)"
 _CLR_HIGH_2  = "rgba(220,38,38,0.45)"
 _CLR_HIGH_3  = "rgba(185,28,28,0.45)"
+_CLR_HIGH_4  = "rgba(153,27,27,0.45)"
+_CLR_HIGH_5  = "rgba(127,29,29,0.48)"
+
+# Use-type colors
+_CLR_RETAIL  = "rgba(99,102,241,0.45)"    # indigo — retail/commercial base
+_CLR_COMM    = "rgba(59,130,246,0.40)"    # steel blue — commercial office
+_CLR_NBR     = "rgba(150,150,150,0.22)"   # gray — neighboring buildings
 
 
 # ── Mesh helpers ──────────────────────────────────────────────────────────────
@@ -504,7 +508,7 @@ def _option_2(lot_front, lot_depth, lot_area, rules, m) -> dict:
 
 
 def _option_3(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """LOW — Low-Rise Residential (2–3 Stories)"""
+    """MED — Low-Rise Residential (2–3 Stories)"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
     base_h, f2f      = m["base_h"], m["f2f"]
@@ -519,15 +523,15 @@ def _option_3(lot_front, lot_depth, lot_area, rules, m) -> dict:
     floors = max(2, int(height / f2f))
 
     traces = [
-        _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_LOW_3, name="Building Mass"),
-        _line_box(x0, y0, 0, x0+w, y0+d, height, color="#34D399"),
+        _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_MED_3, name="Building Mass"),
+        _line_box(x0, y0, 0, x0+w, y0+d, height, color="#CA8A04"),
         _label(lot_front/2, -2, height, f"{height:.0f} ft"),
     ]
     fig = _make_fig(lot_front, lot_depth, traces,
                     "3. Low-Rise Residential", height, rules)
     return _scenario_dict(
         name="3. Low-Rise Residential (2–3 Stories)",
-        risk_level="LOW",
+        risk_level="MED",
         number=3,
         description=(
             f"2–3 story building ({height:.0f} ft) across {fp_ratio*100:.0f}% of the "
@@ -652,110 +656,13 @@ def _option_5(lot_front, lot_depth, lot_area, rules, m) -> dict:
 
 
 def _option_6(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """MED — Courtyard Apartment"""
-    b_front, b_depth = m["b_front"], m["b_depth"]
-    fr, rr, sy       = m["fr"], m["rr"], m["sy"]
-    base_h, f2f      = m["base_h"], m["f2f"]
-    far              = m["far"]
-
-    fp_ratio = 0.90
-    w = max(10.0, b_front * fp_ratio)
-    d = max(10.0, b_depth * fp_ratio)
-    x0 = sy + (b_front - w) / 2
-    y0 = fr + (b_depth - d) / 2
-    height = base_h
-    floors = max(1, int(height / f2f))
-
-    ct_w = max(8.0, w * 0.30)
-    ct_d = max(8.0, d * 0.30)
-    ct_x = x0 + (w - ct_w) / 2
-    ct_y = y0 + (d - ct_d) / 2
-    net_floor = w * d - ct_w * ct_d
-
-    traces = [
-        _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_MED_3, name="Building Mass"),
-        _line_box(x0, y0, 0, x0+w, y0+d, height, color="#CA8A04"),
-        # Courtyard cutout (rendered as white void)
-        _box_mesh(ct_x, ct_y, 0, ct_x+ct_w, ct_y+ct_d, height,
-                  color="rgba(248,249,250,0.92)", name="Courtyard", show_legend=True),
-        _line_box(ct_x, ct_y, 0, ct_x+ct_w, ct_y+ct_d, height,
-                  color="#6EE7B7", width=2),
-        _label(lot_front/2, -2, height, f"{height:.0f} ft"),
-    ]
-    fig = _make_fig(lot_front, lot_depth, traces,
-                    "6. Courtyard Apartment", height, rules)
-    return _scenario_dict(
-        name="6. Courtyard Apartment",
-        risk_level="MED",
-        number=6,
-        description=(
-            f"Full perimeter building at {height:.0f} ft with a {ct_w:.0f}′×{ct_d:.0f}′ "
-            "central light court. Classic NYC typology — all units get natural light and air. "
-            f"Net floor plate ≈{net_floor:,.0f} SF per floor."
-        ),
-        strategy=(
-            "Premium rents for all units due to natural light access. "
-            "Strong for family-oriented renters. Higher per-unit cost offset by rent premium."
-        ),
-        fig=fig,
-        lot_area=lot_area, far=far * fp_ratio * (net_floor / max(1, w*d)),
-        height_ft=height, footprint_sqft=int(net_floor),
-        floors=floors, typical_floor_sqft=int(net_floor),
-        loss_factor=0.15,
-    )
-
-
-def _option_7(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """MED — Stacked Townhouse / Rowhouse"""
-    b_front, b_depth = m["b_front"], m["b_depth"]
-    fr, rr, sy       = m["fr"], m["rr"], m["sy"]
-    base_h, f2f      = m["base_h"], m["f2f"]
-    far              = m["far"]
-
-    fp_ratio = 0.95
-    w = max(10.0, b_front * fp_ratio)
-    d = max(10.0, b_depth * fp_ratio)
-    x0 = sy + (b_front - w) / 2
-    y0 = fr
-    height = max(30.0, min(base_h, 45.0))
-    floors = max(3, int(height / f2f))
-
-    traces = [
-        _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_MED_4, name="Building Mass"),
-        _line_box(x0, y0, 0, x0+w, y0+d, height, color="#B45309"),
-        _label(lot_front/2, -2, height, f"{height:.0f} ft"),
-    ]
-    fig = _make_fig(lot_front, lot_depth, traces,
-                    "7. Stacked Townhouse", height, rules)
-    return _scenario_dict(
-        name="7. Stacked Townhouse / Rowhouse",
-        risk_level="MED",
-        number=7,
-        description=(
-            f"3–4 story attached rowhouses or stacked townhouse format at {height:.0f} ft. "
-            "Full frontage build-out creates a continuous street wall. Works well in "
-            "contextual R4–R6 districts where street character is preserved."
-        ),
-        strategy=(
-            "Townhouse premiums of 15–20% above comparable apartments. "
-            "Appeals to families and tenants seeking multi-floor private living."
-        ),
-        fig=fig,
-        lot_area=lot_area, far=far * fp_ratio * (height / max(base_h, 1)),
-        height_ft=height, footprint_sqft=w*d,
-        floors=floors, typical_floor_sqft=int(w*d/floors),
-        loss_factor=0.15,
-    )
-
-
-def _option_8(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """HIGH — Max FAR Residential Tower"""
+    """HIGH — Max FAR — 60% Footprint, Standard Setbacks"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
     base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
     far              = m["far"]
 
-    fp_ratio = 0.55
+    fp_ratio = 0.60
     w = max(10.0, b_front * fp_ratio)
     d = max(10.0, b_depth * fp_ratio)
     x0 = sy + (b_front - w) / 2
@@ -774,19 +681,19 @@ def _option_8(lot_front, lot_depth, lot_area, rules, m) -> dict:
         ]
     traces.append(_label(lot_front/2, -2, height, f"{height:.0f} ft"))
     fig = _make_fig(lot_front, lot_depth, traces,
-                    "8. Max FAR Tower", height, rules)
+                    "6. Max FAR Tower (60%)", height, rules)
     return _scenario_dict(
-        name="8. Max FAR Residential Tower",
+        name="6. Max FAR — 60% Footprint",
         risk_level="HIGH",
-        number=8,
+        number=6,
         description=(
-            f"**55% footprint** tower rising to **{height:.0f} ft** (**{floors} floors**), "
-            "utilizing **maximum permitted residential FAR**. Full air rights build-out "
-            "maximizes rentable area and exit value."
+            f"**60% buildable footprint** rising to **{height:.0f} ft** (**{floors} floors**). "
+            "Full air rights build-out at maximum permitted residential FAR. "
+            "Standard setbacks maintained — fully as-of-right at max density."
         ),
         strategy=(
-            "Maximizes **gross value** and rental income. Requires deep equity, robust "
-            "construction budget, and premium rents to pencil. Best for **institutional capital**."
+            "Maximizes **gross value** and rental income at standard setbacks. "
+            "Requires deep equity and robust construction budget. Best for **institutional capital**."
         ),
         fig=fig,
         lot_area=lot_area, far=far,
@@ -796,60 +703,115 @@ def _option_8(lot_front, lot_depth, lot_area, rules, m) -> dict:
     )
 
 
-def _option_9(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """HIGH — Slender Luxury Tower"""
+def _option_7(lot_front, lot_depth, lot_area, rules, m) -> dict:
+    """HIGH — Max FAR — 75% Footprint, Reduced Setbacks"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
     base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
     far              = m["far"]
 
-    fp_ratio = 0.30
-    w = max(10.0, b_front * fp_ratio)
-    d = max(10.0, b_depth * fp_ratio)
-    x0 = sy + (b_front - w) / 2
-    y0 = fr + (b_depth - d) / 2
-    # Derive height from full FAR utilization on the slim footprint
+    fp_ratio = 0.75
+    # Reduced side yards for larger footprint
+    red_sy = max(0.0, sy * 0.5)
+    w = max(10.0, b_front - 2 * red_sy)
+    d = max(10.0, b_depth - fr - max(0.0, rr * 0.6))
+    w = min(w, b_front * fp_ratio)
+    x0 = red_sy
+    y0 = fr
+    # Lower height to maintain same FAR on larger footprint
     fp_sqft = w * d
-    far_height = (far * lot_area / fp_sqft) * f2f if fp_sqft > 0 else 0
-    height = min(400.0, max(100.0, far_height if far_height > 0 else (max_h * 1.2 if max_h > 0 else base_h * 3)))
+    far_height = (far * (b_front * b_depth) / fp_sqft) * f2f if fp_sqft > 0 else 0
+    height = max(40.0, min(max_h if max_h > 0 else base_h * 2, far_height))
     floors = max(1, int(height / f2f))
 
-    x_center = sy + b_front / 2
-    if rules.get("sky_exp_plane") and base_h > 0 and max_h > base_h:
-        traces = _sep_stepped_boxes(x_center, fr, w, d, base_h, height,
-                                    _CLR_HIGH_2, "#B91C1C", "Building Mass")
-    else:
-        traces = [
-            _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_HIGH_2, name="Building Mass"),
-            _line_box(x0, y0, 0, x0+w, y0+d, height, color="#B91C1C"),
-        ]
-    traces.append(_label(lot_front/2, -2, height, f"{height:.0f} ft"))
+    traces = [
+        _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_HIGH_2, name="Building Mass"),
+        _line_box(x0, y0, 0, x0+w, y0+d, height, color="#B91C1C"),
+        _label(lot_front/2, -2, height, f"{height:.0f} ft"),
+    ]
     fig = _make_fig(lot_front, lot_depth, traces,
-                    "9. Slender Luxury Tower", height, rules)
+                    "7. Max FAR Tower (75%)", height, rules)
     return _scenario_dict(
-        name="9. Slender Luxury Tower",
+        name="7. Max FAR — 75% Footprint, Reduced Setbacks",
         risk_level="HIGH",
-        number=9,
+        number=7,
         description=(
-            f"**Ultra-slim 30% footprint** tower rising to **{height:.0f} ft** (**{floors} floors**). "
-            "Maximizes height over footprint for view premium and luxury positioning. "
-            "**Full FAR utilization** on slender floor plate — requires favorable sky exposure plane or tower rules."
+            f"**Large 75% footprint** ({w:.0f}′×{d:.0f}′) with reduced side yards, "
+            f"rising to **{height:.0f} ft** (**{floors} floors**). "
+            "Wide floor plates maximize typical-floor efficiency. "
+            "Requires setback waivers or variance — higher entitlement risk."
         ),
         strategy=(
-            "**Luxury/condo-conversion** pricing premium on upper floors. "
-            "High construction cost per SF offset by top-floor revenue. "
-            "Best for sites with unobstructed views or **air rights acquisitions**."
+            "Wide floor plates reduce core-to-perimeter ratio, improving unit mix flexibility. "
+            "Lower per-floor cost; offset by entitlement complexity. Good for large family units."
         ),
         fig=fig,
-        lot_area=lot_area, far=far * 1.0,
+        lot_area=lot_area, far=far,
         height_ft=height, footprint_sqft=w*d,
         floors=floors, typical_floor_sqft=w*d,
         loss_factor=0.15,
     )
 
 
-def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """HIGH — Full Development — Max Bonus FAR (IH/MIH)"""
+def _option_8(lot_front, lot_depth, lot_area, rules, m) -> dict:
+    """HIGH — Max FAR — Full Ground Coverage + Stepped Upper Floors"""
+    b_front, b_depth = m["b_front"], m["b_depth"]
+    fr, rr, sy       = m["fr"], m["rr"], m["sy"]
+    base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
+    far              = m["far"]
+
+    # Ground floor: near-full lot coverage (podium)
+    pod_w = max(10.0, lot_front * 0.95)
+    pod_d = max(10.0, lot_depth * 0.90)
+    pod_h = max(base_h, 20.0)
+
+    # Tower above: SEP-stepped, narrower
+    tower_fp = 0.50
+    tw = max(10.0, b_front * tower_fp)
+    td = max(10.0, b_depth * tower_fp)
+    x_center = lot_front / 2
+    height = max(pod_h + 40.0, max_h if max_h > 0 else base_h * 2.5)
+    floors = max(1, int(height / f2f))
+
+    traces = [
+        # Podium
+        _box_mesh(lot_front * 0.025, 0, 0, lot_front * 0.975, pod_d, pod_h,
+                  color=_CLR_HIGH_3, name="Podium"),
+        _line_box(lot_front * 0.025, 0, 0, lot_front * 0.975, pod_d, pod_h,
+                  color="#991B1B"),
+    ]
+    # Tower stepped above podium
+    traces.extend(_sep_stepped_boxes(
+        x_center, fr, tw, td, pod_h, height,
+        _CLR_HIGH_3, "#991B1B", "Tower Above",
+    ))
+    traces.append(_label(lot_front/2, -2, height, f"{height:.0f} ft"))
+    fig = _make_fig(lot_front, lot_depth, traces,
+                    "8. Full Coverage + Stepped Tower", height, rules)
+    return _scenario_dict(
+        name="8. Max FAR — Full Coverage + Stepped Tower",
+        risk_level="HIGH",
+        number=8,
+        description=(
+            f"Near-full ground coverage podium ({pod_h:.0f} ft) with a SEP-stepped "
+            f"tower rising to **{height:.0f} ft** (**{floors} floors**). "
+            "Ground floor maximizes retail/amenity program; tower steps back per sky exposure plane."
+        ),
+        strategy=(
+            "Maximizes ground-floor commercial/retail revenue and residential density. "
+            "Complex massing — requires careful SEP compliance. "
+            "Ideal for high-foot-traffic commercial corridors with residential above."
+        ),
+        fig=fig,
+        lot_area=lot_area, far=far * 1.0,
+        height_ft=height, footprint_sqft=pod_w*pod_d,
+        floors=floors, typical_floor_sqft=tw*td,
+        loss_factor=0.15,
+    )
+
+
+def _option_9(lot_front, lot_depth, lot_area, rules, m) -> dict:
+    """HIGH — Max FAR + IH/MIH Bonus (+20% FAR)"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
     base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
@@ -867,21 +829,20 @@ def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
     height      = min(300.0, max(base_h, height_raw))
     floors      = max(1, int(height / f2f))
 
-    # Color: darker red for IH bonus
     traces = [
-        _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_HIGH_3, name="Building Mass"),
+        _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_HIGH_4, name="Building Mass"),
         _line_box(x0, y0, 0, x0+w, y0+d, height, color="#991B1B"),
         _label(lot_front/2, -2, height, f"{height:.0f} ft"),
     ]
     fig = _make_fig(lot_front, lot_depth, traces,
-                    "10. Max Bonus FAR (IH)", height, rules)
+                    "9. Max Bonus FAR (IH/MIH)", height, rules)
     return _scenario_dict(
-        name="10. Full Development — Max Bonus FAR (IH)",
+        name="9. Max FAR + IH/MIH Bonus",
         risk_level="HIGH",
-        number=10,
+        number=9,
         description=(
-            f"**Full 60% footprint** development using **Inclusionary Housing (IH/MIH) "
-            f"+20% FAR bonus**, reaching **{height:.0f} ft** (**{floors} floors**). "
+            f"**Full 60% footprint** using **Inclusionary Housing (IH/MIH) +20% FAR bonus**, "
+            f"reaching **{height:.0f} ft** (**{floors} floors**). "
             "20–25% of units must be affordable (MIH Option 1 or 2)."
         ),
         strategy=(
@@ -897,15 +858,75 @@ def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
     )
 
 
+def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
+    """HIGH — Height Maximizer — Slender Tower"""
+    b_front, b_depth = m["b_front"], m["b_depth"]
+    fr, rr, sy       = m["fr"], m["rr"], m["sy"]
+    base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
+    far              = m["far"]
+
+    fp_ratio = 0.30
+    w = max(10.0, b_front * fp_ratio)
+    d = max(10.0, b_depth * fp_ratio)
+    x0 = sy + (b_front - w) / 2
+    y0 = fr + (b_depth - d) / 2
+    fp_sqft = w * d
+    far_height = (far * lot_area / fp_sqft) * f2f if fp_sqft > 0 else 0
+    height = min(400.0, max(100.0, far_height if far_height > 0 else (max_h * 1.2 if max_h > 0 else base_h * 3)))
+    floors = max(1, int(height / f2f))
+
+    x_center = sy + b_front / 2
+    if rules.get("sky_exp_plane") and base_h > 0 and max_h > base_h:
+        traces = _sep_stepped_boxes(x_center, fr, w, d, base_h, height,
+                                    _CLR_HIGH_5, "#7F1D1D", "Building Mass")
+    else:
+        traces = [
+            _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_HIGH_5, name="Building Mass"),
+            _line_box(x0, y0, 0, x0+w, y0+d, height, color="#7F1D1D"),
+        ]
+    traces.append(_label(lot_front/2, -2, height, f"{height:.0f} ft"))
+    fig = _make_fig(lot_front, lot_depth, traces,
+                    "10. Height Maximizer — Slender Tower", height, rules)
+    return _scenario_dict(
+        name="10. Height Maximizer — Slender Tower",
+        risk_level="HIGH",
+        number=10,
+        description=(
+            f"**Ultra-slim 30% footprint** tower rising to **{height:.0f} ft** (**{floors} floors**). "
+            "Maximizes height over footprint for view premium and luxury positioning. "
+            "**Full FAR utilization** on slender floor plate — requires tower rules or favorable sky exposure plane."
+        ),
+        strategy=(
+            "**Luxury/condo-conversion** pricing premium on upper floors. "
+            "High construction cost per SF offset by top-floor revenue. "
+            "Best for sites with unobstructed views or **air rights acquisitions**."
+        ),
+        fig=fig,
+        lot_area=lot_area, far=far,
+        height_ft=height, footprint_sqft=w*d,
+        floors=floors, typical_floor_sqft=w*d,
+        loss_factor=0.15,
+    )
+
+
 def floor_plate_fig(
     footprint_w: float,
     footprint_d: float,
     is_ground: bool = False,
     is_mixed_use: bool = False,
+    is_commercial: bool = False,
+    is_retail: bool = False,
 ) -> go.Figure:
     """
-    2D top-down floor plate layout showing indicative unit placement.
-    Returns a go.Figure suitable for st.plotly_chart() at height=280.
+    2D top-down floor plate layout showing indicative unit/space placement.
+    Returns a go.Figure suitable for st.plotly_chart() at height=380.
+
+    Modes:
+      is_commercial=True  — open office floor plate with columns and core
+      is_retail=True      — retail bays with storefront at bottom edge
+      is_ground + is_mixed_use — ground floor with retail strip + lobby
+      is_ground only      — lobby/amenity core
+      default             — typical residential floor with corridor + units
     """
     traces = []
 
@@ -922,7 +943,94 @@ def floor_plate_fig(
         hoverinfo="skip",
     ))
 
-    if is_ground and is_mixed_use:
+    if is_commercial:
+        # Open office floor plate: boundary, structural columns, core, label
+        col_spacing_x = max(15.0, footprint_w / max(2, int(footprint_w / 25)))
+        col_spacing_y = max(15.0, footprint_d / max(2, int(footprint_d / 25)))
+        core_w = min(footprint_w * 0.20, 25.0)
+        core_d = min(footprint_d * 0.30, 35.0)
+        cx0 = footprint_w/2 - core_w/2
+        cx1 = footprint_w/2 + core_w/2
+        cy0 = footprint_d/2 - core_d/2
+        cy1 = footprint_d/2 + core_d/2
+        # Office fill
+        traces.append(go.Scatter(
+            x=[0, footprint_w, footprint_w, 0, 0],
+            y=[0, 0, footprint_d, footprint_d, 0],
+            mode="lines", line=dict(color="#2563EB", width=1),
+            fill="toself", fillcolor="rgba(59,130,246,0.10)",
+            name="Open Office Area", showlegend=True, hoverinfo="skip",
+        ))
+        # Structural columns
+        xc = col_spacing_x / 2
+        while xc < footprint_w - 2:
+            yc = col_spacing_y / 2
+            while yc < footprint_d - 2:
+                r = 1.2
+                traces.append(go.Scatter(
+                    x=[xc-r, xc+r, xc+r, xc-r, xc-r],
+                    y=[yc-r, yc-r, yc+r, yc+r, yc-r],
+                    mode="lines", line=dict(color="#94A3B8", width=1),
+                    fill="toself", fillcolor="rgba(148,163,184,0.50)",
+                    showlegend=False, hoverinfo="skip",
+                ))
+                yc += col_spacing_y
+            xc += col_spacing_x
+        # Elevator/stair core
+        traces.append(go.Scatter(
+            x=[cx0, cx1, cx1, cx0, cx0],
+            y=[cy0, cy0, cy1, cy1, cy0],
+            mode="lines", line=dict(color="#1D4ED8", width=2),
+            fill="toself", fillcolor="rgba(59,130,246,0.35)",
+            name="Core / Mechanicals", showlegend=True, hoverinfo="skip",
+        ))
+        traces.append(go.Scatter(
+            x=[footprint_w/2], y=[footprint_d/2],
+            mode="text", text=["CORE"], showlegend=False,
+            textfont=dict(size=9, color="#FFFFFF"), hoverinfo="skip",
+        ))
+        traces.append(go.Scatter(
+            x=[footprint_w/2], y=[footprint_d * 0.82],
+            mode="text", text=["OPEN OFFICE FLOOR PLATE"], showlegend=False,
+            textfont=dict(size=10, color="#1D4ED8"), hoverinfo="skip",
+        ))
+    elif is_retail:
+        # Retail bays: storefront at bottom, bays ~30 ft wide
+        bay_w = min(30.0, max(15.0, footprint_w / max(1, round(footprint_w / 30))))
+        n_bays = max(1, int(footprint_w / bay_w))
+        actual_bay_w = footprint_w / n_bays
+        for bi in range(n_bays):
+            bx0 = bi * actual_bay_w + 0.5
+            bx1 = (bi + 1) * actual_bay_w - 0.5
+            traces.append(go.Scatter(
+                x=[bx0, bx1, bx1, bx0, bx0],
+                y=[0, 0, footprint_d, footprint_d, 0],
+                mode="lines", line=dict(color="#6366F1", width=1.5),
+                fill="toself",
+                fillcolor="rgba(99,102,241," + ("0.22" if bi % 2 == 0 else "0.12") + ")",
+                name="Retail Bay" if bi == 0 else "",
+                showlegend=(bi == 0),
+                legendgroup="retail",
+                hoverinfo="skip",
+            ))
+            approx_sf = int(actual_bay_w * footprint_d)
+            traces.append(go.Scatter(
+                x=[bx0 + actual_bay_w/2], y=[footprint_d/2],
+                mode="text", text=[f"BAY {bi+1}<br>~{approx_sf} SF"],
+                showlegend=False, textfont=dict(size=9, color="#4338CA"), hoverinfo="skip",
+            ))
+        # Storefront indicator
+        traces.append(go.Scatter(
+            x=[0, footprint_w], y=[1.5, 1.5],
+            mode="lines", line=dict(color="#4338CA", width=3, dash="solid"),
+            name="Storefront (Street)", showlegend=True, hoverinfo="skip",
+        ))
+        traces.append(go.Scatter(
+            x=[footprint_w/2], y=[footprint_d * 0.88],
+            mode="text", text=["RETAIL FLOOR PLATE  ←  STREET FRONTAGE"],
+            showlegend=False, textfont=dict(size=9, color="#4338CA"), hoverinfo="skip",
+        ))
+    elif is_ground and is_mixed_use:
         # Ground floor of mixed-use: retail strip at front, lobby/core behind
         retail_d = min(footprint_d * 0.35, 25.0)
         # Retail
@@ -1104,14 +1212,24 @@ def build_massing_options(
     rules: dict,
     lot_widths: list | None = None,
     existing_bldg: dict | None = None,
+    focus: str = "Residential",
+    sub_components: list | None = None,
+    show_neighbors: bool = False,
+    neighbor_lots: list | None = None,
 ) -> list[dict]:
     """
     Generate 10 massing scenario dicts for the given lot + zoning rules.
 
     Scenarios span three investment risk tiers:
-      LOW  (1–3): Gut Reno, Contextual Infill, Low-Rise
-      MED  (4–7): Mixed-Use, Standard Tower, Courtyard, Rowhouse
-      HIGH (8–10): Max FAR Tower, Slender Luxury, Max Bonus FAR
+      LOW  (1–2): Gut Reno, Contextual Infill
+      MED  (3–5): Low-Rise, Mixed-Use, Standard Tower
+      HIGH (6–10): Max FAR 60%, Max FAR 75%, Full Coverage+Stepped, IH Bonus, Slender Tower
+
+    Args:
+        focus: "Residential" | "Commercial" | "Retail"
+        sub_components: list of "Ground Floor Retail" | "Commercial Office" | "Residential Above"
+        show_neighbors: if True, inject neighbor traces into each figure
+        neighbor_lots: list of neighbor PLUTO dicts with lotfront/numfloors
 
     Each dict contains:
       name, risk_level, description, strategy, fig (go.Figure),
@@ -1153,4 +1271,76 @@ def build_massing_options(
                 for tr in boundary_traces:
                     opt["fig"].add_trace(tr)
 
+    # Inject neighboring property silhouettes when requested
+    if show_neighbors and neighbor_lots:
+        nbr_traces = _neighbor_traces(lot_front, lot_depth, neighbor_lots)
+        for opt in options:
+            if opt and "fig" in opt:
+                for tr in nbr_traces:
+                    opt["fig"].add_trace(tr)
+
     return options
+
+
+def _neighbor_traces(subject_front: float, subject_depth: float,
+                     nbr_lots: list) -> list:
+    """
+    Build semi-transparent gray box traces for neighboring buildings.
+    Positions up to 3 neighbors on each side (left/right) of the subject lot.
+    Neighbors with lower lot numbers are placed to the left (negative X offset),
+    higher lot numbers to the right (positive X offset past subject_front).
+    """
+    traces = []
+    left_x  = 0.0
+    right_x = subject_front
+
+    first = True
+    for nb in nbr_lots[:6]:
+        try:
+            nb_front  = max(10.0, float(nb.get("lotfront") or nb.get("lot_frontage_ft") or 25))
+            nb_floors = max(1, float(nb.get("numfloors") or nb.get("num_floors") or 2))
+            nb_height = nb_floors * 11.0
+            nb_depth  = max(20.0, float(nb.get("lotdepth") or nb.get("lot_depth_ft") or subject_depth))
+        except (TypeError, ValueError):
+            continue
+
+        side = nb.get("_side", "left")
+        if side == "left":
+            x0 = left_x - nb_front
+            x1 = left_x
+            left_x = x0
+        else:
+            x0 = right_x
+            x1 = right_x + nb_front
+            right_x = x1
+
+        y0 = 0.0
+        y1 = min(nb_depth, subject_depth)
+        lbl = "Neighboring Buildings" if first else ""
+        traces.append(go.Mesh3d(
+            x=[x0, x0, x1, x1, x0, x0, x1, x1],
+            y=[y0, y1, y1, y0, y0, y1, y1, y0],
+            z=[0,  0,  0,  0,  nb_height, nb_height, nb_height, nb_height],
+            i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
+            j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
+            k=[0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6],
+            color=_CLR_NBR,
+            opacity=0.30,
+            name=lbl,
+            showlegend=first,
+            flatshading=True,
+            lighting=dict(ambient=0.8, diffuse=0.5),
+        ))
+        traces.append(go.Scatter3d(
+            x=[x0,x1,x1,x0,x0, x0,x1,x1,x0,x0, x0,x0, x1,x1, x1,x1, x0,x0],
+            y=[y0,y0,y1,y1,y0, y0,y0,y1,y1,y0, y0,y0, y0,y0, y1,y1, y1,y1],
+            z=[0, 0, 0, 0, 0,  nb_height,nb_height,nb_height,nb_height,nb_height,
+               0,nb_height, 0,nb_height, 0,nb_height, 0,nb_height],
+            mode="lines",
+            line=dict(color="#9CA3AF", width=1),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+        first = False
+
+    return traces
