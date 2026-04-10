@@ -1452,6 +1452,13 @@ if 'geo' in st.session_state:
         _ds_dist_level   = 0
         _nearby_listings = []
 
+        def _sf(v, d: float = 0.0) -> float:
+            """Safe float: handles None, '—', and comma-formatted strings like '5,000'."""
+            try:
+                return float(str(v or "").replace(",", "").strip())
+            except (ValueError, TypeError):
+                return d
+
         _ds_t1, _ds_t2, _ds_t3, _ds_t4, _ds_t5, _ds_t6 = st.tabs([
             "📋 Parcel Data",
             "📈 Underbuilt?",
@@ -1489,7 +1496,7 @@ if 'geo' in st.session_state:
                     st.markdown(_p_html + "</table>", unsafe_allow_html=True)
                 with _p_c2:
                     st.markdown("**📐 FAR & Financials**")
-                    _la_v = int(float(_ds_zi.get("lot_area_sqft") or 0))
+                    _la_v = int(_sf(_ds_zi.get("lot_area_sqft")))
                     _p_right = [
                         ("Lot Area",       f"{_la_v:,} SF" if _la_v else "—"),
                         ("Lot Frontage",   f"{_ds_zi.get('lot_frontage_ft', '—')} ft"),
@@ -1512,12 +1519,12 @@ if 'geo' in st.session_state:
 
         # ── Tab 2: Underbuilt / Value-Add Detection ──────────────────────────
         with _ds_t2:
-            _ub_lot_area   = float(_ds_zi.get("lot_area_sqft") or 0)
+            _ub_lot_area   = _sf(_ds_zi.get("lot_area_sqft"))
             _ub_max_far    = max(
-                float(_ds_zi.get("far_residential") or 0),
-                float(_ds_zi.get("far_commercial")  or 0),
+                _sf(_ds_zi.get("far_residential")),
+                _sf(_ds_zi.get("far_commercial")),
             )
-            _ub_built_far  = float(_ds_zi.get("far_built") or 0)
+            _ub_built_far  = _sf(_ds_zi.get("far_built"))
             _ub_unused_far = max(0.0, _ub_max_far - _ub_built_far)
             _ub_unused_pct = (_ub_unused_far / _ub_max_far * 100) if _ub_max_far > 0 else 0.0
             _ub_add_sf     = int(_ub_unused_far * _ub_lot_area)
@@ -1741,10 +1748,10 @@ if 'geo' in st.session_state:
                     if l.get("lot") and abs(int(l.get("lot", 0)) - _subj_lot_num) <= 3
                     and int(l.get("lot", 0)) != _subj_lot_num
                 ]
-                _subj_la_as = _ub_lot_area or float(_ds_zi.get("lot_area_sqft") or 0)
+                _subj_la_as = _ub_lot_area or _sf(_ds_zi.get("lot_area_sqft"))
                 _as_max_far = _ub_max_far or max(
-                    float(_ds_zi.get("far_residential") or 0),
-                    float(_ds_zi.get("far_commercial")  or 0),
+                    _sf(_ds_zi.get("far_residential")),
+                    _sf(_ds_zi.get("far_commercial")),
                 )
                 _comb_la       = _subj_la_as + sum(float(l.get("lotarea") or 0) for l in _adj_lots_as)
                 _indiv_sf      = _subj_la_as * _as_max_far
