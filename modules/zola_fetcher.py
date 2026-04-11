@@ -285,7 +285,7 @@ def fetch_zoning_info(address: str, lat: float = None, lon: float = None) -> dic
         "bldg_area_sqft":   _num("bldgarea"),
         "bldg_frontage_ft": _num("bldgfront"),
         "bldg_depth_ft":    _num("bldgdepth"),
-        "num_floors":       _v("numfloors"),
+        "num_floors":       (lambda v: str(int(float(v))) if v and v != "—" and str(v).replace(".", "").isdigit() else (v or "—"))(_v("numfloors")),
         "num_buildings":    _num("numbuildings"),
         "year_built":       _v("yearbuilt"),
         "year_last_mod":    _v("yearlastmod"),

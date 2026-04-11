@@ -55,9 +55,8 @@ def fetch_ecb_violations(bbl: str, lien_count: int = 0) -> dict:
         resp = requests.get(
             _ECB_URL,
             params={
-                "boro_block_lot": clean,
+                "$where": f"boro_block_lot='{clean}'",
                 "$limit": "50",
-                "$order": "issue_date DESC",
             },
             timeout=_TIMEOUT,
         )

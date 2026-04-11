@@ -272,20 +272,14 @@ def fetch_all_listings(
     lat: float,
     lon: float,
     radius_miles: float,
-    rentcast_key: Optional[str] = None,
-    rapidapi_key: Optional[str] = None,
-    bed_filter: Optional[list] = None,
     proxy_key: Optional[str] = None,
 ) -> tuple[list, dict]:
     """
-    Pull from all sources, merge, deduplicate, and clean.
-
-    Scraping (StreetEasy, Apartments.com, Craigslist, Zumper, RentHop) runs
-    automatically — no keys needed.
-    Rentcast and Zillow/RapidAPI are optional supplements when keys are provided.
+    Pull from all sources (StreetEasy, Apartments.com, Craigslist, Zumper, RentHop),
+    merge, deduplicate, and clean. No API keys required.
 
     Returns (listings, status_dict).
-    status values: 'live' | 'partial' | 'blocked' | 'error' | 'no_key' | 'no_results'
+    status values: 'live' | 'partial' | 'blocked' | 'error' | 'no_results'
     """
     from modules.scraper import (
         scrape_streeteasy,
@@ -302,8 +296,6 @@ def fetch_all_listings(
         "craigslist":    "pending",
         "zumper":        "pending",
         "renthop":       "pending",
-        "rentcast":      "no_key",
-        "zillow":        "no_key",
         "overall":       "no_data",
         "_counts": {
             "streeteasy": 0,
@@ -311,13 +303,11 @@ def fetch_all_listings(
             "craigslist": 0,
             "zumper":     0,
             "renthop":    0,
-            "rentcast":   0,
-            "zillow":     0,
         },
     }
 
     # ── Primary: scrape StreetEasy ─────────────────────────────────────────────
-    se_listings, se_status = scrape_streeteasy(lat, lon, radius_miles, bed_filter, proxy_key=proxy_key)
+    se_listings, se_status = scrape_streeteasy(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["streeteasy"] = se_status if se_listings else (
         se_status if se_status != "live" else "no_results"
     )
@@ -325,7 +315,7 @@ def fetch_all_listings(
     status["_counts"]["streeteasy"] = len(se_listings)
 
     # ── Primary: scrape Apartments.com ────────────────────────────────────────
-    ap_listings, ap_status = scrape_apartments_com(lat, lon, radius_miles, bed_filter, proxy_key=proxy_key)
+    ap_listings, ap_status = scrape_apartments_com(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["apartments"] = ap_status if ap_listings else (
         ap_status if ap_status != "live" else "no_results"
     )
@@ -333,7 +323,7 @@ def fetch_all_listings(
     status["_counts"]["apartments"] = len(ap_listings)
 
     # ── Primary: scrape Craigslist ────────────────────────────────────────────
-    cl_listings, cl_status = scrape_craigslist(lat, lon, radius_miles, bed_filter, proxy_key=proxy_key)
+    cl_listings, cl_status = scrape_craigslist(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["craigslist"] = cl_status if cl_listings else (
         cl_status if cl_status != "live" else "no_results"
     )
@@ -341,7 +331,7 @@ def fetch_all_listings(
     status["_counts"]["craigslist"] = len(cl_listings)
 
     # ── Primary: scrape Zumper ────────────────────────────────────────────────
-    zu_listings, zu_status = scrape_zumper(lat, lon, radius_miles, bed_filter, proxy_key=proxy_key)
+    zu_listings, zu_status = scrape_zumper(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["zumper"] = zu_status if zu_listings else (
         zu_status if zu_status != "live" else "no_results"
     )
@@ -349,30 +339,12 @@ def fetch_all_listings(
     status["_counts"]["zumper"] = len(zu_listings)
 
     # ── Primary: scrape RentHop ───────────────────────────────────────────────
-    rh_listings, rh_status = scrape_renthop(lat, lon, radius_miles, bed_filter, proxy_key=proxy_key)
+    rh_listings, rh_status = scrape_renthop(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["renthop"] = rh_status if rh_listings else (
         rh_status if rh_status != "live" else "no_results"
     )
     raw.extend(rh_listings)
     status["_counts"]["renthop"] = len(rh_listings)
-
-    # ── Supplemental: Rentcast API (if key provided) ──────────────────────────
-    if rentcast_key:
-        rc_listings, rc_status = fetch_rentcast(lat, lon, radius_miles, rentcast_key, bed_filter)
-        status["rentcast"] = rc_status if rc_listings else (
-            rc_status if rc_status != "live" else "no_results"
-        )
-        raw.extend(rc_listings)
-        status["_counts"]["rentcast"] = len(rc_listings)
-
-    # ── Supplemental: Zillow/RapidAPI (if key provided) ───────────────────────
-    if rapidapi_key:
-        zl_listings, zl_status = fetch_zillow(lat, lon, radius_miles, rapidapi_key, bed_filter)
-        status["zillow"] = zl_status if zl_listings else (
-            zl_status if zl_status != "live" else "no_results"
-        )
-        raw.extend(zl_listings)
-        status["_counts"]["zillow"] = len(zl_listings)
 
     if not raw:
         status["overall"] = "no_data"
@@ -382,9 +354,7 @@ def fetch_all_listings(
     cleaned = _remove_outliers(cleaned)
     cleaned.sort(key=lambda x: x["distance_miles"])
 
-    scraper_statuses = [status[k] for k in ("streeteasy", "apartments", "craigslist", "zumper", "renthop")]
-    api_statuses = [status[k] for k in ("rentcast", "zillow") if status[k] != "no_key"]
-    all_active = scraper_statuses + api_statuses
+    all_active = [status[k] for k in ("streeteasy", "apartments", "craigslist", "zumper", "renthop")]
     if any(s == "live" for s in all_active):
         status["overall"] = "live"
     elif any(s == "partial" for s in all_active):
