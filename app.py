@@ -36,6 +36,38 @@ from modules.risk_matrix import MACRO_RISKS, get_micro_risks
 load_dotenv()
 
 
+# ── AI market summary helper ──────────────────────────────────────────────────
+
+def _generate_ai_summary(
+    comp_type: str,
+    summary_data: dict,
+    sample_listings: list,
+    api_key: str,
+) -> str:
+    """Call Claude to generate a 3-5 sentence market summary for a comps section."""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        prompt = (
+            f"You are a NYC real estate investment analyst. Write a concise 3-5 sentence "
+            f"market summary for {comp_type} comparables based on this data.\n\n"
+            f"Summary statistics: {summary_data}\n\n"
+            f"Sample listings (up to 5): {sample_listings[:5]}\n\n"
+            f"Focus on: rent/price levels, market trends, supply-demand signals, "
+            f"and key investment implications. Be specific about numbers."
+        )
+        msg = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text
+    except ImportError:
+        return "Install the `anthropic` package to enable AI summaries: `pip install anthropic`"
+    except Exception as exc:
+        return f"AI summary unavailable: {exc}"
+
+
 # ── Section header helper ─────────────────────────────────────────────────────
 
 def _section_header(icon: str, title: str, subtitle: str = "") -> None:
@@ -909,6 +941,14 @@ with st.sidebar:
         ),
     )
 
+    anthropic_key = st.text_input(
+        "Anthropic API Key *(AI Summaries)*",
+        value=os.getenv("ANTHROPIC_API_KEY", ""),
+        type="password",
+        help="Optional. Enables AI-generated market summaries in each comps section. "
+             "Get a key at console.anthropic.com.",
+    )
+
     st.divider()
     st.markdown("### 📖 How to use")
     st.caption(
@@ -1189,98 +1229,55 @@ if 'geo' in st.session_state:
             "No Data"
         )
 
-    # ── Data status row ────────────────────────────────────────────────────────
-    def _source_pill(source_name: str, status_val: str) -> str:
-        if status_val == "live":
-            return f'<span class="pill-live">✅ {source_name} · Live</span>'
-        if status_val == "partial":
-            return f'<span class="pill-partial">⚠️ {source_name} · Partial</span>'
-        if status_val == "blocked":
-            return f'<span class="pill-error">🛡️ {source_name} · Blocked</span>'
-        if status_val == "no_results":
-            return f'<span class="pill-partial">📭 {source_name} · No Results</span>'
-        if status_val == "invalid_key":
-            return f'<span class="pill-error">🔑 {source_name} · Invalid Key</span>'
-        if status_val == "no_key":
-            return f'<span class="pill-cached">➖ {source_name} · Optional</span>'
-        if status_val == "timeout":
-            return f'<span class="pill-partial">⏱️ {source_name} · Timeout</span>'
-        if status_val in ("pending", "no_data"):
-            return f'<span class="pill-error">⭕ {source_name} · No Data</span>'
-        return f'<span class="pill-error">❌ {source_name} · Error</span>'
-
-    freshness_cls = (
-        "pill-live"    if data_freshness == "Live Data"    else
-        "pill-partial" if data_freshness == "Partial Data" else
-        "pill-cached"  if data_freshness == "Cached Data"  else
-        "pill-error"
-    )
-    freshness_icon = (
-        "🟢" if data_freshness == "Live Data" else
-        "🟡" if data_freshness == "Partial Data" else
-        "🔵" if data_freshness == "Cached Data" else "🔴"
-    )
-
-    pills_html = (
-        f'<span class="{freshness_cls}">{freshness_icon} {data_freshness}</span> &nbsp; '
-        + _source_pill("StreetEasy",    data_status.get("streeteasy", "pending"))
-        + " &nbsp; "
-        + _source_pill("Apartments.com", data_status.get("apartments", "pending"))
-        + " &nbsp; "
-        + _source_pill("Craigslist",    data_status.get("craigslist", "pending"))
-        + " &nbsp; "
-        + _source_pill("Zumper",        data_status.get("zumper", "pending"))
-        + " &nbsp; "
-        + _source_pill("RentHop",       data_status.get("renthop", "pending"))
-    )
-    st.markdown(pills_html, unsafe_allow_html=True)
-
-    # ── Scraping status panel (source + status + raw counts) ───────────────
+    # ── Scraping status panel — compact pill row, rendered above Market Insights
     _counts = data_status.get("_counts", {})
-    _status_labels = {
-        "live":        ("✅", "Live",        "pill-live"),
-        "partial":     ("⚠️", "Partial",     "pill-partial"),
-        "blocked":     ("🛡️", "Blocked",     "pill-error"),
-        "no_results":  ("📭", "No Results",  "pill-partial"),
-        "invalid_key": ("🔑", "Invalid Key", "pill-error"),
-        "no_key":      ("➖", "Optional",    "pill-cached"),
-        "timeout":     ("⏱️", "Timeout",     "pill-partial"),
-        "pending":     ("⭕", "No Data",     "pill-error"),
-        "no_data":     ("⭕", "No Data",     "pill-error"),
+    _status_emoji = {
+        "live": "✅", "partial": "⚠️", "blocked": "🛡️",
+        "no_results": "📭", "invalid_key": "🔑", "no_key": "➖",
+        "timeout": "⏱️", "pending": "⭕", "no_data": "⭕",
     }
-    _sources_display = [
-        ("StreetEasy",     "streeteasy"),
-        ("Apartments.com", "apartments"),
-        ("Craigslist",     "craigslist"),
-        ("Zumper",         "zumper"),
-        ("RentHop",        "renthop"),
-    ]
-    _status_rows = ""
-    for _sname, _skey in _sources_display:
-        _s = data_status.get(_skey, "pending")
-        _icon, _label, _css = _status_labels.get(_s, ("❌", "Error", "pill-error"))
-        _cnt = _counts.get(_skey, 0)
-        _count_cell = (
-            f'<span class="scrape-count-badge">{_cnt} found</span>'
-            if _cnt > 0
-            else '<span style="color:#9CA3AF;font-size:0.78rem">—</span>'
+    _status_short = {
+        "live": "live", "partial": "partial", "blocked": "blocked",
+        "no_results": "0", "invalid_key": "key?", "no_key": "—",
+        "timeout": "timeout", "pending": "pending", "no_data": "no data",
+    }
+    # Residential sources (available now)
+    _scrape_chips_res = []
+    for _sn, _sk in [("StreetEasy","streeteasy"),("Apartments","apartments"),
+                     ("Craigslist","craigslist"),("Zumper","zumper"),("RentHop","renthop")]:
+        _sv = data_status.get(_sk, "pending")
+        _em = _status_emoji.get(_sv, "❌")
+        _ct = _counts.get(_sk, 0)
+        _ct_s = f" ({_ct})" if _ct > 0 else ""
+        _scrape_chips_res.append(f"{_em} {_sn}: {_status_short.get(_sv,'err')}{_ct_s}")
+    # Commercial sources (from last run, if available)
+    _comm_st_last = st.session_state.get("_comm_status_last", {})
+    _scrape_chips_comm = []
+    for _sn, _sk in [("LoopNet","loopnet"),("Crexi","crexi"),("CL-Comm","craigslist_comm")]:
+        _sv = _comm_st_last.get(_sk, "pending")
+        _em = _status_emoji.get(_sv, "⭕")
+        _scrape_chips_comm.append(f"{_em} {_sn}: {_status_short.get(_sv,'pending')}")
+
+    def _build_scrape_status_html() -> str:
+        _chip_style = (
+            "display:inline-block;padding:2px 8px;margin:2px 3px;"
+            "background:#F3F4F6;border:1px solid #E5E7EB;border-radius:12px;"
+            "font-size:0.65rem;color:#374151;white-space:nowrap"
         )
-        _opt = ' <span style="color:#9CA3AF;font-size:0.74rem">(optional)</span>' if _s == "no_key" else ""
-        _status_rows += (
-            f"<tr><td><b>{_sname}</b>{_opt}</td>"
-            f'<td><span class="{_css}">{_icon} {_label}</span></td>'
-            f"<td>{_count_cell}</td></tr>"
+        _res_chips = "".join(f'<span style="{_chip_style}">{c}</span>' for c in _scrape_chips_res)
+        _comm_chips = "".join(f'<span style="{_chip_style}">{c}</span>' for c in _scrape_chips_comm)
+        return (
+            '<div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;'
+            'padding:8px 12px;margin:8px 0">'
+            '<span style="font-size:0.60rem;font-weight:700;text-transform:uppercase;'
+            'color:#9CA3AF;letter-spacing:0.08em;margin-right:6px">🔍 Scraping Status</span>'
+            f'<span style="{_chip_style};background:#EFF6FF;color:#1D4ED8;border-color:#BFDBFE">'
+            f'Residential</span>{_res_chips}'
+            f'&nbsp;<span style="{_chip_style};background:#F0FDF4;color:#15803D;border-color:#BBF7D0">'
+            f'Commercial</span>{_comm_chips}'
+            '</div>'
         )
-    # Build scrape status panel HTML — rendered later above Market Insights
-    _scrape_status_html = f"""<div class="scrape-status-panel">
-      <div style="font-size:0.72rem;font-weight:700;letter-spacing:0.08em;
-                  text-transform:uppercase;color:#6B7280;margin-bottom:10px">
-        🔍 Live Scraping Status
-      </div>
-      <table><thead><tr>
-        <th>Source</th><th>Status</th><th>Listings Found (pre-dedup)</th>
-      </tr></thead><tbody>{_status_rows}</tbody></table>
-    </div>"""
+    _scrape_status_html = _build_scrape_status_html()
 
     # ── No results / blocked state ─────────────────────────────────────────
     blocked_sources = [
@@ -1536,49 +1533,68 @@ if 'geo' in st.session_state:
                 st.success("No HPD violations found.")
             if _ecb_data.get("error"):
                 st.warning(f"HPD: {_ecb_data['error']}")
-            st.caption("HPD Open Violations (wvxf-dwi5) · ACRIS liens: NYC DOF")
+            st.markdown(
+                "Sources: "
+                "[HPD Open Violations (wvxf-dwi5)](https://data.cityofnewyork.us/Housing-Development/"
+                "Housing-Maintenance-Code-Violations/wvxf-dwi5) "
+                "· [ACRIS (NYC DOF)](https://a836-acris.nyc.gov/CP/)"
+            )
 
-        # ─── CELL 4: Nearby Listings ─────────────────────────────────────────
+        # Compute nearby listings for Deal Score (even though we display Nearby Developments)
+        _nearby_listings = [l for l in listings if float(l.get("distance_miles") or 99) < 0.15]
+
+        # ─── CELL 4: Nearby Developments ─────────────────────────────────────
         with _ds_r2b:
-            st.markdown("**🏷️ Nearby Listings (≤0.15 mi)**")
-            _nearby_listings = [l for l in listings if float(l.get("distance_miles") or 99) < 0.15]
-            if not _nearby_listings:
-                st.info(
-                    f"No listings within 0.15 mi. "
-                    f"{len(listings)} listing(s) in full radius — see All Listings below."
+            st.markdown("**🏗️ Nearby Developments**")
+            _nd_key = f"_nd_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
+            if _nd_key not in st.session_state:
+                with st.spinner("Fetching nearby developments…"):
+                    from modules.nearby_developments import fetch_nearby_developments
+                    st.session_state[_nd_key] = fetch_nearby_developments(
+                        lat, lon, radius_miles,
+                        address=address_input,
+                        neighborhood=neighborhood if neighborhood != "—" else "",
+                    )
+            _nd_devs, _nd_status = st.session_state[_nd_key]
+
+            _nd_total_units = sum(d.get("units") or 0 for d in _nd_devs)
+            _nd_total_sf    = sum(d.get("sqft")  or 0 for d in _nd_devs)
+            _nd_c1, _nd_c2, _nd_c3 = st.columns(3)
+            _nd_c1.metric("Projects",          len(_nd_devs))
+            _nd_c2.metric("Units in Pipeline", f"{_nd_total_units:,}" if _nd_total_units else "—")
+            _nd_c3.metric("SF in Pipeline",    f"{_nd_total_sf:,}"    if _nd_total_sf    else "—")
+
+            if _nd_devs:
+                # Status breakdown
+                _nd_by_status: dict = {}
+                for _nd in _nd_devs:
+                    _ns = _nd.get("status") or "Unknown"
+                    _nd_by_status[_ns] = _nd_by_status.get(_ns, 0) + 1
+                _nd_stat_str = " · ".join(f"{v} {k}" for k, v in _nd_by_status.items())
+                st.caption(f"By status: {_nd_stat_str}")
+
+                _nd_rows = []
+                for _nd in _nd_devs:
+                    _nd_rows.append({
+                        "Address":  _nd.get("address", "—")[:45],
+                        "Type":     _nd.get("asset_type", "—")[:20],
+                        "Status":   _nd.get("status", "—"),
+                        "Units":    _nd.get("units") or "—",
+                        "Filed":    _nd.get("filing_date", "")[:10],
+                        "Source":   _nd.get("source", "—"),
+                    })
+                st.dataframe(
+                    pd.DataFrame(_nd_rows),
+                    use_container_width=True,
+                    height=min(len(_nd_rows) * 35 + 40, 210),
                 )
             else:
-                _nl_rents   = [l.get("rent") or 0 for l in _nearby_listings if l.get("rent")]
-                _nl_avg     = int(sum(_nl_rents) / len(_nl_rents)) if _nl_rents else 0
-                _nl_min     = min(_nl_rents) if _nl_rents else 0
-                _nl_max     = max(_nl_rents) if _nl_rents else 0
-                _nl_psf_all = [
-                    l["rent"] / l["sqft"]
-                    for l in _nearby_listings
-                    if l.get("sqft") and l["sqft"] > 0 and l.get("rent")
-                ]
-                _nl_avg_psf = round(sum(_nl_psf_all) / len(_nl_psf_all), 2) if _nl_psf_all else None
-
-                _lm1, _lm2, _lm3, _lm4 = st.columns(4)
-                _lm1.metric("Count",     len(_nearby_listings))
-                _lm2.metric("Avg Rent",  f"${_nl_avg:,}" if _nl_avg else "—")
-                _lm3.metric("Range",     f"${_nl_min:,}–${_nl_max:,}" if _nl_min else "—")
-                _lm4.metric("Avg $/SF",  f"${_nl_avg_psf:.2f}" if _nl_avg_psf else "—")
-
-                _nl_rows = []
-                for _nl in _nearby_listings[:10]:
-                    _sq = _nl.get("sqft") or 0
-                    _rt = _nl.get("rent") or 0
-                    _nl_rows.append({
-                        "Address":   _nl.get("address", "—"),
-                        "Type":      _nl.get("unit_type", "—"),
-                        "Rent/mo":   f"${_rt:,}" if _rt else "—",
-                        "$/SF":      f"${_rt/_sq:.2f}" if _sq > 0 and _rt else "—",
-                        "Source":    _nl.get("source", "—"),
-                    })
-                st.dataframe(pd.DataFrame(_nl_rows), use_container_width=True,
-                             height=min(len(_nl_rows) * 35 + 40, 210))
-            st.caption("Comps within 0.15 mi · See All Listings for full radius")
+                st.info("No recent developments found within this radius.")
+            st.caption(
+                f"Sources: NYC DOB · Google News · The Real Deal  "
+                f"(DOB: {_nd_status.get('dob','—')} · "
+                f"News: {_nd_status.get('google_news','—')})"
+            )
 
         _ds_r3a, _ds_r3b = st.columns(2)
 
@@ -1636,15 +1652,45 @@ if 'geo' in st.session_state:
                         f'{_ub_uplift_pct:.0f}% uplift · {int(_indiv_sf):,} → {int(_comb_sf):,} SF</div>',
                         unsafe_allow_html=True,
                     )
+                # Folium mini-map: red = subject, blue = adjacent lots
+                _as_fmap = folium.Map(
+                    location=[lat, lon], zoom_start=17,
+                    tiles="CartoDB positron",
+                )
+                folium.CircleMarker(
+                    [lat, lon], radius=10, color="#DC2626",
+                    fill=True, fill_opacity=0.85,
+                    tooltip="Subject Property",
+                ).add_to(_as_fmap)
+                for _adj in _adj_lots_as:
+                    _adj_lat = float(_adj.get("latitude") or lat)
+                    _adj_lon = float(_adj.get("longitude") or lon)
+                    folium.CircleMarker(
+                        [_adj_lat, _adj_lon], radius=7, color="#2563EB",
+                        fill=True, fill_opacity=0.65,
+                        tooltip=_adj.get("address", "Adjacent Lot"),
+                    ).add_to(_as_fmap)
+                st_folium(_as_fmap, height=160, width="100%",
+                          returned_objects=[], key="assemblage_mini_map")
+
                 if _adj_lots_as:
                     _as_rows = []
                     for _al in _adj_lots_as:
-                        _al_la = float(_al.get("lotarea") or 0)
+                        _al_la       = float(_al.get("lotarea") or 0)
+                        _al_max_far  = max(_sf(_al.get("residfar") or 0),
+                                           _sf(_al.get("commfar") or 0))
+                        _al_blt_far  = _sf(_al.get("builtfar") or 0)
+                        _al_max_sf   = int(_al_max_far * _al_la)
+                        _al_built_sf = int(_al_blt_far * _al_la)
+                        _al_unused_sf = max(0, _al_max_sf - _al_built_sf)
                         _as_rows.append({
-                            "Address":  _al.get("address", "—"),
-                            "Lot SF":   f"{int(_al_la):,}" if _al_la else "—",
-                            "Floors":   (lambda v: str(int(float(v))) if v and str(v).replace(".", "").isdigit() else (v or "—"))(_al.get("numfloors", "—")),
-                            "Class":    _al.get("bldgclass", "—"),
+                            "Address":          _al.get("address", "—"),
+                            "Lot SF":           f"{int(_al_la):,}" if _al_la else "—",
+                            "Max FAR (SF)":     f"{_al_max_sf:,}" if _al_max_sf else "—",
+                            "Built FAR (SF)":   f"{_al_built_sf:,}" if _al_built_sf else "—",
+                            "Unused SF":        f"{_al_unused_sf:,}" if _al_unused_sf else "—",
+                            "Add'l Buildable":  f"{_al_unused_sf:,}" if _al_unused_sf else "—",
+                            "Class":            _al.get("bldgclass", "—"),
                         })
                     st.dataframe(pd.DataFrame(_as_rows), use_container_width=True,
                                  height=min(len(_as_rows) * 35 + 40, 200))
@@ -1897,127 +1943,17 @@ if 'geo' in st.session_state:
         for insight in insights:
             st.markdown(f"• {insight}")
 
-        # ── Borough comparison ─────────────────────────────────────────────
-        if bench:
-            st.markdown("---")
-            st.markdown(
-                "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>"
-                f"🏙️ Comp vs {borough} Borough Median</div>",
-                unsafe_allow_html=True,
-            )
-            bcomp_rows = ""
-            for _, row in summary_df.iterrows():
-                utype      = row["Unit Type"]
-                comp_avg   = row["_avg"]
-                bmark      = bench.get(utype)
-                if bmark is None:
-                    continue
-                diff_pct   = (comp_avg - bmark) / bmark * 100
-                diff_label = (
-                    f'<span class="bcomp-above">▲ {abs(diff_pct):.1f}% above</span>'
-                    if diff_pct > 3 else
-                    f'<span class="bcomp-below">▼ {abs(diff_pct):.1f}% below</span>'
-                    if diff_pct < -3 else
-                    f'<span class="bcomp-at">≈ at median</span>'
-                )
-                bcomp_rows += (
-                    f"<tr><td><b>{utype}</b></td>"
-                    f"<td>${comp_avg:,.0f}</td>"
-                    f"<td>${bmark:,}</td>"
-                    f"<td>{diff_label}</td></tr>"
-                )
-            if bcomp_rows:
-                st.markdown(f"""
-                <table class="bcomp-table">
-                  <thead><tr>
-                    <th>Unit Type</th>
-                    <th>Comp Avg Rent</th>
-                    <th>{borough} Median*</th>
-                    <th>vs. Borough</th>
-                  </tr></thead>
-                  <tbody>{bcomp_rows}</tbody>
-                </table>
-                <div style="font-size:0.70rem;color:#9CA3AF;margin-top:6px">
-                  * Borough medians: <a href="https://streeteasy.com/blog/market-reports/" target="_blank" style="color:#6B7280">StreetEasy Market Reports Q4 2024</a> / NYC Rent Guidelines Board 2024.
-                  Directional benchmark only — verify with current market data.
-                </div>
-                """, unsafe_allow_html=True)
+        # ── Comparables Analysis (4 tabs) ─────────────────────────────────────
+        _section_header("📊", "Comparables Analysis",
+                        "Residential · Commercial · Retail · Property Sales")
 
-        # ── Residential Rental Comps ───────────────────────────────────────
-        st.markdown("**🏠 Residential Rental Comps**")
-        _section_header("📈", "Rent Summary by Unit Type")
-        display_cols = ["Unit Type", "# Listings", "Avg Rent", "Median Rent",
-                        "Min Rent", "Max Rent", "Rent Range", "Avg $/SF"]
-        st.dataframe(
-            summary_df[display_cols].set_index("Unit Type"),
-            use_container_width=True,
-            height=min(len(summary_df) * 35 + 38, 260),
-        )
+        _tab_res, _tab_comm, _tab_retail, _tab_sales = st.tabs([
+            "🏠 Residential", "🏢 Commercial", "🏪 Retail", "💰 Property Sales"
+        ])
 
-        # ── Listings map ───────────────────────────────────────────────────
-        _section_header("🗺️", "Comparable Listings Map")
-        st.caption(
-            "Colored markers = rental listings by unit type.  "
-            "Click any marker for rent, address, and source link.  "
-            "Clusters expand on zoom."
-        )
-        listings_map = build_map(
-            listings=listings,
-            center_lat=lat,
-            center_lon=lon,
-            radius_miles=radius_miles,
-            subject_label=geo["formatted_address"],
-        )
-        st_folium(listings_map, width="100%", height=540,
-                  returned_objects=[], key="listings_map")
+        # ── Fetch shared datasets once ────────────────────────────────────────
 
-        # ── Charts ─────────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown(
-            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>📊 Rent Charts</div>",
-            unsafe_allow_html=True,
-        )
-        col_bar, col_range = st.columns(2)
-        with col_bar:
-            st.plotly_chart(build_bar_chart(summary_df),
-                            use_container_width=True, config={"displayModeBar": False})
-        with col_range:
-            st.plotly_chart(build_range_chart(summary_df),
-                            use_container_width=True, config={"displayModeBar": False})
-
-        # ── All Listings Table (collapsible) ──────────────────────────────
-        _section_header("📄", "All Listings")
-        display_listings = []
-        for listing in listings:
-            sqft = listing.get("sqft") or 0
-            rent = listing.get("rent") or 0
-            psf  = f"${rent / sqft:.2f}" if sqft and sqft > 0 else "—"
-            url  = listing.get("url") or ""
-            link = (
-                f'<a href="{url}" target="_blank" '
-                f'style="color:#1A3A6B;text-decoration:none;font-weight:600">View →</a>'
-                if url else "—"
-            )
-            display_listings.append({
-                "Source":        listing.get("source", "—"),
-                "Address":       listing.get("address", "N/A"),
-                "Unit Type":     listing.get("unit_type", "—"),
-                "Beds":          listing.get("bedrooms", "—"),
-                "Rent/mo":       f"${rent:,.0f}",
-                "$/SF":          psf,
-                "Sqft":          listing.get("sqft") or "—",
-                "Distance (mi)": f"{listing.get('distance_miles', 0):.2f}",
-                "Link":          link,
-            })
-        df_display = pd.DataFrame(display_listings)
-        with st.expander(f"📋 All Listings ({len(display_listings)} total)", expanded=False):
-            st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
-
-        # ── Commercial Comps ───────────────────────────────────────────────
-        _section_header("🏢", "Commercial Comps",
-                        "Office lease comparables · Craigslist NYC + LoopNet / Crexi")
+        # Commercial comps (shared between Commercial and Retail tabs)
         _comm_key = f"_comm_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
         if _comm_key not in st.session_state:
             from modules.commercial_scraper import fetch_commercial_comps
@@ -2030,85 +1966,422 @@ if 'geo' in st.session_state:
                 except Exception:
                     _ln_comm, _ln_comm_st = [], {}
             _all_comm = _cl_comm + _ln_comm
+            # Store commercial status for Live Scraping Status panel on next run
+            st.session_state["_comm_status_last"] = {
+                "loopnet":          (_ln_comm_st.get("loopnet","—") if isinstance(_ln_comm_st, dict) else str(_ln_comm_st)),
+                "crexi":            (_ln_comm_st.get("crexi","—")   if isinstance(_ln_comm_st, dict) else "—"),
+                "craigslist_comm":  (_cl_comm_st.get("overall","—") if isinstance(_cl_comm_st, dict) else str(_cl_comm_st)),
+            }
             st.session_state[_comm_key] = {"listings": _all_comm}
         _comm_listings = st.session_state[_comm_key]["listings"]
 
-        # Split by type
-        _office_lst  = [l for l in _comm_listings if "office" in str(l.get("use_type") or l.get("asset_type","")).lower()]
-        _retail_lst  = [l for l in _comm_listings if "retail" in str(l.get("use_type") or l.get("asset_type","")).lower()]
-        _other_comm  = [l for l in _comm_listings if l not in _office_lst and l not in _retail_lst]
-
-        _comm_tab1, _comm_tab2 = st.tabs(["🏢 Office", "🏪 Retail / Commercial"])
-        for _tab, _tab_lst, _tab_label in [
-            (_comm_tab1, _office_lst + _other_comm, "Office"),
-            (_comm_tab2, _retail_lst, "Retail"),
-        ]:
-            with _tab:
-                if not _tab_lst:
-                    st.info(f"No {_tab_label.lower()} comps found. Try expanding radius.")
-                else:
-                    _co_rents = [l.get("rent") or l.get("price") or 0 for l in _tab_lst if l.get("rent") or l.get("price")]
-                    _co_psf   = [l.get("psf_yr") or l.get("price_psf") or 0 for l in _tab_lst if l.get("psf_yr") or l.get("price_psf")]
-                    _co_m1, _co_m2, _co_m3 = st.columns(3)
-                    _co_m1.metric("Listings",     len(_tab_lst))
-                    _co_m2.metric("Avg Rent/mo",  f"${int(sum(_co_rents)/len(_co_rents)):,}" if _co_rents else "—")
-                    _co_m3.metric("Avg $/SF/yr",  f"${sum(_co_psf)/len(_co_psf):.2f}" if _co_psf else "—")
-                    _co_rows = []
-                    for _cl in _tab_lst:
-                        _rt = _cl.get("rent") or _cl.get("price") or 0
-                        _sq = _cl.get("sqft") or 0
-                        _psf_v = _cl.get("psf_yr") or _cl.get("price_psf")
-                        _co_rows.append({
-                            "Address":  (_cl.get("address") or "—")[:60],
-                            "Use Type": _cl.get("use_type") or _cl.get("asset_type") or "—",
-                            "Rent/mo":  f"${_rt:,}" if _rt else "—",
-                            "$/SF/yr":  f"${_psf_v:.2f}" if _psf_v else "—",
-                            "Sqft":     f"{_sq:,}" if _sq else "—",
-                            "Source":   _cl.get("source", "—"),
-                        })
-                    st.dataframe(pd.DataFrame(_co_rows), use_container_width=True,
-                                 height=min(len(_co_rows) * 35 + 40, 320))
-        st.caption("Sources: Craigslist NYC (Off/Com sections) + LoopNet + Crexi · No API key required")
-
-        # ── Closed Sales Comps ─────────────────────────────────────────────
-        _section_header("💰", "Closed Sales Comps",
-                        "Recent sales from NYC Rolling Sales · NYC Open Data")
+        # Sales comps (shared between Residential condo section and Property Sales tab)
         _sales_key = f"_sales_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}_{zip_code}"
         if _sales_key not in st.session_state:
             from modules.data_fetcher import fetch_sales_comps as _fetch_sales
             with st.spinner("Fetching NYC sales comps…"):
-                _sales_listings, _sales_status = _fetch_sales(
+                _sales_listings_raw, _sales_status = _fetch_sales(
                     lat, lon, radius_miles,
                     zip_code=zip_code if zip_code != "—" else None,
                     neighborhood=neighborhood if neighborhood != "—" else None,
                 )
-            st.session_state[_sales_key] = {"listings": _sales_listings, "status": _sales_status}
-        _sales_data     = st.session_state[_sales_key]
-        _sales_listings = _sales_data["listings"]
+            st.session_state[_sales_key] = {"listings": _sales_listings_raw, "status": _sales_status}
+        _sales_listings = st.session_state[_sales_key]["listings"]
 
-        if not _sales_listings:
-            st.info("No recent sales comps found. NYC Rolling Sales data may not cover this area/zip.")
-        else:
-            _s_prices = [l["price"] for l in _sales_listings if l.get("price")]
-            _s_psf    = [l["price_psf"] for l in _sales_listings if l.get("price_psf")]
-            _sm1, _sm2, _sm3 = st.columns(3)
-            _sm1.metric("Sales Found",    len(_sales_listings))
-            _sm2.metric("Avg Sale Price", f"${int(sum(_s_prices)/len(_s_prices)):,}" if _s_prices else "—")
-            _sm3.metric("Avg $/SF",       f"${sum(_s_psf)/len(_s_psf):.2f}" if _s_psf else "—")
-            _s_rows = []
-            for _sl in _sales_listings:
-                _s_rows.append({
-                    "Address":    (_sl.get("address") or "—")[:60],
-                    "Type":       _sl.get("asset_type", "—"),
-                    "Sale Price": f"${_sl['price']:,.0f}" if _sl.get("price") else "—",
-                    "Sqft":       f"{_sl['sqft']:,}" if _sl.get("sqft") else "—",
-                    "$/SF":       f"${_sl['price_psf']:.2f}" if _sl.get("price_psf") else "—",
-                    "Date":       _sl.get("date", "—"),
-                    "Source":     _sl.get("source", "—"),
+        # ── Tab 1: Residential ────────────────────────────────────────────────
+        with _tab_res:
+            # Rent Summary
+            st.markdown("#### 🏠 Rent Summary by Unit Type")
+            display_cols = ["Unit Type", "# Listings", "Avg Rent", "Median Rent",
+                            "Min Rent", "Max Rent", "Rent Range", "Avg $/SF"]
+            st.dataframe(
+                summary_df[display_cols].set_index("Unit Type"),
+                use_container_width=True,
+                height=min(len(summary_df) * 35 + 38, 260),
+            )
+
+            # Comparable Listings Map
+            st.markdown("#### 🗺️ Comparable Listings Map")
+            st.caption(
+                "Colored markers = rental listings by unit type.  "
+                "Click any marker for rent, address, and source link."
+            )
+            listings_map = build_map(
+                listings=listings,
+                center_lat=lat,
+                center_lon=lon,
+                radius_miles=radius_miles,
+                subject_label=geo["formatted_address"],
+            )
+            st_folium(listings_map, width="100%", height=480,
+                      returned_objects=[], key="listings_map")
+
+            # Rent Charts
+            st.markdown("#### 📊 Rent Charts")
+            _rc1, _rc2 = st.columns(2)
+            with _rc1:
+                st.plotly_chart(build_bar_chart(summary_df),
+                                use_container_width=True, config={"displayModeBar": False})
+            with _rc2:
+                st.plotly_chart(build_range_chart(summary_df),
+                                use_container_width=True, config={"displayModeBar": False})
+
+            # Condo / Residential Sales
+            _condo_sales = [l for l in _sales_listings if "Residential" in str(l.get("asset_type",""))]
+            if _condo_sales:
+                st.markdown("#### 🏢 Condo / Residential Sales")
+                _cs_prices = [l["price"] for l in _condo_sales if l.get("price")]
+                _cs_psf    = [l["price_psf"] for l in _condo_sales if l.get("price_psf")]
+                _cs_m1, _cs_m2, _cs_m3 = st.columns(3)
+                _cs_m1.metric("Sales Found",    len(_condo_sales))
+                _cs_m2.metric("Avg Sale Price", f"${int(sum(_cs_prices)/len(_cs_prices)):,}" if _cs_prices else "—")
+                _cs_m3.metric("Avg $/SF",       f"${sum(_cs_psf)/len(_cs_psf):.2f}" if _cs_psf else "—")
+
+                # Condo sales by unit type chart
+                _cs_rows_df = []
+                for _csl in _condo_sales:
+                    _cs_rows_df.append({
+                        "Address":    (_csl.get("address") or "—")[:60],
+                        "Type":       _csl.get("asset_type","—"),
+                        "Sale Price": f"${_csl['price']:,.0f}" if _csl.get("price") else "—",
+                        "Sqft":       f"{_csl['sqft']:,}" if _csl.get("sqft") else "—",
+                        "$/SF":       f"${_csl['price_psf']:.2f}" if _csl.get("price_psf") else "—",
+                        "Date":       _csl.get("date","—"),
+                        "Source":     _csl.get("source","—"),
+                        "Reliability": _csl.get("reliability","—"),
+                    })
+                # Condo sales bar chart (price by building_class_category)
+                _cs_by_type: dict = {}
+                for _csl in _condo_sales:
+                    _bcc = _csl.get("building_name","")[:30] or _csl.get("asset_type","—")
+                    _p   = _csl.get("price") or 0
+                    if _p:
+                        _cs_by_type.setdefault(_bcc, []).append(_p)
+                if _cs_by_type:
+                    _cs_fig = go.Figure(go.Bar(
+                        x=list(_cs_by_type.keys()),
+                        y=[int(sum(v)/len(v)) for v in _cs_by_type.values()],
+                        marker_color="#1A3A6B",
+                    ))
+                    _cs_fig.update_layout(
+                        title="Avg Sale Price by Building Class",
+                        xaxis_title="Class", yaxis_title="Avg Sale Price ($)",
+                        height=300, margin=dict(l=40,r=20,t=40,b=60),
+                        font=dict(size=11),
+                    )
+                    st.plotly_chart(_cs_fig, use_container_width=True,
+                                    config={"displayModeBar": False})
+
+                with st.expander(f"📋 Condo/Residential Sales ({len(_condo_sales)} found)", expanded=False):
+                    st.dataframe(pd.DataFrame(_cs_rows_df), use_container_width=True,
+                                 height=min(len(_cs_rows_df)*35+40, 340))
+
+            # AI Summary
+            with st.expander("🤖 AI Market Summary", expanded=False):
+                _ai_res_key = f"_ai_res_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
+                if st.button("Generate AI Summary", key="gen_ai_res"):
+                    st.session_state[_ai_res_key] = None  # force refresh
+                if _ai_res_key not in st.session_state:
+                    st.session_state[_ai_res_key] = None
+                if st.session_state[_ai_res_key] is None:
+                    if anthropic_key:
+                        with st.spinner("Generating AI market summary…"):
+                            _summ_dict = summary_df[["Unit Type","Avg Rent","Median Rent"]].to_dict("records")
+                            st.session_state[_ai_res_key] = _generate_ai_summary(
+                                "residential rental", _summ_dict, listings[:10], anthropic_key
+                            )
+                    else:
+                        st.caption("Add an Anthropic API key in the sidebar to enable AI summaries.")
+                if st.session_state.get(_ai_res_key):
+                    st.markdown(st.session_state[_ai_res_key])
+
+            # All Listings
+            _res_display = []
+            for _rl in listings:
+                _sq = _rl.get("sqft") or 0
+                _rt = _rl.get("rent") or 0
+                _psf = f"${_rt / _sq:.2f}" if _sq and _sq > 0 else "—"
+                _url = _rl.get("url") or ""
+                _link = (
+                    f'<a href="{_url}" target="_blank" '
+                    f'style="color:#1A3A6B;text-decoration:none;font-weight:600">View →</a>'
+                    if _url else "—"
+                )
+                _res_display.append({
+                    "Source":        _rl.get("source","—"),
+                    "Reliability":   _rl.get("reliability", "—"),
+                    "Address":       _rl.get("address","N/A"),
+                    "Unit Type":     _rl.get("unit_type","—"),
+                    "Beds":          _rl.get("bedrooms","—"),
+                    "Rent/mo":       f"${_rt:,.0f}",
+                    "$/SF":          _psf,
+                    "Sqft":          _rl.get("sqft") or "—",
+                    "Distance (mi)": f"{_rl.get('distance_miles',0):.2f}",
+                    "Link":          _link,
                 })
-            st.dataframe(pd.DataFrame(_s_rows), use_container_width=True,
-                         height=min(len(_s_rows) * 35 + 40, 340))
-        st.caption("Source: NYC Rolling Sales (usep-8jbt) · NYC Open Data · No API key required")
+            with st.expander(f"📋 All Residential Listings ({len(_res_display)} total)", expanded=False):
+                st.write(pd.DataFrame(_res_display).to_html(escape=False, index=False),
+                         unsafe_allow_html=True)
+
+        # ── Tab 2: Commercial ────────────────────────────────────────────────
+        with _tab_comm:
+            _office_lst = [l for l in _comm_listings
+                           if "office" in str(l.get("use_type") or l.get("asset_type","")).lower()
+                           or ("retail" not in str(l.get("use_type") or l.get("asset_type","")).lower()
+                               and "industrial" not in str(l.get("use_type") or l.get("asset_type","")).lower())]
+            _comm_for_tab = _office_lst if _office_lst else _comm_listings
+
+            if not _comm_for_tab:
+                st.info("No commercial comps found. Try expanding the search radius.")
+            else:
+                _co_rents = [l.get("rent") or l.get("price") or 0 for l in _comm_for_tab if l.get("rent") or l.get("price")]
+                _co_psf   = [l.get("psf_yr") or l.get("price_psf") or 0 for l in _comm_for_tab if l.get("psf_yr") or l.get("price_psf")]
+                _co_m1, _co_m2, _co_m3 = st.columns(3)
+                _co_m1.metric("Listings",    len(_comm_for_tab))
+                _co_m2.metric("Avg Rent/mo", f"${int(sum(_co_rents)/len(_co_rents)):,}" if _co_rents else "—")
+                _co_m3.metric("Avg $/SF/yr", f"${sum(_co_psf)/len(_co_psf):.2f}" if _co_psf else "—")
+
+                # Rent chart by use type
+                _co_by_type: dict = {}
+                for _cl in _comm_for_tab:
+                    _ut = str(_cl.get("use_type") or _cl.get("asset_type") or "Other")[:30]
+                    _rt = _cl.get("rent") or _cl.get("price") or 0
+                    if _rt:
+                        _co_by_type.setdefault(_ut, []).append(float(_rt))
+                if _co_by_type:
+                    _co_fig = go.Figure(go.Bar(
+                        x=list(_co_by_type.keys()),
+                        y=[int(sum(v)/len(v)) for v in _co_by_type.values()],
+                        marker_color="#1A3A6B",
+                    ))
+                    _co_fig.update_layout(
+                        title="Avg Rent/mo by Use Type",
+                        xaxis_title="Use Type", yaxis_title="Avg Rent/mo ($)",
+                        height=280, margin=dict(l=40,r=20,t=40,b=60),
+                        font=dict(size=11),
+                    )
+                    st.plotly_chart(_co_fig, use_container_width=True,
+                                    config={"displayModeBar": False})
+
+            # AI Summary
+            with st.expander("🤖 AI Market Summary", expanded=False):
+                _ai_comm_key = f"_ai_comm_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
+                if st.button("Generate AI Summary", key="gen_ai_comm"):
+                    st.session_state[_ai_comm_key] = None
+                if _ai_comm_key not in st.session_state:
+                    st.session_state[_ai_comm_key] = None
+                if st.session_state[_ai_comm_key] is None:
+                    if anthropic_key and _comm_for_tab:
+                        with st.spinner("Generating AI commercial summary…"):
+                            _comm_summ = {"count": len(_comm_for_tab),
+                                          "avg_rent": int(sum(_co_rents)/len(_co_rents)) if _co_rents else None,
+                                          "avg_psf": round(sum(_co_psf)/len(_co_psf),2) if _co_psf else None}
+                            st.session_state[_ai_comm_key] = _generate_ai_summary(
+                                "commercial office", _comm_summ, _comm_for_tab[:10], anthropic_key
+                            )
+                    else:
+                        st.caption("Add an Anthropic API key in the sidebar to enable AI summaries.")
+                if st.session_state.get(_ai_comm_key):
+                    st.markdown(st.session_state[_ai_comm_key])
+
+            # All Listings
+            if _comm_listings:
+                _co_disp = []
+                for _cl in _comm_listings:
+                    _rt = _cl.get("rent") or _cl.get("price") or 0
+                    _sq = _cl.get("sqft") or 0
+                    _psf_v = _cl.get("psf_yr") or _cl.get("price_psf")
+                    _co_disp.append({
+                        "Source":    _cl.get("source","—"),
+                        "Address":   (_cl.get("address") or "—")[:60],
+                        "Use Type":  _cl.get("use_type") or _cl.get("asset_type") or "—",
+                        "Rent/mo":   f"${_rt:,}" if _rt else "—",
+                        "$/SF/yr":   f"${_psf_v:.2f}" if _psf_v else "—",
+                        "Sqft":      f"{_sq:,}" if _sq else "—",
+                        "Reliability": _cl.get("reliability","—"),
+                    })
+                with st.expander(f"📋 All Commercial Listings ({len(_co_disp)} total)", expanded=False):
+                    st.dataframe(pd.DataFrame(_co_disp), use_container_width=True,
+                                 height=min(len(_co_disp)*35+40, 340))
+
+            st.caption("Sources: Craigslist NYC · LoopNet · Crexi · No API key required")
+
+        # ── Tab 3: Retail ────────────────────────────────────────────────────
+        with _tab_retail:
+            _retail_lst = [l for l in _comm_listings
+                           if "retail" in str(l.get("use_type") or l.get("asset_type","")).lower()]
+
+            if not _retail_lst:
+                st.info("No retail comps found. Try expanding the search radius.")
+            else:
+                _rt_rents = [l.get("rent") or l.get("price") or 0 for l in _retail_lst if l.get("rent") or l.get("price")]
+                _rt_psf   = [l.get("psf_yr") or l.get("price_psf") or 0 for l in _retail_lst if l.get("psf_yr") or l.get("price_psf")]
+                _rt_m1, _rt_m2, _rt_m3 = st.columns(3)
+                _rt_m1.metric("Listings",    len(_retail_lst))
+                _rt_m2.metric("Avg Rent/mo", f"${int(sum(_rt_rents)/len(_rt_rents)):,}" if _rt_rents else "—")
+                _rt_m3.metric("Avg $/SF/yr", f"${sum(_rt_psf)/len(_rt_psf):.2f}" if _rt_psf else "—")
+
+                # Retail rent chart
+                _rt_by_src: dict = {}
+                for _rl in _retail_lst:
+                    _src = _rl.get("source","Other")
+                    _rv  = _rl.get("rent") or _rl.get("price") or 0
+                    if _rv:
+                        _rt_by_src.setdefault(_src, []).append(float(_rv))
+                if _rt_by_src:
+                    _rt_fig = go.Figure(go.Bar(
+                        x=list(_rt_by_src.keys()),
+                        y=[int(sum(v)/len(v)) for v in _rt_by_src.values()],
+                        marker_color="#15803D",
+                    ))
+                    _rt_fig.update_layout(
+                        title="Avg Retail Rent/mo by Source",
+                        xaxis_title="Source", yaxis_title="Avg Rent/mo ($)",
+                        height=280, margin=dict(l=40,r=20,t=40,b=60),
+                        font=dict(size=11),
+                    )
+                    st.plotly_chart(_rt_fig, use_container_width=True,
+                                    config={"displayModeBar": False})
+
+            # AI Summary
+            with st.expander("🤖 AI Market Summary", expanded=False):
+                _ai_ret_key = f"_ai_ret_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
+                if st.button("Generate AI Summary", key="gen_ai_ret"):
+                    st.session_state[_ai_ret_key] = None
+                if _ai_ret_key not in st.session_state:
+                    st.session_state[_ai_ret_key] = None
+                if st.session_state[_ai_ret_key] is None:
+                    if anthropic_key and _retail_lst:
+                        with st.spinner("Generating AI retail summary…"):
+                            _ret_summ = {"count": len(_retail_lst),
+                                         "avg_rent": int(sum(_rt_rents)/len(_rt_rents)) if _rt_rents else None,
+                                         "avg_psf": round(sum(_rt_psf)/len(_rt_psf),2) if _rt_psf else None}
+                            st.session_state[_ai_ret_key] = _generate_ai_summary(
+                                "retail", _ret_summ, _retail_lst[:10], anthropic_key
+                            )
+                    else:
+                        st.caption("Add an Anthropic API key in the sidebar to enable AI summaries.")
+                if st.session_state.get(_ai_ret_key):
+                    st.markdown(st.session_state[_ai_ret_key])
+
+            # All Listings
+            if _retail_lst:
+                _ret_disp = []
+                for _rl in _retail_lst:
+                    _rv = _rl.get("rent") or _rl.get("price") or 0
+                    _sq = _rl.get("sqft") or 0
+                    _pf = _rl.get("psf_yr") or _rl.get("price_psf")
+                    _ret_disp.append({
+                        "Source":    _rl.get("source","—"),
+                        "Address":   (_rl.get("address") or "—")[:60],
+                        "Use Type":  _rl.get("use_type") or _rl.get("asset_type") or "Retail",
+                        "Rent/mo":   f"${_rv:,}" if _rv else "—",
+                        "$/SF/yr":   f"${_pf:.2f}" if _pf else "—",
+                        "Sqft":      f"{_sq:,}" if _sq else "—",
+                        "Reliability": _rl.get("reliability","—"),
+                    })
+                with st.expander(f"📋 All Retail Listings ({len(_ret_disp)} total)", expanded=False):
+                    st.dataframe(pd.DataFrame(_ret_disp), use_container_width=True,
+                                 height=min(len(_ret_disp)*35+40, 340))
+
+            st.caption("Sources: Craigslist NYC · LoopNet · Crexi · No API key required")
+
+        # ── Tab 4: Property Sales ─────────────────────────────────────────────
+        with _tab_sales:
+            if not _sales_listings:
+                st.info("No recent sales comps found. NYC Rolling Sales data may not cover this area/zip.")
+            else:
+                _sp_prices = [l["price"] for l in _sales_listings if l.get("price")]
+                _sp_psf    = [l["price_psf"] for l in _sales_listings if l.get("price_psf")]
+                _sp_m1, _sp_m2, _sp_m3 = st.columns(3)
+                _sp_m1.metric("Sales Found",    len(_sales_listings))
+                _sp_m2.metric("Avg Sale Price", f"${int(sum(_sp_prices)/len(_sp_prices)):,}" if _sp_prices else "—")
+                _sp_m3.metric("Avg $/SF",       f"${sum(_sp_psf)/len(_sp_psf):.2f}" if _sp_psf else "—")
+
+                # Sales chart: avg price by asset type
+                _sp_by_type: dict = {}
+                for _sl in _sales_listings:
+                    _at = _sl.get("asset_type","—")
+                    _p  = _sl.get("price") or 0
+                    if _p:
+                        _sp_by_type.setdefault(_at, []).append(float(_p))
+
+                if _sp_by_type:
+                    _sp_fig = go.Figure(go.Bar(
+                        x=list(_sp_by_type.keys()),
+                        y=[int(sum(v)/len(v)) for v in _sp_by_type.values()],
+                        marker_color="#1A3A6B",
+                    ))
+                    _sp_fig.update_layout(
+                        title="Avg Sale Price by Asset Type",
+                        xaxis_title="Asset Type", yaxis_title="Avg Sale Price ($)",
+                        height=300, margin=dict(l=40,r=20,t=40,b=80),
+                        font=dict(size=11),
+                    )
+                    st.plotly_chart(_sp_fig, use_container_width=True,
+                                    config={"displayModeBar": False})
+
+                # $/SF by asset type
+                _sp_psf_by_type: dict = {}
+                for _sl in _sales_listings:
+                    _at = _sl.get("asset_type","—")
+                    _pf = _sl.get("price_psf") or 0
+                    if _pf:
+                        _sp_psf_by_type.setdefault(_at, []).append(float(_pf))
+                if _sp_psf_by_type:
+                    _sp_psf_fig = go.Figure(go.Bar(
+                        x=list(_sp_psf_by_type.keys()),
+                        y=[round(sum(v)/len(v),2) for v in _sp_psf_by_type.values()],
+                        marker_color="#15803D",
+                    ))
+                    _sp_psf_fig.update_layout(
+                        title="Avg $/SF by Asset Type",
+                        xaxis_title="Asset Type", yaxis_title="Avg $/SF",
+                        height=300, margin=dict(l=40,r=20,t=40,b=80),
+                        font=dict(size=11),
+                    )
+                    st.plotly_chart(_sp_psf_fig, use_container_width=True,
+                                    config={"displayModeBar": False})
+
+            # AI Summary
+            with st.expander("🤖 AI Market Summary", expanded=False):
+                _ai_sales_key = f"_ai_sales_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
+                if st.button("Generate AI Summary", key="gen_ai_sales"):
+                    st.session_state[_ai_sales_key] = None
+                if _ai_sales_key not in st.session_state:
+                    st.session_state[_ai_sales_key] = None
+                if st.session_state[_ai_sales_key] is None:
+                    if anthropic_key and _sales_listings:
+                        with st.spinner("Generating AI sales summary…"):
+                            _s_summ = {"count": len(_sales_listings),
+                                       "avg_price": int(sum(_sp_prices)/len(_sp_prices)) if _sp_prices else None,
+                                       "avg_psf": round(sum(_sp_psf)/len(_sp_psf),2) if _sp_psf else None}
+                            st.session_state[_ai_sales_key] = _generate_ai_summary(
+                                "property sales", _s_summ, _sales_listings[:10], anthropic_key
+                            )
+                    else:
+                        st.caption("Add an Anthropic API key in the sidebar to enable AI summaries.")
+                if st.session_state.get(_ai_sales_key):
+                    st.markdown(st.session_state[_ai_sales_key])
+
+            # All Sales
+            if _sales_listings:
+                _sp_rows = []
+                for _sl in _sales_listings:
+                    _sp_rows.append({
+                        "Address":     (_sl.get("address") or "—")[:60],
+                        "Type":        _sl.get("asset_type","—"),
+                        "Sale Price":  f"${_sl['price']:,.0f}" if _sl.get("price") else "—",
+                        "Sqft":        f"{_sl['sqft']:,}" if _sl.get("sqft") else "—",
+                        "$/SF":        f"${_sl['price_psf']:.2f}" if _sl.get("price_psf") else "—",
+                        "Date":        _sl.get("date","—"),
+                        "Source":      _sl.get("source","—"),
+                        "Reliability": _sl.get("reliability","—"),
+                    })
+                with st.expander(f"📋 All Sales ({len(_sp_rows)} total)", expanded=False):
+                    st.dataframe(pd.DataFrame(_sp_rows), use_container_width=True,
+                                 height=min(len(_sp_rows)*35+40, 380))
+            st.caption("Source: NYC Rolling Sales (usep-8jbt) · NYC Open Data · No API key required")
 
         # ── Photo Gallery (horizontal scroll carousel) ─────────────────────
         _photos_avail = [l for l in listings if l.get("photos")]
