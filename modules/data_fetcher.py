@@ -354,6 +354,13 @@ def fetch_all_listings(
     cleaned = _remove_outliers(cleaned)
     cleaned.sort(key=lambda x: x["distance_miles"])
 
+    # Normalize unified schema field
+    for l in cleaned:
+        l.setdefault("asset_type", "Residential Rental")
+        l.setdefault("price", l.get("rent"))
+        l.setdefault("price_psf", None)
+        l.setdefault("date", None)
+
     all_active = [status[k] for k in ("streeteasy", "apartments", "craigslist", "zumper", "renthop")]
     if any(s == "live" for s in all_active):
         status["overall"] = "live"
@@ -363,3 +370,89 @@ def fetch_all_listings(
         status["overall"] = "no_data"
 
     return cleaned, status
+
+
+# ---------------------------------------------------------------------------
+# Commercial comps (LoopNet + Crexi + Craigslist commercial)
+# ---------------------------------------------------------------------------
+
+def fetch_commercial_listings(
+    lat: float,
+    lon: float,
+    radius_miles: float,
+    proxy_key: Optional[str] = None,
+) -> tuple[list, dict]:
+    """
+    Fetch commercial lease comps from LoopNet, Crexi, and Craigslist commercial.
+    Returns (listings, status_dict).
+    """
+    from modules.loopnet_scraper import fetch_commercial_listings as _loopnet_fetch
+    from modules.commercial_scraper import fetch_commercial_comps
+
+    all_listings: list[dict] = []
+    status: dict = {"loopnet": "pending", "crexi": "pending",
+                    "craigslist_comm": "pending", "overall": "no_data"}
+
+    ln_listings, ln_status = _loopnet_fetch(lat, lon, radius_miles, proxy_key)
+    status["loopnet"] = ln_status.get("loopnet", ln_status) if isinstance(ln_status, dict) else ln_status
+    status["crexi"]   = ln_status.get("crexi",   "pending") if isinstance(ln_status, dict) else "pending"
+    all_listings.extend(ln_listings)
+
+    cl_comm, cl_comm_status = fetch_commercial_comps(lat, lon, radius_miles, proxy_key)
+    status["craigslist_comm"] = cl_comm_status.get("overall", "no_data")
+    # Normalize craigslist commercial to unified schema
+    for item in cl_comm:
+        item.setdefault("asset_type", item.get("use_type", "Commercial"))
+        item.setdefault("price", item.get("rent"))
+        item.setdefault("price_psf", item.get("psf_yr"))
+        item.setdefault("date", None)
+        item.setdefault("bedrooms", 0)
+        item.setdefault("building_name", "")
+        item.setdefault("photos", [])
+        item.setdefault("days_on_market", None)
+    all_listings.extend(cl_comm)
+
+    if all_listings:
+        status["overall"] = "live"
+    elif any(v in ("blocked",) for v in status.values()):
+        status["overall"] = "blocked"
+    else:
+        status["overall"] = "no_results"
+
+    return all_listings, status
+
+
+# ---------------------------------------------------------------------------
+# Sales comps (NYC Rolling Sales)
+# ---------------------------------------------------------------------------
+
+def fetch_sales_comps(
+    lat: float,
+    lon: float,
+    radius_miles: float,
+    zip_code: Optional[str] = None,
+    neighborhood: Optional[str] = None,
+) -> tuple[list, str]:
+    """
+    Fetch closed sale comps from NYC Rolling Sales dataset.
+    Returns (listings, status).
+    """
+    from modules.nyc_sales_fetcher import fetch_nyc_sales
+    return fetch_nyc_sales(lat, lon, radius_miles, zip_code=zip_code, neighborhood=neighborhood)
+
+
+# ---------------------------------------------------------------------------
+# DOB development pipeline
+# ---------------------------------------------------------------------------
+
+def fetch_dob_pipeline(
+    lat: float,
+    lon: float,
+    radius_miles: float,
+) -> tuple[list, str]:
+    """
+    Fetch NYC DOB new-building and major-alteration permits within the radius.
+    Returns (listings, status).
+    """
+    from modules.nyc_sales_fetcher import fetch_dob_permits
+    return fetch_dob_permits(lat, lon, radius_miles)

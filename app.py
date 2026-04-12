@@ -1271,18 +1271,16 @@ if 'geo' in st.session_state:
             f'<td><span class="{_css}">{_icon} {_label}</span></td>'
             f"<td>{_count_cell}</td></tr>"
         )
-    st.markdown(
-        f"""<div class="scrape-status-panel">
-          <div style="font-size:0.72rem;font-weight:700;letter-spacing:0.08em;
-                      text-transform:uppercase;color:#6B7280;margin-bottom:10px">
-            🔍 Live Scraping Status
-          </div>
-          <table><thead><tr>
-            <th>Source</th><th>Status</th><th>Listings Found (pre-dedup)</th>
-          </tr></thead><tbody>{_status_rows}</tbody></table>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+    # Build scrape status panel HTML — rendered later above Market Insights
+    _scrape_status_html = f"""<div class="scrape-status-panel">
+      <div style="font-size:0.72rem;font-weight:700;letter-spacing:0.08em;
+                  text-transform:uppercase;color:#6B7280;margin-bottom:10px">
+        🔍 Live Scraping Status
+      </div>
+      <table><thead><tr>
+        <th>Source</th><th>Status</th><th>Listings Found (pre-dedup)</th>
+      </tr></thead><tbody>{_status_rows}</tbody></table>
+    </div>"""
 
     # ── No results / blocked state ─────────────────────────────────────────
     blocked_sources = [
@@ -1292,25 +1290,23 @@ if 'geo' in st.session_state:
     all_primary_blocked = len(blocked_sources) == 5
 
     if not listings:
+        st.markdown(_scrape_status_html, unsafe_allow_html=True)
         if all_primary_blocked:
             st.warning(
                 "**All scraping sources were blocked** (bot/Cloudflare protection).\n\n"
-                "To get live data add a **Rentcast** or **RapidAPI** key in the sidebar — "
-                "those use authorized APIs that bypass bot detection. "
-                "Rentcast has a free tier at rentcast.io."
+                "Try **expanding the radius** or run again — scraping success varies by time of day."
             )
         elif blocked_sources:
             blocked_names = ", ".join(blocked_sources)
             st.warning(
                 f"Some sources were blocked by bot protection ({blocked_names}). "
-                "Try **expanding the radius** or add API keys in the sidebar for reliable data."
+                "Try **expanding the radius** for more results."
             )
         else:
             st.warning(
                 "No rental listings found in this area.\n\n"
                 "• Try **expanding the radius** (20–50 blocks captures more comps)\n"
-                "• Check your internet connection\n"
-                "• Add Rentcast / RapidAPI keys as backup sources"
+                "• Check your internet connection"
             )
 
     else:
@@ -1353,64 +1349,47 @@ if 'geo' in st.session_state:
             except (ValueError, TypeError):
                 return d
 
-        _ds_divider = '<hr style="border:none;border-top:1px solid #E5E7EB;margin:18px 0 14px">'
+        # ── 3×2 Deal Sourcing Grid ───────────────────────────────────────────
+        _ds_r1a, _ds_r1b = st.columns(2)
 
-        # ── 📋 Parcel Data ───────────────────────────────────────────────────
-        st.markdown("**📋 Parcel Data**")
-        if True:
+        # ─── CELL 1: Parcel Data ──────────────────────────────────────────────
+        with _ds_r1a:
+            st.markdown("**📋 Parcel Data**")
             if not _ds_zi or "error" in _ds_zi:
                 st.info("Parcel data unavailable — zoning lookup may have failed.")
             else:
-                _p_c1, _p_c2 = st.columns(2)
-                with _p_c1:
-                    st.markdown("**🏠 Parcel Identity**")
-                    _p_left = [
-                        ("Owner",       _ds_zi.get("owner", "—")),
-                        ("Address",     _ds_zi.get("address_pluto", "—")),
-                        ("Borough",     borough),
-                        ("Zoning",      _ds_zi.get("zoning_dist", "—")),
-                        ("Bldg Class",  _ds_zi.get("bldg_class", "—")),
-                        ("Land Use",    _ds_zi.get("land_use", "—")),
-                        ("Year Built",  _ds_zi.get("year_built", "—")),
-                        ("Floors",      _ds_zi.get("num_floors", "—")),
-                        ("Res Units",   _ds_zi.get("units_res", "—")),
-                    ]
-                    _p_html = "<table style='width:100%;font-size:0.83rem;border-collapse:collapse'>"
-                    for _pk, _pv in _p_left:
-                        _p_html += (
-                            f"<tr><td style='color:#6B7280;padding:5px 10px 5px 0;white-space:nowrap'>{_pk}</td>"
-                            f"<td style='font-weight:600;padding:5px 0;color:#111827'>{_pv}</td></tr>"
-                        )
-                    st.markdown(_p_html + "</table>", unsafe_allow_html=True)
-                with _p_c2:
-                    st.markdown("**📐 FAR & Financials**")
-                    _la_v = int(_sf(_ds_zi.get("lot_area_sqft")))
-                    _gfa_v = _ds_zi.get("bldg_area_sqft", "—")
-                    _p_right = [
-                        ("Lot Area",          f"{_la_v:,} SF" if _la_v else "—"),
-                        ("Gross Floor Area",   f"{_gfa_v} SF" if _gfa_v and _gfa_v != "—" else "—"),
-                        ("Lot Frontage",       f"{_ds_zi.get('lot_frontage_ft', '—')} ft"),
-                        ("Lot Depth",          f"{_ds_zi.get('lot_depth_ft', '—')} ft"),
-                        ("FAR (Built)",        _ds_zi.get("far_built", "—")),
-                        ("FAR (Res Max)",      _ds_zi.get("far_residential", "—")),
-                        ("FAR (Comm Max)",     _ds_zi.get("far_commercial", "—")),
-                        ("Assessed Land",      _ds_zi.get("assess_land", "—")),
-                        ("Assessed Total",     _ds_zi.get("assess_total", "—")),
-                        ("BBL",                _ds_bbl or "—"),
-                    ]
-                    _p_html2 = "<table style='width:100%;font-size:0.83rem;border-collapse:collapse'>"
-                    for _pk, _pv in _p_right:
-                        _p_html2 += (
-                            f"<tr><td style='color:#6B7280;padding:5px 10px 5px 0;white-space:nowrap'>{_pk}</td>"
-                            f"<td style='font-weight:600;padding:5px 0;color:#111827'>{_pv}</td></tr>"
-                        )
-                    st.markdown(_p_html2 + "</table>", unsafe_allow_html=True)
-                st.caption("Source: NYC PLUTO via NYC Planning GeoSearch · No API key required")
+                _la_v  = int(_sf(_ds_zi.get("lot_area_sqft")))
+                _gfa_v = _ds_zi.get("bldg_area_sqft", "—")
+                _p_all = [
+                    ("Owner",           _ds_zi.get("owner", "—")),
+                    ("Address",         _ds_zi.get("address_pluto", "—")),
+                    ("Borough",         borough),
+                    ("Zoning",          _ds_zi.get("zoning_dist", "—")),
+                    ("Bldg Class",      _ds_zi.get("bldg_class", "—")),
+                    ("Land Use",        _ds_zi.get("land_use", "—")),
+                    ("Year Built",      _ds_zi.get("year_built", "—")),
+                    ("Floors",          _ds_zi.get("num_floors", "—")),
+                    ("Res Units",       _ds_zi.get("units_res", "—")),
+                    ("Lot Area",        f"{_la_v:,} SF" if _la_v else "—"),
+                    ("Gross Floor Area",f"{_gfa_v} SF" if _gfa_v and _gfa_v != "—" else "—"),
+                    ("FAR (Built)",     _ds_zi.get("far_built", "—")),
+                    ("FAR (Res Max)",   _ds_zi.get("far_residential", "—")),
+                    ("FAR (Comm Max)",  _ds_zi.get("far_commercial", "—")),
+                    ("Assessed Total",  _ds_zi.get("assess_total", "—")),
+                    ("BBL",             _ds_bbl or "—"),
+                ]
+                _p_html = "<table style='width:100%;font-size:0.80rem;border-collapse:collapse'>"
+                for _pk, _pv in _p_all:
+                    _p_html += (
+                        f"<tr><td style='color:#6B7280;padding:3px 8px 3px 0;white-space:nowrap'>{_pk}</td>"
+                        f"<td style='font-weight:600;padding:3px 0;color:#111827'>{_pv}</td></tr>"
+                    )
+                st.markdown(_p_html + "</table>", unsafe_allow_html=True)
+                st.caption("NYC PLUTO · NYC Planning GeoSearch")
 
-        st.markdown(_ds_divider, unsafe_allow_html=True)
-        # ── 📈 Underbuilt? ───────────────────────────────────────────────────
-        st.markdown("**📈 Underbuilt? (Subject Property)**")
-        if True:
+        # ─── CELL 2: Underbuilt? ─────────────────────────────────────────────
+        with _ds_r1b:
+            st.markdown("**📈 Underbuilt? (Subject Property)**")
             _ub_lot_area   = _sf(_ds_zi.get("lot_area_sqft"))
             _ub_max_far    = max(
                 _sf(_ds_zi.get("far_residential")),
@@ -1420,23 +1399,48 @@ if 'geo' in st.session_state:
             _ub_unused_far = max(0.0, _ub_max_far - _ub_built_far)
             _ub_unused_pct = (_ub_unused_far / _ub_max_far * 100) if _ub_max_far > 0 else 0.0
             _ub_add_sf     = int(_ub_unused_far * _ub_lot_area)
+            _ub_max_sf     = int(_ub_max_far   * _ub_lot_area)
+            _ub_built_sf   = int(_ub_built_far * _ub_lot_area)
 
-            _um1, _um2, _um3, _um4 = st.columns(4)
-            _um1.metric("Max FAR",             f"{_ub_max_far:.2f}")
-            _um2.metric("Built FAR",           f"{_ub_built_far:.2f}")
-            _um3.metric("Unused FAR",          f"{_ub_unused_pct:.0f}%")
-            _um4.metric("Additional Build SF", f"{_ub_add_sf:,}")
-
+            st.markdown(f"""
+<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0">
+  <div style="flex:1;min-width:80px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:10px 8px">
+    <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Lot Size</div>
+    <div style="font-size:1.15rem;font-weight:700;color:#111827">{int(_ub_lot_area):,}</div>
+    <div style="font-size:0.68rem;color:#6B7280">SF</div>
+  </div>
+  <div style="flex:1;min-width:80px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:10px 8px">
+    <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Max FAR</div>
+    <div style="font-size:1.15rem;font-weight:700;color:#111827">{_ub_max_far:.2f}</div>
+    <div style="font-size:0.68rem;color:#6B7280">({_ub_max_sf:,} SF)</div>
+  </div>
+  <div style="flex:1;min-width:80px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:10px 8px">
+    <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Built FAR</div>
+    <div style="font-size:1.15rem;font-weight:700;color:#111827">{_ub_built_far:.2f}</div>
+    <div style="font-size:0.68rem;color:#6B7280">({_ub_built_sf:,} SF)</div>
+  </div>
+  <div style="flex:1;min-width:80px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:10px 8px">
+    <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Unused FAR %</div>
+    <div style="font-size:1.15rem;font-weight:700;color:#{'15803D' if _ub_unused_pct > 20 else '111827'}">{_ub_unused_pct:.0f}%</div>
+    <div style="font-size:0.68rem;color:#6B7280">({_ub_add_sf:,} SF)</div>
+  </div>
+  <div style="flex:1;min-width:80px;background:#{'DCFCE7' if _ub_unused_pct > 20 else 'F9FAFB'};border:1px solid #{'BBF7D0' if _ub_unused_pct > 20 else 'E5E7EB'};border-radius:8px;padding:10px 8px">
+    <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Add&apos;l Buildable</div>
+    <div style="font-size:1.15rem;font-weight:700;color:#111827">{_ub_add_sf:,}</div>
+    <div style="font-size:0.68rem;color:#6B7280">SF</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
             if _ub_unused_pct > 20:
                 st.markdown(
-                    f'<div class="opportunity-flag">🏗️ Underbuilt Opportunity — '
+                    f'<div class="opportunity-flag">🏗️ Underbuilt — '
                     f'{_ub_unused_pct:.0f}% unused FAR · {_ub_add_sf:,} additional buildable SF</div>',
                     unsafe_allow_html=True,
                 )
             elif _ub_max_far > 0:
-                st.info(f"Site is near full buildout — {100 - _ub_unused_pct:.0f}% of max FAR utilized.")
+                st.info(f"Near full buildout — {100 - _ub_unused_pct:.0f}% of max FAR utilized.")
 
-            # Fetch nearby lots on same block
+            # Fetch nearby lots on same block (compact table only in grid view)
             _ub_block_key = f"_ub_block_{_ds_bbl}"
             if _ub_block_key not in st.session_state and _ds_bbl and len(str(_ds_bbl)) == 10:
                 _ub_bbl_s    = str(_ds_bbl)
@@ -1447,7 +1451,7 @@ if 'geo' in st.session_state:
                         "https://data.cityofnewyork.us/resource/64uk-42ks.json",
                         params={
                             "$where": f"block='{_ub_blk_int}' AND borough='{_ub_boro_int}'",
-                            "$select": "lot,address,lotarea,builtfar,residfar,commfar,bldgclass,numfloors,latitude,longitude",
+                            "$select": "lot,address,lotarea,builtfar,residfar,commfar,bldgclass,numfloors",
                             "$limit": "30",
                         },
                         timeout=12,
@@ -1456,79 +1460,46 @@ if 'geo' in st.session_state:
                 except Exception:
                     st.session_state[_ub_block_key] = []
             _ub_lots = st.session_state.get(_ub_block_key, [])
-
             if _ub_lots:
                 _ub_rows = []
                 for _ul in _ub_lots:
                     try:
-                        _ul_la      = float(_ul.get("lotarea") or 0)
-                        _ul_built   = float(_ul.get("builtfar") or 0)
-                        _ul_max_f   = max(float(_ul.get("residfar") or 0), float(_ul.get("commfar") or 0))
-                        _ul_unused  = max(0.0, _ul_max_f - _ul_built)
-                        _ul_pct     = (_ul_unused / _ul_max_f * 100) if _ul_max_f > 0 else 0.0
+                        _ul_la    = float(_ul.get("lotarea") or 0)
+                        _ul_built = float(_ul.get("builtfar") or 0)
+                        _ul_max_f = max(float(_ul.get("residfar") or 0), float(_ul.get("commfar") or 0))
+                        _ul_pct   = (max(0, _ul_max_f - _ul_built) / _ul_max_f * 100) if _ul_max_f > 0 else 0.0
                         _ub_rows.append({
-                            "Address":        _ul.get("address", "—"),
-                            "Built FAR":      round(_ul_built, 2),
-                            "Max FAR":        round(_ul_max_f, 2),
-                            "Unused %":       f"{_ul_pct:.0f}%",
-                            "Used SF":        f"{int(_ul_built * _ul_la):,}",
-                            "Add'l Build SF": f"{int(_ul_unused * _ul_la):,}",
-                            "Flag":           "🏗️ Underbuilt" if _ul_pct > 20 else "—",
+                            "Address":    _ul.get("address", "—"),
+                            "Built FAR":  round(_ul_built, 2),
+                            "Max FAR":    round(_ul_max_f, 2),
+                            "Unused %":   f"{_ul_pct:.0f}%",
+                            "Add'l SF":   f"{int(max(0, _ul_max_f - _ul_built) * _ul_la):,}",
+                            "Flag":       "🏗️" if _ul_pct > 20 else "—",
                         })
                     except Exception:
                         continue
-
                 if _ub_rows:
-                    _ub_mc, _ub_tc = st.columns([1, 1])
-                    with _ub_tc:
-                        st.markdown("**Nearby Lots — Same Block**")
-                        st.dataframe(pd.DataFrame(_ub_rows), use_container_width=True,
-                                     height=min(len(_ub_rows) * 35 + 40, 340))
-                    with _ub_mc:
-                        st.markdown("**Lot Map**")
-                        _ub_fmap = folium.Map(location=[lat, lon], zoom_start=17, tiles="CartoDB positron")
-                        folium.Marker(
-                            [lat, lon],
-                            tooltip="Subject Property",
-                            icon=folium.Icon(color="blue", icon="home"),
-                        ).add_to(_ub_fmap)
-                        for _ri, _ul in enumerate(_ub_lots[:15]):
-                            try:
-                                _ul_la   = float(_ul.get("lotarea") or 0)
-                                _ul_built= float(_ul.get("builtfar") or 0)
-                                _ul_max_f= max(float(_ul.get("residfar") or 0), float(_ul.get("commfar") or 0))
-                                _ul_pct  = (max(0, _ul_max_f - _ul_built) / _ul_max_f * 100) if _ul_max_f > 0 else 0
-                                _off_lat = lat + (_ri - 7) * 0.000065
-                                _off_lon = lon + 0.00009
-                                folium.CircleMarker(
-                                    [_off_lat, _off_lon],
-                                    radius=9,
-                                    color="#15803D" if _ul_pct > 20 else "#9CA3AF",
-                                    fill=True, fill_opacity=0.75,
-                                    tooltip=f"{_ul.get('address', '?')} · {_ul_pct:.0f}% unused FAR",
-                                ).add_to(_ub_fmap)
-                            except Exception:
-                                continue
-                        st_folium(_ub_fmap, width="100%", height=340, returned_objects=[])
-            st.caption("Green = underbuilt (>20% unused FAR) · Data: NYC PLUTO via Socrata")
+                    st.markdown("**Lots — Same Block**")
+                    st.dataframe(pd.DataFrame(_ub_rows), use_container_width=True,
+                                 height=min(len(_ub_rows) * 35 + 40, 210))
+            st.caption("Data: NYC PLUTO via Socrata")
 
-        st.markdown(_ds_divider, unsafe_allow_html=True)
-        # ── 🚨 Distress Signals ──────────────────────────────────────────────
-        st.markdown("**🚨 Distress Signals**")
-        if True:
+        _ds_r2a, _ds_r2b = st.columns(2)
+
+        # ─── CELL 3: Distress Signals ─────────────────────────────────────────
+        with _ds_r2a:
+            st.markdown("**🚨 Distress Signals**")
             _ecb_key = f"_ecb_{_ds_bbl}"
             if _ecb_key not in st.session_state and _ds_bbl:
-                with st.spinner("Checking ECB violations…"):
+                with st.spinner("Checking HPD violations…"):
                     st.session_state[_ecb_key] = fetch_ecb_violations(_ds_bbl)
             _ecb_data = st.session_state.get(_ecb_key, {})
 
-            # ACRIS lien count from session state (populated after Zoning section runs)
             _acris_ds   = st.session_state.get(f"_acris_{_ds_bbl}", {})
             _lien_count = sum(
                 1 for d in _acris_ds.get("documents", [])
                 if d.get("doc_type", "").upper() in ("UCC1", "LIEN", "LIEN2")
             )
-
             _ds_dist_level = _ecb_data.get("distress_level", 0)
             if _lien_count >= 3:
                 _ds_dist_level = min(2, _ds_dist_level + 1)
@@ -1536,48 +1507,45 @@ if 'geo' in st.session_state:
             _dist_labels = ["Low", "Medium", "High"]
             _dist_css    = ["distress-low", "distress-medium", "distress-high"]
 
-            _dm1, _dm2, _dm3 = st.columns(3)
-            _dm1.metric("ECB Violations",          _ecb_data.get("count", "—"))
-            _dm2.metric("Open / Unpaid",            _ecb_data.get("open_count", "—"))
-            _dm3.metric("ACRIS Liens (UCC/LIEN)",   _lien_count)
+            _dm1, _dm2, _dm3, _dm4 = st.columns(4)
+            _dm1.metric("Class A",  _ecb_data.get("class_a", "—"))
+            _dm2.metric("Class B",  _ecb_data.get("class_b", "—"))
+            _dm3.metric("Class C",  _ecb_data.get("class_c", "—"))
+            _dm4.metric("Liens",    _lien_count)
 
             st.markdown(
-                f'<div style="margin:10px 0 16px">'
+                f'<div style="margin:8px 0 12px">'
                 f'<span class="{_dist_css[_ds_dist_level]}">'
-                f'⚡ Distress Score: {_dist_labels[_ds_dist_level]}</span></div>',
+                f'⚡ Distress: {_dist_labels[_ds_dist_level]}</span></div>',
                 unsafe_allow_html=True,
             )
-
             if _ecb_data.get("violations"):
-                with st.expander(f"ECB Violations ({_ecb_data['count']} total)", expanded=True):
-                    _vrows = [
-                        {
-                            "Date":        v.get("issue_date", "—"),
-                            "Type":        v.get("violation_type", "—"),
-                            "Description": v.get("description", "—")[:80],
-                            "Penalty":     v.get("penalty", "—"),
-                            "Balance Due": v.get("balance_due", "0"),
-                        }
-                        for v in _ecb_data["violations"]
-                    ]
-                    st.dataframe(pd.DataFrame(_vrows), use_container_width=True, height=240)
+                _vrows = [
+                    {
+                        "Date":  v.get("issue_date", "—"),
+                        "Class": v.get("violation_type", "—"),
+                        "Desc":  v.get("description", "—")[:60],
+                        "Apt":   v.get("apartment", "—"),
+                        "Status": v.get("status", "—"),
+                    }
+                    for v in _ecb_data["violations"]
+                ]
+                with st.expander(f"HPD Violations ({_ecb_data['count']} · {_ecb_data.get('open_count',0)} open)"):
+                    st.dataframe(pd.DataFrame(_vrows), use_container_width=True, height=180)
             elif _ecb_data and not _ecb_data.get("error"):
-                st.success("No ECB violations found for this property.")
-
+                st.success("No HPD violations found.")
             if _ecb_data.get("error"):
-                st.warning(f"ECB lookup: {_ecb_data['error']}")
+                st.warning(f"HPD: {_ecb_data['error']}")
+            st.caption("HPD Open Violations (wvxf-dwi5) · ACRIS liens: NYC DOF")
 
-            st.caption("ECB data: NYC Open Data (w9ak-ipjd) · ACRIS liens: NYC DOF · No API key required")
-
-        st.markdown(_ds_divider, unsafe_allow_html=True)
-        # ── 🏷️ Nearby Listings ───────────────────────────────────────────────
-        st.markdown("**🏷️ Nearby Listings (within 0.15 mi)**")
-        if True:
+        # ─── CELL 4: Nearby Listings ─────────────────────────────────────────
+        with _ds_r2b:
+            st.markdown("**🏷️ Nearby Listings (≤0.15 mi)**")
             _nearby_listings = [l for l in listings if float(l.get("distance_miles") or 99) < 0.15]
             if not _nearby_listings:
                 st.info(
-                    f"No active listings found within 0.15 miles. "
-                    f"There are {len(listings)} listing(s) in the full search radius — see All Listings below."
+                    f"No listings within 0.15 mi. "
+                    f"{len(listings)} listing(s) in full radius — see All Listings below."
                 )
             else:
                 _nl_rents   = [l.get("rent") or 0 for l in _nearby_listings if l.get("rent")]
@@ -1592,45 +1560,48 @@ if 'geo' in st.session_state:
                 _nl_avg_psf = round(sum(_nl_psf_all) / len(_nl_psf_all), 2) if _nl_psf_all else None
 
                 _lm1, _lm2, _lm3, _lm4 = st.columns(4)
-                _lm1.metric("Listings (0.15 mi)",  len(_nearby_listings))
-                _lm2.metric("Avg Asking Rent",     f"${_nl_avg:,}/mo" if _nl_avg else "—")
-                _lm3.metric("Rent Range",           f"${_nl_min:,}–${_nl_max:,}" if _nl_min else "—")
-                _lm4.metric("Avg $/SF",             f"${_nl_avg_psf:.2f}" if _nl_avg_psf else "—")
+                _lm1.metric("Count",     len(_nearby_listings))
+                _lm2.metric("Avg Rent",  f"${_nl_avg:,}" if _nl_avg else "—")
+                _lm3.metric("Range",     f"${_nl_min:,}–${_nl_max:,}" if _nl_min else "—")
+                _lm4.metric("Avg $/SF",  f"${_nl_avg_psf:.2f}" if _nl_avg_psf else "—")
 
                 _nl_rows = []
-                for _nl in _nearby_listings:
+                for _nl in _nearby_listings[:10]:
                     _sq = _nl.get("sqft") or 0
                     _rt = _nl.get("rent") or 0
                     _nl_rows.append({
                         "Address":   _nl.get("address", "—"),
-                        "Unit Type": _nl.get("unit_type", "—"),
+                        "Type":      _nl.get("unit_type", "—"),
                         "Rent/mo":   f"${_rt:,}" if _rt else "—",
                         "$/SF":      f"${_rt/_sq:.2f}" if _sq > 0 and _rt else "—",
-                        "Sqft":      f"{int(_sq):,}" if _sq else "—",
-                        "Beds":      _nl.get("beds", "—"),
                         "Source":    _nl.get("source", "—"),
-                        "Dist (mi)": f"{float(_nl.get('distance_miles') or 0):.3f}",
                     })
                 st.dataframe(pd.DataFrame(_nl_rows), use_container_width=True,
-                             height=min(len(_nl_rows) * 35 + 40, 320))
-            st.caption("Listings sourced from comps search · Broker contact available via listing URL")
+                             height=min(len(_nl_rows) * 35 + 40, 210))
+            st.caption("Comps within 0.15 mi · See All Listings for full radius")
 
-        st.markdown(_ds_divider, unsafe_allow_html=True)
-        # ── 🔗 Assemblage Detection ──────────────────────────────────────────
-        st.markdown("**🔗 Assemblage Detection**")
-        if True:
+        _ds_r3a, _ds_r3b = st.columns(2)
+
+        # ─── CELL 5: Assemblage Detection ────────────────────────────────────
+        with _ds_r3a:
+            st.markdown("**🔗 Assemblage Detection**")
             _as_key = f"_assem_{_ds_bbl}"
             if _as_key not in st.session_state and _ds_bbl and len(str(_ds_bbl)) == 10:
-                _as_bbl_s    = str(_ds_bbl)
-                _as_boro_int = _as_bbl_s[0]
-                _as_blk_int  = str(int(_as_bbl_s[1:6]))
                 try:
+                    import math as _as_math
+                    _100ft_mi  = 100 / 5280.0
+                    _as_lat_d  = _100ft_mi / 69.0
+                    _as_lon_d  = _100ft_mi / (69.0 * _as_math.cos(_as_math.radians(lat)))
                     _as_resp = requests.get(
                         "https://data.cityofnewyork.us/resource/64uk-42ks.json",
                         params={
-                            "$where": f"block='{_as_blk_int}' AND borough='{_as_boro_int}'",
-                            "$select": "lot,address,lotarea,lotfront,lotdepth,bldgclass,numfloors,residfar,commfar,builtfar",
-                            "$limit": "30",
+                            "$where": (
+                                f"latitude > {lat - _as_lat_d:.6f} AND latitude < {lat + _as_lat_d:.6f} "
+                                f"AND longitude > {lon - _as_lon_d:.6f} AND longitude < {lon + _as_lon_d:.6f}"
+                            ),
+                            "$select": "bbl,lot,address,lotarea,lotfront,lotdepth,bldgclass,"
+                                       "numfloors,residfar,commfar,builtfar,latitude,longitude",
+                            "$limit": "50",
                         },
                         timeout=12,
                     )
@@ -1640,11 +1611,9 @@ if 'geo' in st.session_state:
             _as_lots = st.session_state.get(_as_key, [])
 
             if _as_lots and _ds_bbl and len(str(_ds_bbl)) == 10:
-                _subj_lot_num = int(str(_ds_bbl)[6:])
-                _adj_lots_as  = [
+                _adj_lots_as = [
                     l for l in _as_lots
-                    if l.get("lot") and abs(int(l.get("lot", 0)) - _subj_lot_num) <= 3
-                    and int(l.get("lot", 0)) != _subj_lot_num
+                    if l.get("bbl") and str(l.get("bbl", "")).replace(" ", "") != str(_ds_bbl)
                 ]
                 _subj_la_as = _ub_lot_area or _sf(_ds_zi.get("lot_area_sqft"))
                 _as_max_far = _ub_max_far or max(
@@ -1657,47 +1626,37 @@ if 'geo' in st.session_state:
                 _ub_uplift_pct = ((_comb_sf - _indiv_sf) / _indiv_sf * 100) if _indiv_sf > 0 else 0.0
 
                 _am1, _am2, _am3 = st.columns(3)
-                _am1.metric("Adjacent Lots",    len(_adj_lots_as))
-                _am2.metric("Combined Lot Area", f"{int(_comb_la):,} SF")
-                _am3.metric("Assemblage Uplift", f"{_ub_uplift_pct:.0f}%")
+                _am1.metric("Adj Lots",  len(_adj_lots_as))
+                _am2.metric("Comb Area", f"{int(_comb_la):,} SF")
+                _am3.metric("Uplift",    f"{_ub_uplift_pct:.0f}%")
 
                 if _ub_uplift_pct > 30:
                     st.markdown(
-                        f'<div class="opportunity-flag">🔗 Assemblage Opportunity — '
-                        f'{_ub_uplift_pct:.0f}% increase in buildable SF if assembled · '
-                        f'Individual: {int(_indiv_sf):,} SF → Combined: {int(_comb_sf):,} SF</div>',
+                        f'<div class="opportunity-flag">🔗 Assemblage — '
+                        f'{_ub_uplift_pct:.0f}% uplift · {int(_indiv_sf):,} → {int(_comb_sf):,} SF</div>',
                         unsafe_allow_html=True,
                     )
-                else:
-                    st.info(
-                        f"Assemblage would increase buildable SF by {_ub_uplift_pct:.0f}% "
-                        f"(flag threshold: >30%)."
-                    )
-
                 if _adj_lots_as:
                     _as_rows = []
                     for _al in _adj_lots_as:
                         _al_la = float(_al.get("lotarea") or 0)
                         _as_rows.append({
-                            "Address":     _al.get("address", "—"),
-                            "Lot #":       _al.get("lot", "—"),
-                            "Lot Area SF": f"{int(_al_la):,}" if _al_la else "—",
-                            "Floors":      (lambda v: str(int(float(v))) if v and str(v).replace(".", "").isdigit() else (v or "—"))(_al.get("numfloors", "—")),
-                            "Bldg Class":  _al.get("bldgclass", "—"),
+                            "Address":  _al.get("address", "—"),
+                            "Lot SF":   f"{int(_al_la):,}" if _al_la else "—",
+                            "Floors":   (lambda v: str(int(float(v))) if v and str(v).replace(".", "").isdigit() else (v or "—"))(_al.get("numfloors", "—")),
+                            "Class":    _al.get("bldgclass", "—"),
                         })
-                    st.markdown("**Adjacent Lots (±3 lot numbers, same block)**")
                     st.dataframe(pd.DataFrame(_as_rows), use_container_width=True,
-                                 height=min(len(_as_rows) * 35 + 40, 260))
+                                 height=min(len(_as_rows) * 35 + 40, 200))
                 else:
-                    st.info("No directly adjacent lots found on this block.")
+                    st.info("No adjacent lots within 100 ft.")
             else:
-                st.info("BBL required for assemblage analysis. Enter a valid NYC address to begin.")
-            st.caption("Assemblage data: NYC PLUTO via Socrata · Adjacent = lot number ±3 on same block")
+                st.info("BBL required for assemblage analysis.")
+            st.caption("NYC PLUTO · Adjacent = within 100 ft radius")
 
-        st.markdown(_ds_divider, unsafe_allow_html=True)
-        # ── 🏆 Deal Score ────────────────────────────────────────────────────
-        st.markdown("**🏆 Deal Score**")
-        if True:
+        # ─── CELL 6: Deal Score ──────────────────────────────────────────────
+        with _ds_r3b:
+            st.markdown("**🏆 Deal Score**")
             _sc_bench_1bd = bench.get("1 Bed") if bench else None
             _sc_premium   = (
                 (med_rent_all / _sc_bench_1bd - 1) * 100
@@ -1723,33 +1682,29 @@ if 'geo' in st.session_state:
             _sc_col1, _sc_col2 = st.columns([1, 2])
             with _sc_col1:
                 st.markdown(
-                    f'<div style="text-align:center;padding:28px 16px 16px">'
+                    f'<div style="text-align:center;padding:18px 10px 12px">'
                     f'<div class="deal-score-num" style="color:{_sc_clr}">{_sc_score}</div>'
-                    f'<div style="font-size:0.72rem;color:#6B7280;margin-bottom:10px">out of 100</div>'
+                    f'<div style="font-size:0.70rem;color:#6B7280;margin-bottom:8px">out of 100</div>'
                     f'<span class="deal-tier-badge" style="background:{_sc_tbg};color:{_sc_tfg}">'
                     f'{_sc_tier}</span></div>',
                     unsafe_allow_html=True,
                 )
             with _sc_col2:
-                st.markdown("**Score Breakdown**")
+                st.markdown("**Breakdown**")
                 for _cn, _cd in _sc_break.items():
                     _bar_pct = _cd["score"] / _cd["max"] if _cd["max"] > 0 else 0
                     st.markdown(
-                        f"<div style='margin-bottom:10px'>"
-                        f"<div style='display:flex;justify-content:space-between;font-size:0.82rem'>"
+                        f"<div style='margin-bottom:8px'>"
+                        f"<div style='display:flex;justify-content:space-between;font-size:0.78rem'>"
                         f"<span style='font-weight:600'>{_cn}</span>"
                         f"<span style='color:#6B7280'>{_cd['score']}/{_cd['max']}</span></div>"
-                        f"<div style='background:#F3F4F6;border-radius:4px;height:7px;margin-top:4px'>"
+                        f"<div style='background:#F3F4F6;border-radius:4px;height:6px;margin-top:3px'>"
                         f"<div style='background:{_sc_clr};width:{_bar_pct*100:.0f}%;"
-                        f"height:7px;border-radius:4px'></div></div>"
-                        f"<div style='font-size:0.72rem;color:#9CA3AF;margin-top:2px'>{_cd['reasoning']}</div>"
+                        f"height:6px;border-radius:4px'></div></div>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
-            st.caption(
-                "Deal Score = weighted composite: unused FAR 30% · distress 25% · "
-                "location demand 20% · zoning flexibility 15% · listing activity 10%"
-            )
+            st.caption("FAR 30% · Distress 25% · Location 20% · Zoning 15% · Activity 10%")
 
         # ── Area Underdevelopment ─────────────────────────────────────────
         _section_header(
@@ -1840,28 +1795,37 @@ if 'geo' in st.session_state:
         _um3.metric("% Underbuilt",          f"{_und_ub_pct:.0f}%")
         _um4.metric("Avg Unused FAR (ub)",   f"{_und_avg_far:.0f}%")
 
+        def _und_color(pct: float) -> str:
+            if pct >= 80: return "#14532D"
+            if pct >= 60: return "#15803D"
+            if pct >= 40: return "#16A34A"
+            if pct >= 20: return "#4ADE80"
+            return "#9CA3AF"
+
         if _und_lots:
             _und_show_all = st.checkbox("Show all lots (including near-buildout)", value=False)
             _und_display  = _und_lots if _und_show_all else _und_ub_lots
-            _und_display  = sorted(_und_display, key=lambda x: x["unused_pct"], reverse=True)[:100]
+            _und_display  = sorted(_und_display, key=lambda x: x["unused_pct"], reverse=True)
 
             # Map + Table side by side
             _und_mc, _und_tc = st.columns([1, 1])
             with _und_mc:
                 st.markdown("**Underbuilt Lot Map**")
-                _und_fmap = folium.Map(location=[lat, lon], zoom_start=15, tiles="CartoDB positron")
+                _und_map_center = [lat, lon]
+                _und_map_zoom   = 15
+                _und_fmap = folium.Map(location=_und_map_center, zoom_start=_und_map_zoom, tiles="CartoDB positron")
                 folium.Marker(
                     [lat, lon],
                     tooltip="Subject Property",
                     icon=folium.Icon(color="blue", icon="home"),
                 ).add_to(_und_fmap)
-                for _ul2 in _und_lots[:300]:
-                    _ul2_color = "#15803D" if _ul2["underbuilt"] else "#9CA3AF"
+                for _ul2 in _und_lots:
+                    _ul2_color = _und_color(_ul2["unused_pct"])
                     folium.CircleMarker(
                         [_ul2["lat"], _ul2["lon"]],
                         radius=5,
                         color=_ul2_color,
-                        fill=True, fill_color=_ul2_color, fill_opacity=0.6,
+                        fill=True, fill_color=_ul2_color, fill_opacity=0.7,
                         tooltip=(
                             f"{_ul2['address']} · "
                             f"Built {_ul2['built_far']:.2f} / Max {_ul2['max_far']:.2f} FAR · "
@@ -1869,34 +1833,54 @@ if 'geo' in st.session_state:
                         ),
                     ).add_to(_und_fmap)
                 st_folium(_und_fmap, width="100%", height=400, returned_objects=[], key="und_map")
-                st.caption("🟢 Green = underbuilt (>20% unused FAR)  &nbsp; ⬤ Gray = near buildout")
+                st.caption("🌿 Light green = 20–40% unused · 🟢 Dark green = 60–80%+ unused · ⬤ Gray = near buildout")
 
             with _und_tc:
-                st.markdown(f"**Top Underbuilt Lots** ({len(_und_display)} shown)")
+                st.markdown(f"**{'Underbuilt' if not _und_show_all else 'All'} Lots** ({len(_und_display)} shown)")
                 _und_rows = []
                 for _ul2 in _und_display:
-                    _bar_w  = max(1, min(100, int(_ul2["built_sf"] / _ul2["max_sf"] * 100))) if _ul2["max_sf"] > 0 else 0
-                    _bar_html = (
-                        f"<div style='background:#E5E7EB;border-radius:3px;height:7px'>"
-                        f"<div style='background:#15803D;width:{_bar_w}%;height:7px;border-radius:3px'></div></div>"
-                        f"<span style='font-size:0.7rem;color:#6B7280'>{_bar_w}% utilized</span>"
-                    )
                     _und_rows.append({
                         "Address":       _ul2["address"],
                         "Lot SF":        f"{int(_ul2['lot_area']):,}",
                         "Built SF":      f"{_ul2['built_sf']:,}",
                         "Max SF":        f"{_ul2['max_sf']:,}",
-                        "Built FAR":     f"{_ul2['built_far']:.2f}",
-                        "Max FAR":       f"{_ul2['max_far']:.2f}",
-                        "Unused FAR %":  f"{_ul2['unused_pct']:.0f}%",
+                        "Built FAR":     _ul2['built_far'],
+                        "Max FAR":       _ul2['max_far'],
+                        "Unused FAR %":  round(_ul2['unused_pct'], 1),
                         "Add'l Build SF":f"{_ul2['add_sf']:,}",
                         "Flag":          "🏗️ Underbuilt" if _ul2["underbuilt"] else "—",
+                        "_lat":          _ul2["lat"],
+                        "_lon":          _ul2["lon"],
                     })
-                st.dataframe(
-                    pd.DataFrame(_und_rows),
+                _und_df = pd.DataFrame(_und_rows)
+                _und_display_cols = [c for c in _und_df.columns if not c.startswith("_")]
+                _und_sel = st.dataframe(
+                    _und_df[_und_display_cols],
                     use_container_width=True,
                     height=min(len(_und_rows) * 35 + 40, 420),
+                    on_select="rerun",
+                    selection_mode="single-row",
                 )
+                # If a row is selected, re-center the map
+                _und_sel_rows = getattr(getattr(_und_sel, "selection", None), "rows", [])
+                if _und_sel_rows:
+                    _sel_lot = _und_rows[_und_sel_rows[0]]
+                    _und_fmap2 = folium.Map(location=[_sel_lot["_lat"], _sel_lot["_lon"]],
+                                            zoom_start=17, tiles="CartoDB positron")
+                    folium.Marker(
+                        [lat, lon], tooltip="Subject Property",
+                        icon=folium.Icon(color="blue", icon="home"),
+                    ).add_to(_und_fmap2)
+                    _sel_color = _und_color(_und_display[_und_sel_rows[0]]["unused_pct"])
+                    folium.CircleMarker(
+                        [_sel_lot["_lat"], _sel_lot["_lon"]],
+                        radius=10, color=_sel_color, fill=True,
+                        fill_color=_sel_color, fill_opacity=0.9,
+                        tooltip=f"SELECTED: {_sel_lot['Address']} · {_sel_lot['Unused FAR %']}% unused",
+                    ).add_to(_und_fmap2)
+                    with _und_mc:
+                        st_folium(_und_fmap2, width="100%", height=400,
+                                  returned_objects=[], key="und_map_sel")
         else:
             st.info("No PLUTO lot data returned for this radius. Try a larger radius or check the address.")
         st.caption(
@@ -1904,6 +1888,9 @@ if 'geo' in st.session_state:
             f"{_und_total} lots within {radius_miles:.2f} mi · "
             f"Underbuilt threshold: unused FAR > 20% of max FAR"
         )
+
+        # ── Live Scraping Status (shown above Market Insights) ────────────
+        st.markdown(_scrape_status_html, unsafe_allow_html=True)
 
         # ── Market insights ────────────────────────────────────────────────
         _section_header("💡", "Market Insights")
@@ -1957,7 +1944,8 @@ if 'geo' in st.session_state:
                 </div>
                 """, unsafe_allow_html=True)
 
-        # ── Rent summary table ─────────────────────────────────────────────
+        # ── Residential Rental Comps ───────────────────────────────────────
+        st.markdown("**🏠 Residential Rental Comps**")
         _section_header("📈", "Rent Summary by Unit Type")
         display_cols = ["Unit Type", "# Listings", "Avg Rent", "Median Rent",
                         "Min Rent", "Max Rent", "Rent Range", "Avg $/SF"]
@@ -2027,47 +2015,100 @@ if 'geo' in st.session_state:
         with st.expander(f"📋 All Listings ({len(display_listings)} total)", expanded=False):
             st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-        # ── Commercial & Retail Comps ──────────────────────────────────────
-        _section_header("🏢", "Commercial & Retail Comps",
-                        "Office and retail lease comparables from Craigslist NYC")
+        # ── Commercial Comps ───────────────────────────────────────────────
+        _section_header("🏢", "Commercial Comps",
+                        "Office lease comparables · Craigslist NYC + LoopNet / Crexi")
         _comm_key = f"_comm_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
         if _comm_key not in st.session_state:
             from modules.commercial_scraper import fetch_commercial_comps
-            with st.spinner("Fetching commercial & retail comps…"):
-                _comm_listings, _comm_status = fetch_commercial_comps(
-                    lat, lon, radius_miles, proxy_key=scraping_key.strip() if has_proxy else None
-                )
-            st.session_state[_comm_key] = {"listings": _comm_listings, "status": _comm_status}
-        _comm_data     = st.session_state[_comm_key]
-        _comm_listings = _comm_data["listings"]
+            from modules.data_fetcher import fetch_commercial_listings as _fetch_comm_all
+            _proxy_arg = scraping_key.strip() if has_proxy else None
+            with st.spinner("Fetching commercial comps…"):
+                _cl_comm, _cl_comm_st = fetch_commercial_comps(lat, lon, radius_miles, _proxy_arg)
+                try:
+                    _ln_comm, _ln_comm_st = _fetch_comm_all(lat, lon, radius_miles, _proxy_arg)
+                except Exception:
+                    _ln_comm, _ln_comm_st = [], {}
+            _all_comm = _cl_comm + _ln_comm
+            st.session_state[_comm_key] = {"listings": _all_comm}
+        _comm_listings = st.session_state[_comm_key]["listings"]
 
-        if not _comm_listings:
-            st.info("No commercial or retail listings found on Craigslist for this area. "
-                    "Try expanding the search radius.")
+        # Split by type
+        _office_lst  = [l for l in _comm_listings if "office" in str(l.get("use_type") or l.get("asset_type","")).lower()]
+        _retail_lst  = [l for l in _comm_listings if "retail" in str(l.get("use_type") or l.get("asset_type","")).lower()]
+        _other_comm  = [l for l in _comm_listings if l not in _office_lst and l not in _retail_lst]
+
+        _comm_tab1, _comm_tab2 = st.tabs(["🏢 Office", "🏪 Retail / Commercial"])
+        for _tab, _tab_lst, _tab_label in [
+            (_comm_tab1, _office_lst + _other_comm, "Office"),
+            (_comm_tab2, _retail_lst, "Retail"),
+        ]:
+            with _tab:
+                if not _tab_lst:
+                    st.info(f"No {_tab_label.lower()} comps found. Try expanding radius.")
+                else:
+                    _co_rents = [l.get("rent") or l.get("price") or 0 for l in _tab_lst if l.get("rent") or l.get("price")]
+                    _co_psf   = [l.get("psf_yr") or l.get("price_psf") or 0 for l in _tab_lst if l.get("psf_yr") or l.get("price_psf")]
+                    _co_m1, _co_m2, _co_m3 = st.columns(3)
+                    _co_m1.metric("Listings",     len(_tab_lst))
+                    _co_m2.metric("Avg Rent/mo",  f"${int(sum(_co_rents)/len(_co_rents)):,}" if _co_rents else "—")
+                    _co_m3.metric("Avg $/SF/yr",  f"${sum(_co_psf)/len(_co_psf):.2f}" if _co_psf else "—")
+                    _co_rows = []
+                    for _cl in _tab_lst:
+                        _rt = _cl.get("rent") or _cl.get("price") or 0
+                        _sq = _cl.get("sqft") or 0
+                        _psf_v = _cl.get("psf_yr") or _cl.get("price_psf")
+                        _co_rows.append({
+                            "Address":  (_cl.get("address") or "—")[:60],
+                            "Use Type": _cl.get("use_type") or _cl.get("asset_type") or "—",
+                            "Rent/mo":  f"${_rt:,}" if _rt else "—",
+                            "$/SF/yr":  f"${_psf_v:.2f}" if _psf_v else "—",
+                            "Sqft":     f"{_sq:,}" if _sq else "—",
+                            "Source":   _cl.get("source", "—"),
+                        })
+                    st.dataframe(pd.DataFrame(_co_rows), use_container_width=True,
+                                 height=min(len(_co_rows) * 35 + 40, 320))
+        st.caption("Sources: Craigslist NYC (Off/Com sections) + LoopNet + Crexi · No API key required")
+
+        # ── Closed Sales Comps ─────────────────────────────────────────────
+        _section_header("💰", "Closed Sales Comps",
+                        "Recent sales from NYC Rolling Sales · NYC Open Data")
+        _sales_key = f"_sales_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}_{zip_code}"
+        if _sales_key not in st.session_state:
+            from modules.data_fetcher import fetch_sales_comps as _fetch_sales
+            with st.spinner("Fetching NYC sales comps…"):
+                _sales_listings, _sales_status = _fetch_sales(
+                    lat, lon, radius_miles,
+                    zip_code=zip_code if zip_code != "—" else None,
+                    neighborhood=neighborhood if neighborhood != "—" else None,
+                )
+            st.session_state[_sales_key] = {"listings": _sales_listings, "status": _sales_status}
+        _sales_data     = st.session_state[_sales_key]
+        _sales_listings = _sales_data["listings"]
+
+        if not _sales_listings:
+            st.info("No recent sales comps found. NYC Rolling Sales data may not cover this area/zip.")
         else:
-            _co_rents  = [l["rent"] for l in _comm_listings if l.get("rent")]
-            _co_psf    = [l["psf_yr"] for l in _comm_listings if l.get("psf_yr")]
-            _co_m1, _co_m2, _co_m3 = st.columns(3)
-            _co_m1.metric("Active Listings", len(_comm_listings))
-            _co_m2.metric("Avg Asking Rent/mo",
-                          f"${int(sum(_co_rents)/len(_co_rents)):,}" if _co_rents else "—")
-            _co_m3.metric("Avg $/SF/yr",
-                          f"${sum(_co_psf)/len(_co_psf):.2f}" if _co_psf else "—")
-            _co_rows = []
-            for _cl in _comm_listings:
-                _rt = _cl.get("rent") or 0
-                _sq = _cl.get("sqft") or 0
-                _co_rows.append({
-                    "Address / Title": _cl.get("address", "—"),
-                    "Use Type":        _cl.get("use_type", "—"),
-                    "Rent/mo":         f"${_rt:,}" if _rt else "—",
-                    "$/SF/yr":         f"${_cl['psf_yr']:.2f}" if _cl.get("psf_yr") else "—",
-                    "Sqft":            f"{_sq:,}" if _sq else "—",
-                    "Source":          _cl.get("source", "—"),
+            _s_prices = [l["price"] for l in _sales_listings if l.get("price")]
+            _s_psf    = [l["price_psf"] for l in _sales_listings if l.get("price_psf")]
+            _sm1, _sm2, _sm3 = st.columns(3)
+            _sm1.metric("Sales Found",    len(_sales_listings))
+            _sm2.metric("Avg Sale Price", f"${int(sum(_s_prices)/len(_s_prices)):,}" if _s_prices else "—")
+            _sm3.metric("Avg $/SF",       f"${sum(_s_psf)/len(_s_psf):.2f}" if _s_psf else "—")
+            _s_rows = []
+            for _sl in _sales_listings:
+                _s_rows.append({
+                    "Address":    (_sl.get("address") or "—")[:60],
+                    "Type":       _sl.get("asset_type", "—"),
+                    "Sale Price": f"${_sl['price']:,.0f}" if _sl.get("price") else "—",
+                    "Sqft":       f"{_sl['sqft']:,}" if _sl.get("sqft") else "—",
+                    "$/SF":       f"${_sl['price_psf']:.2f}" if _sl.get("price_psf") else "—",
+                    "Date":       _sl.get("date", "—"),
+                    "Source":     _sl.get("source", "—"),
                 })
-            st.dataframe(pd.DataFrame(_co_rows), use_container_width=True,
-                         height=min(len(_co_rows) * 35 + 40, 340))
-        st.caption("Source: Craigslist NYC (Off = Office, Com = Retail/Commercial) · No API key required")
+            st.dataframe(pd.DataFrame(_s_rows), use_container_width=True,
+                         height=min(len(_s_rows) * 35 + 40, 340))
+        st.caption("Source: NYC Rolling Sales (usep-8jbt) · NYC Open Data · No API key required")
 
         # ── Photo Gallery (horizontal scroll carousel) ─────────────────────
         _photos_avail = [l for l in listings if l.get("photos")]

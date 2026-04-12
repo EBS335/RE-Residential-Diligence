@@ -1,23 +1,32 @@
 """
-ECB Violations Fetcher — NYC Open Data.
+HPD Open Violations Fetcher — NYC Open Data.
 
-Fetches Environmental Control Board (ECB) violations for a given BBL
-from the NYC Open Data dataset (w9ak-ipjd). No API key required.
+Fetches HPD (Housing Preservation & Development) violations for a given BBL
+from the NYC Open Data dataset (wvxf-dwi5). No API key required.
 
-Returns violation records plus a distress score (Low / Medium / High).
+Returns violation records plus a distress score (Low / Medium / High)
+based on Class C (immediately hazardous) violations and ACRIS lien count.
+
+Classes:
+  A — Non-hazardous
+  B — Hazardous
+  C — Immediately hazardous
 """
 
 from __future__ import annotations
 import re
 import requests
 
-_ECB_URL = "https://data.cityofnewyork.us/resource/w9ak-ipjd.json"
+_HPD_URL = "https://data.cityofnewyork.us/resource/wvxf-dwi5.json"
 _TIMEOUT = 12
 
 _EMPTY = {
     "violations": [],
     "count": 0,
     "open_count": 0,
+    "class_a": 0,
+    "class_b": 0,
+    "class_c": 0,
     "distress_score": "Low",
     "distress_level": 0,
     "error": None,
@@ -32,20 +41,23 @@ def _clean_bbl(bbl: str) -> str:
 
 def fetch_ecb_violations(bbl: str, lien_count: int = 0) -> dict:
     """
-    Fetch open ECB violations for a BBL from NYC Open Data.
+    Fetch HPD Open Violations for a BBL from NYC Open Data.
 
     Args:
-        bbl: Property BBL string (10-digit or with dashes/spaces).
+        bbl:        Property BBL string (10-digit or with dashes/spaces).
         lien_count: Number of ACRIS lien documents already found (UCC1, LIEN, etc.)
                     Used to augment the distress score.
 
     Returns dict:
-        violations   : list of violation records (dicts)
-        count        : total violations returned
-        open_count   : violations with outstanding balance
-        distress_score : "Low" | "Medium" | "High"
-        distress_level : 0 | 1 | 2
-        error        : str | None
+        violations    : list of violation records (dicts)
+        count         : total violations returned
+        open_count    : violations with status "Open"
+        class_a       : count of Class A (non-hazardous)
+        class_b       : count of Class B (hazardous)
+        class_c       : count of Class C (immediately hazardous)
+        distress_score: "Low" | "Medium" | "High"
+        distress_level: 0 | 1 | 2
+        error         : str | None
     """
     clean = _clean_bbl(bbl)
     if not clean:
@@ -53,11 +65,8 @@ def fetch_ecb_violations(bbl: str, lien_count: int = 0) -> dict:
 
     try:
         resp = requests.get(
-            _ECB_URL,
-            params={
-                "$where": f"boro_block_lot='{clean}'",
-                "$limit": "50",
-            },
+            _HPD_URL,
+            params={"bbl": clean, "$limit": "100"},
             timeout=_TIMEOUT,
         )
         resp.raise_for_status()
@@ -70,28 +79,29 @@ def fetch_ecb_violations(bbl: str, lien_count: int = 0) -> dict:
 
     violations = []
     for r in rows:
+        desc = r.get("novdescription") or r.get("novtype") or "—"
         violations.append({
-            "issue_date":      r.get("issue_date", "")[:10],
-            "violation_type":  r.get("violation_type", "—"),
-            "description":     r.get("description", r.get("infraction_codes", "—")),
-            "respondent":      r.get("respondent_name", "—"),
-            "penalty":         r.get("penalty_imposed", "—"),
-            "balance_due":     r.get("balance_due", "0"),
-            "status":          r.get("ecb_violation_status", "—"),
+            "issue_date":     (r.get("inspectiondate") or "")[:10],
+            "violation_type": r.get("class", "—"),
+            "description":    str(desc)[:100],
+            "apartment":      r.get("apartment", "—"),
+            "status":         r.get("violationstatus", "—"),
+            "penalty":        "—",
+            "balance_due":    "0",
         })
 
-    # Open = has outstanding balance
-    open_count = sum(
-        1 for v in violations
-        if str(v.get("balance_due", "0")).strip() not in ("0", "0.00", "0.0", "")
-    )
+    class_a  = sum(1 for r in rows if str(r.get("class", "")).upper() == "A")
+    class_b  = sum(1 for r in rows if str(r.get("class", "")).upper() == "B")
+    class_c  = sum(1 for r in rows if str(r.get("class", "")).upper() == "C")
+    open_ct  = sum(1 for r in rows if str(r.get("violationstatus", "")).lower() == "open")
 
-    total_signals = open_count + lien_count
+    # Distress driven by Class C (immediately hazardous) + ACRIS liens
+    total_signals = class_c + lien_count
 
-    if total_signals >= 6:
+    if total_signals >= 4:
         distress_score = "High"
         distress_level = 2
-    elif total_signals >= 3:
+    elif total_signals >= 2:
         distress_score = "Medium"
         distress_level = 1
     else:
@@ -101,7 +111,10 @@ def fetch_ecb_violations(bbl: str, lien_count: int = 0) -> dict:
     return {
         "violations":     violations,
         "count":          len(violations),
-        "open_count":     open_count,
+        "open_count":     open_ct,
+        "class_a":        class_a,
+        "class_b":        class_b,
+        "class_c":        class_c,
         "distress_score": distress_score,
         "distress_level": distress_level,
         "error":          None,
