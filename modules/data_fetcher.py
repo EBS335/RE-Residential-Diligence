@@ -275,8 +275,9 @@ def fetch_all_listings(
     proxy_key: Optional[str] = None,
 ) -> tuple[list, dict]:
     """
-    Pull from all sources (StreetEasy, Apartments.com, Craigslist, Zumper, RentHop),
-    merge, deduplicate, and clean. No API keys required.
+    Pull from all residential rental sources, merge, deduplicate, and clean.
+    Sources: StreetEasy, Apartments.com, Craigslist, Zumper, RentHop,
+             Redfin, Realtor.com, LeaseBreak
 
     Returns (listings, status_dict).
     status values: 'live' | 'partial' | 'blocked' | 'error' | 'no_results'
@@ -288,6 +289,8 @@ def fetch_all_listings(
         scrape_zumper,
         scrape_renthop,
     )
+    from modules.redfin_scraper import scrape_redfin
+    from modules.extended_scrapers import scrape_realtor_com, scrape_leasebreak
 
     raw: list = []
     status: dict = {
@@ -296,6 +299,9 @@ def fetch_all_listings(
         "craigslist":    "pending",
         "zumper":        "pending",
         "renthop":       "pending",
+        "redfin":        "pending",
+        "realtor":       "pending",
+        "leasebreak":    "pending",
         "overall":       "no_data",
         "_counts": {
             "streeteasy": 0,
@@ -303,10 +309,13 @@ def fetch_all_listings(
             "craigslist": 0,
             "zumper":     0,
             "renthop":    0,
+            "redfin":     0,
+            "realtor":    0,
+            "leasebreak": 0,
         },
     }
 
-    # ── Primary: scrape StreetEasy ─────────────────────────────────────────────
+    # ── StreetEasy ──────────────────────────────────────────────────────────────
     se_listings, se_status = scrape_streeteasy(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["streeteasy"] = se_status if se_listings else (
         se_status if se_status != "live" else "no_results"
@@ -314,7 +323,7 @@ def fetch_all_listings(
     raw.extend(se_listings)
     status["_counts"]["streeteasy"] = len(se_listings)
 
-    # ── Primary: scrape Apartments.com ────────────────────────────────────────
+    # ── Apartments.com ─────────────────────────────────────────────────────────
     ap_listings, ap_status = scrape_apartments_com(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["apartments"] = ap_status if ap_listings else (
         ap_status if ap_status != "live" else "no_results"
@@ -322,7 +331,7 @@ def fetch_all_listings(
     raw.extend(ap_listings)
     status["_counts"]["apartments"] = len(ap_listings)
 
-    # ── Primary: scrape Craigslist ────────────────────────────────────────────
+    # ── Craigslist ─────────────────────────────────────────────────────────────
     cl_listings, cl_status = scrape_craigslist(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["craigslist"] = cl_status if cl_listings else (
         cl_status if cl_status != "live" else "no_results"
@@ -330,7 +339,7 @@ def fetch_all_listings(
     raw.extend(cl_listings)
     status["_counts"]["craigslist"] = len(cl_listings)
 
-    # ── Primary: scrape Zumper ────────────────────────────────────────────────
+    # ── Zumper ─────────────────────────────────────────────────────────────────
     zu_listings, zu_status = scrape_zumper(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["zumper"] = zu_status if zu_listings else (
         zu_status if zu_status != "live" else "no_results"
@@ -338,7 +347,7 @@ def fetch_all_listings(
     raw.extend(zu_listings)
     status["_counts"]["zumper"] = len(zu_listings)
 
-    # ── Primary: scrape RentHop ───────────────────────────────────────────────
+    # ── RentHop ────────────────────────────────────────────────────────────────
     rh_listings, rh_status = scrape_renthop(lat, lon, radius_miles, None, proxy_key=proxy_key)
     status["renthop"] = rh_status if rh_listings else (
         rh_status if rh_status != "live" else "no_results"
@@ -346,22 +355,57 @@ def fetch_all_listings(
     raw.extend(rh_listings)
     status["_counts"]["renthop"] = len(rh_listings)
 
+    # ── Redfin ─────────────────────────────────────────────────────────────────
+    try:
+        rf_listings, rf_status = scrape_redfin(lat, lon, radius_miles, proxy_key=proxy_key)
+        status["redfin"] = rf_status if rf_listings else (
+            rf_status if rf_status != "live" else "no_results"
+        )
+        raw.extend(rf_listings)
+        status["_counts"]["redfin"] = len(rf_listings)
+    except Exception:
+        status["redfin"] = "error"
+
+    # ── Realtor.com ────────────────────────────────────────────────────────────
+    try:
+        rc_listings, rc_status = scrape_realtor_com(lat, lon, radius_miles, proxy_key=proxy_key)
+        status["realtor"] = rc_status if rc_listings else (
+            rc_status if rc_status != "live" else "no_results"
+        )
+        raw.extend(rc_listings)
+        status["_counts"]["realtor"] = len(rc_listings)
+    except Exception:
+        status["realtor"] = "error"
+
+    # ── LeaseBreak ─────────────────────────────────────────────────────────────
+    try:
+        lb_listings, lb_status = scrape_leasebreak(lat, lon, radius_miles, proxy_key=proxy_key)
+        status["leasebreak"] = lb_status if lb_listings else (
+            lb_status if lb_status != "live" else "no_results"
+        )
+        raw.extend(lb_listings)
+        status["_counts"]["leasebreak"] = len(lb_listings)
+    except Exception:
+        status["leasebreak"] = "error"
+
     if not raw:
         status["overall"] = "no_data"
         return [], status
 
     cleaned = _dedup(raw)
     cleaned = _remove_outliers(cleaned)
-    cleaned.sort(key=lambda x: x["distance_miles"])
+    cleaned.sort(key=lambda x: x.get("distance_miles") or 0)
 
-    # Normalize unified schema field
+    # Normalize unified schema fields
     for l in cleaned:
         l.setdefault("asset_type", "Residential Rental")
         l.setdefault("price", l.get("rent"))
         l.setdefault("price_psf", None)
         l.setdefault("date", None)
 
-    all_active = [status[k] for k in ("streeteasy", "apartments", "craigslist", "zumper", "renthop")]
+    primary_sources = ("streeteasy", "apartments", "craigslist", "zumper", "renthop",
+                       "redfin", "realtor", "leasebreak")
+    all_active = [status[k] for k in primary_sources]
     if any(s == "live" for s in all_active):
         status["overall"] = "live"
     elif any(s == "partial" for s in all_active):
@@ -383,15 +427,22 @@ def fetch_commercial_listings(
     proxy_key: Optional[str] = None,
 ) -> tuple[list, dict]:
     """
-    Fetch commercial lease comps from LoopNet, Crexi, and Craigslist commercial.
+    Fetch commercial lease comps from LoopNet, Crexi, CommercialEdge,
+    and Craigslist commercial.
     Returns (listings, status_dict).
     """
     from modules.loopnet_scraper import fetch_commercial_listings as _loopnet_fetch
     from modules.commercial_scraper import fetch_commercial_comps
+    from modules.extended_scrapers import scrape_commercial_edge
 
     all_listings: list[dict] = []
-    status: dict = {"loopnet": "pending", "crexi": "pending",
-                    "craigslist_comm": "pending", "overall": "no_data"}
+    status: dict = {
+        "loopnet":         "pending",
+        "crexi":           "pending",
+        "craigslist_comm": "pending",
+        "commercial_edge": "pending",
+        "overall":         "no_data",
+    }
 
     ln_listings, ln_status = _loopnet_fetch(lat, lon, radius_miles, proxy_key)
     status["loopnet"] = ln_status.get("loopnet", ln_status) if isinstance(ln_status, dict) else ln_status
@@ -400,7 +451,6 @@ def fetch_commercial_listings(
 
     cl_comm, cl_comm_status = fetch_commercial_comps(lat, lon, radius_miles, proxy_key)
     status["craigslist_comm"] = cl_comm_status.get("overall", "no_data")
-    # Normalize craigslist commercial to unified schema
     for item in cl_comm:
         item.setdefault("asset_type", item.get("use_type", "Commercial"))
         item.setdefault("price", item.get("rent"))
@@ -411,6 +461,19 @@ def fetch_commercial_listings(
         item.setdefault("photos", [])
         item.setdefault("days_on_market", None)
     all_listings.extend(cl_comm)
+
+    # CommercialEdge
+    try:
+        ce_listings, ce_status = scrape_commercial_edge(lat, lon, radius_miles, proxy_key)
+        status["commercial_edge"] = ce_status
+        for item in ce_listings:
+            item.setdefault("date", None)
+            item.setdefault("bedrooms", 0)
+            item.setdefault("building_name", item.get("building_name", ""))
+            item.setdefault("photos", [])
+        all_listings.extend(ce_listings)
+    except Exception:
+        status["commercial_edge"] = "error"
 
     if all_listings:
         status["overall"] = "live"

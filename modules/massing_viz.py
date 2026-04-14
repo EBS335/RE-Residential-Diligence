@@ -500,7 +500,7 @@ def _option_2(lot_front, lot_depth, lot_area, rules, m) -> dict:
             "and cost. Targets contextual neighborhoods where community acceptance is high."
         ),
         fig=fig,
-        lot_area=lot_area, far=far * fp_ratio,
+        lot_area=lot_area, far=far,
         height_ft=height, footprint_sqft=w*d,
         floors=floors, typical_floor_sqft=w*d,
         loss_factor=0.15,
@@ -543,7 +543,7 @@ def _option_3(lot_front, lot_depth, lot_area, rules, m) -> dict:
             "Lower per-unit construction cost; well-suited to family-oriented rentals."
         ),
         fig=fig,
-        lot_area=lot_area, far=far * fp_ratio * (height / max(base_h, 1)),
+        lot_area=lot_area, far=far,
         height_ft=height, footprint_sqft=w*d,
         floors=floors, typical_floor_sqft=w*d,
         loss_factor=0.15,
@@ -599,7 +599,7 @@ def _option_4(lot_front, lot_depth, lot_area, rules, m) -> dict:
             "activation. Strong on high-foot-traffic corridors. Targets C1/C2 overlay zones."
         ),
         fig=fig,
-        lot_area=lot_area, far=far * 0.90,
+        lot_area=lot_area, far=far,
         height_ft=height, footprint_sqft=ret_w*ret_d,
         floors=floors, typical_floor_sqft=res_w*res_d,
         loss_factor=0.15,
@@ -648,7 +648,7 @@ def _option_5(lot_front, lot_depth, lot_area, rules, m) -> dict:
             "Appeals to amenity-driven renters. **Strong NOI** relative to construction cost."
         ),
         fig=fig,
-        lot_area=lot_area, far=far * 0.90,
+        lot_area=lot_area, far=far,
         height_ft=height, footprint_sqft=w*d,
         floors=floors, typical_floor_sqft=w*d,
         loss_factor=0.15,

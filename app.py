@@ -1773,7 +1773,7 @@ if 'geo' in st.session_state:
                             ),
                             "$select": "bbl,address,lotarea,builtfar,residfar,commfar,bldgarea,"
                                        "numfloors,latitude,longitude,bldgclass",
-                            "$limit": "500",
+                            "$limit": "1500",
                         },
                         timeout=25,
                     )
@@ -1829,6 +1829,8 @@ if 'geo' in st.session_state:
             except Exception:
                 continue
 
+        # Keep the 300 nearest lots; analyze those
+        _und_lots    = sorted(_und_lots, key=lambda x: x["dist_mi"])[:300]
         _und_total   = len(_und_lots)
         _und_ub_lots = [l for l in _und_lots if l["underbuilt"]]
         _und_ub_ct   = len(_und_ub_lots)
@@ -1931,7 +1933,7 @@ if 'geo' in st.session_state:
             st.info("No PLUTO lot data returned for this radius. Try a larger radius or check the address.")
         st.caption(
             f"Source: NYC PLUTO via Socrata (64uk-42ks) · "
-            f"{_und_total} lots within {radius_miles:.2f} mi · "
+            f"{_und_total} nearest lots within {radius_miles:.2f} mi analyzed · "
             f"Underbuilt threshold: unused FAR > 20% of max FAR"
         )
 
@@ -2741,6 +2743,17 @@ if 'geo' in st.session_state:
                     st.session_state["_acris_data_url"] = _acris["acris_url"]
 
                 if _acris_sum:
+                    # Confidence badge
+                    _acris_conf = _acris.get("confidence", "None")
+                    _acris_method = _acris.get("match_method", "")
+                    _conf_color = {"High": "#15803D", "Medium": "#B45309", "Low": "#DC2626", "None": "#6B7280"}.get(_acris_conf, "#6B7280")
+                    st.markdown(
+                        f"<span style='background:{_conf_color};color:white;padding:2px 8px;"
+                        f"border-radius:10px;font-size:0.68rem;font-weight:700'>"
+                        f"Match Confidence: {_acris_conf}</span> "
+                        f"<span style='font-size:0.68rem;color:#6B7280'>{_acris_method}</span>",
+                        unsafe_allow_html=True,
+                    )
                     _ac1, _ac2, _ac3, _ac4 = st.columns(4)
                     def _acris_card(col, icon, label, value, sub=""):
                         with col:
@@ -2773,7 +2786,8 @@ if 'geo' in st.session_state:
 
                     _acris_card(_ac4, "📋", "UCC / Liens",
                                 str(_acris_sum.get("open_liens", 0)),
-                                f"{_acris_sum.get('total_docs', 0)} total docs")
+                                f"{_acris_sum.get('total_docs', 0)} docs · "
+                                f"{_acris_sum.get('foreclosure_count', 0)} forecl.")
 
                     _acris_url = _acris.get("acris_url", "")
                     _acris_block = str(_zinfo.get("block", "")).zfill(5)
@@ -2790,16 +2804,33 @@ if 'geo' in st.session_state:
                         _all_docs = _acris.get("documents", [])
                         if _all_docs:
                             _doc_rows = []
-                            for _d in _all_docs[:60]:
+                            for _d in _all_docs[:80]:
                                 _parties_str = "; ".join(
                                     f"{p['role']}: {p['name']}" for p in _d.get("parties", [])
                                 )
                                 _amt = _d.get("amount")
+                                # Determine category tag
+                                _dt = str(_d.get("doc_type", "")).upper()
+                                if any(x in _dt for x in ("DEED", "SPECDEED")):
+                                    _cat = "Sale/Deed"
+                                elif any(x in _dt for x in ("MTGE", "MORTGAGE", "LNAGMT")):
+                                    _cat = "Mortgage"
+                                elif any(x in _dt for x in ("FORECL", "LIS PEN", "DEFAULT")):
+                                    _cat = "Foreclosure"
+                                elif _dt.startswith("UCC"):
+                                    _cat = "UCC/Lien"
+                                elif any(x in _dt for x in ("AIR", "DEVEL", "TRIGHT")):
+                                    _cat = "Air Rights"
+                                elif "ASSG" in _dt:
+                                    _cat = "Assignment"
+                                else:
+                                    _cat = "Other"
                                 _doc_rows.append({
                                     "Date":      _d.get("date", "—"),
+                                    "Category":  _cat,
                                     "Doc Type":  _d.get("doc_type", "—"),
                                     "Amount":    f"${_amt:,.0f}" if _amt and _amt > 0 else "—",
-                                    "Parties":   _parties_str[:60] or "—",
+                                    "Parties":   _parties_str[:70] or "—",
                                     "Doc Link":  _d.get("doc_url", ""),
                                 })
                             _doc_df = pd.DataFrame(_doc_rows)
@@ -3382,11 +3413,14 @@ if 'geo' in st.session_state:
                             # ── Tile renderer ────────────────────────────
                             def _render_tile(opt: dict, key_suffix: str):
                                 rl = opt.get("risk_level", "MED")
+                                _tile_gross   = opt.get("total_sqft", 0)
+                                _tile_net     = opt.get("net_rentable_sqft", 0)
+                                _tile_max_sf  = int(_la_v * _max_far_val) if _max_far_val > 0 else 0
                                 st.markdown(
                                     f"<div style='background:white;border:1px solid #E5E7EB;"
-                                    f"border-radius:12px;padding:10px 10px 6px'>"
+                                    f"border-radius:12px;padding:8px 10px 4px'>"
                                     f"{_risk_badge(rl)}"
-                                    f"<div style='font-weight:700;font-size:0.85rem;margin:6px 0 2px'>"
+                                    f"<div style='font-weight:700;font-size:0.82rem;margin:5px 0 1px'>"
                                     f"{opt['name']}</div></div>",
                                     unsafe_allow_html=True,
                                 )
@@ -3396,18 +3430,23 @@ if 'geo' in st.session_state:
                                     config={"displayModeBar": False},
                                     key=f"mass_{key_suffix}",
                                 )
-                                _ta1, _ta2 = st.columns(2)
-                                with _ta1:
-                                    st.metric("Gross Area",     f"{opt.get('total_sqft',0):,} SF")
-                                    st.metric("Net Rentable",   f"{opt.get('net_rentable_sqft',0):,} SF")
-                                with _ta2:
-                                    st.metric("Height",         f"{opt.get('height_ft',0)} ft")
-                                    st.metric("Floors",         str(opt.get("floors", 0)))
+                                # 4-metric row: Gross SF | Max Buildable SF | Net Rentable | Height/Floors
+                                _ta1, _ta2, _ta3, _ta4 = st.columns(4)
+                                _ta1.metric("Gross SF",      f"{_tile_gross:,}")
+                                _ta2.metric("Max Buildable", f"{_tile_max_sf:,}" if _tile_max_sf else "—",
+                                            help=f"Lot area × max FAR ({_max_far_val})")
+                                _ta3.metric("Net Rentable",  f"{_tile_net:,}")
+                                _ta4.metric("Ht / Floors",   f"{opt.get('height_ft',0)}ft / {opt.get('floors',0)}")
 
-                                # Strategy + description (collapsible)
+                                # Strategy + description (collapsible, compact font)
                                 with st.expander("📋 Strategy & Description", expanded=True):
-                                    st.markdown(f"**Strategy:** {opt.get('strategy','')}")
-                                    st.markdown(opt.get('description',''))
+                                    st.markdown(
+                                        f"<div style='font-size:0.78rem;line-height:1.45;color:#374151'>"
+                                        f"<b>Strategy:</b> {opt.get('strategy','')}</div>"
+                                        f"<div style='font-size:0.75rem;line-height:1.45;color:#4B5563;"
+                                        f"margin-top:4px'>{opt.get('description','')}</div>",
+                                        unsafe_allow_html=True,
+                                    )
 
                                 # Unit mix + financials + floor plates
                                 with st.expander("📊 Unit Mix, Financials & Floor Plans", expanded=False):

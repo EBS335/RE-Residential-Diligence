@@ -1,223 +1,384 @@
 """
 ACRIS Property Document Fetcher — NYC Open Data (no API key required).
 
-Fetches mortgage, deed, UCC, and air rights document history for a
-given BBL (Borough-Block-Lot) from the NYC ACRIS (Automated City Register
-Information System) via NYC Open Data Socrata APIs.
+Retrieval pipeline:
+  1. Convert address to BBL via NYC GeoSearch or accept raw BBL string
+  2. Query NYC Open Data ACRIS datasets (NOT website scraping):
+       - ACRIS Real Property Master  (bnx9-e6tj)
+       - ACRIS Real Property Parties (636b-3b5g)
+       - ACRIS Real Property Legals  (2ydnx-akef)
+  3. Filter by borough, block, lot; sort by document_date DESC
+  4. Extract: deeds, mortgages, foreclosures, UCC, air rights, assignments
+  5. Fallback logic:
+       - Exact BBL match → confidence = "High"
+       - Building-level lot (7501) retry for condos → confidence = "Medium"
+       - Block-only match (ignore lot) → confidence = "Medium"
+       - Nearby lots (±1-2) → confidence = "Low"
+  6. No hard failure — always returns best available result
 
-Returns structured data including:
-  - Chronological document history (deeds, mortgages, UCC, transfers)
-  - Ownership history (parties to each deed)
-  - Active mortgage summary (lender, amount)
-  - Air rights / development rights transfers
-  - Quick-summary callout dict for dashboard display
+Returns structured dict with confidence flag, chronology, and summary callouts.
 """
 
 from __future__ import annotations
 import re
 import time
 import requests
+from typing import Optional
 
 _DOC_MASTER_URL = "https://data.cityofnewyork.us/resource/bnx9-e6tj.json"
 _PARTY_URL      = "https://data.cityofnewyork.us/resource/636b-3b5g.json"
 _LEGALS_URL     = "https://data.cityofnewyork.us/resource/2ydnx-akef.json"
 
 # Document type groupings
-_DEED_TYPES     = {"DEED", "DEEDP", "DEED,RP", "SPECDEED", "DEED (CO-OP)"}
-_MTGE_TYPES     = {"MTGE", "AGMT", "LNAGMT", "ASSG OF LNAGMT", "MLTG", "CORR MTGE"}
-_UCC_TYPES      = {"UCC1", "UCC2", "UCC3"}
-_AIR_TYPES      = {"TDEVEL", "TRIGHT", "DEV RIGHTS", "AIR RIGHTS"}
+_DEED_TYPES  = {"DEED", "DEEDP", "DEED,RP", "SPECDEED", "DEED (CO-OP)", "DEED, CORRECTIVE"}
+_MTGE_TYPES  = {"MTGE", "AGMT", "LNAGMT", "ASSG OF LNAGMT", "MLTG", "CORR MTGE",
+                "SPREAGMT", "SUBORDINATION AGMT"}
+_FRCL_TYPES  = {"LIS PENDENS", "FORECLOSURE", "NOTICE OF DEFAULT", "FORECL JUDG",
+                "COMMENCEMENT OF ACTION", "SUPREME COURT JUDGMENT"}
+_UCC_TYPES   = {"UCC1", "UCC2", "UCC3", "UCC AMENDMENT", "UCC TERMINATION"}
+_AIR_TYPES   = {"TDEVEL", "TRIGHT", "DEV RIGHTS", "AIR RIGHTS", "EASEMENT"}
+_ASSG_TYPES  = {"ASSG", "ASSG OF MTGE", "ASSG OF LEASE", "ASSG OF AGMT"}
+_LIEN_TYPES  = {"TAX LIEN", "MECHANICS LIEN", "LIEN", "NOTICE OF LIEN",
+                "ENVIRONMENTAL RESTRICTION"}
 
-_TIMEOUT = 12
-_MAX_DOCS = 200  # cap to avoid huge payloads
+_TIMEOUT  = 14
+_MAX_DOCS = 300
 
-_ACRIS_BASE_URL = "https://a836-acris.nyc.gov/DS/DocumentSearch/DocumentDetail?doc_id="
+_ACRIS_BASE_URL   = "https://a836-acris.nyc.gov/DS/DocumentSearch/DocumentDetail?doc_id="
+_ACRIS_BBL_URL    = "https://a836-acris.nyc.gov/DS/DocumentSearch/BBL?borough_id={b}&block={blk}&lot={lt}"
+_ACRIS_BLOCK_URL  = "https://a836-acris.nyc.gov/DS/DocumentSearch/BBL?borough_id={b}&block={blk}"
 
 
-def _parse_bbl(bbl: str) -> tuple[str, str, str, str, str] | None:
-    """Split 10-digit BBL into (borough, block_padded, lot_padded, block_int, lot_int)."""
+def _parse_bbl(bbl: str) -> Optional[tuple]:
+    """
+    Split 10-digit BBL into (borough, block_pad, lot_pad, block_int, lot_int).
+    Accepts '1001670001', '1-00167-0001', '1 00167 0001', etc.
+    Returns None if invalid.
+    """
     clean = re.sub(r"\D", "", str(bbl))
     if len(clean) != 10:
         return None
-    borough    = clean[0]
-    block_pad  = clean[1:6]          # zero-padded: "00167"
-    lot_pad    = clean[6:10]         # zero-padded: "0001"
-    block_int  = block_pad.lstrip("0") or "0"   # Socrata expects integer string
-    lot_int    = lot_pad.lstrip("0") or "0"
+    borough   = clean[0]
+    block_pad = clean[1:6]
+    lot_pad   = clean[6:10]
+    block_int = block_pad.lstrip("0") or "0"
+    lot_int   = lot_pad.lstrip("0") or "0"
     return borough, block_pad, lot_pad, block_int, lot_int
 
 
-def _get(url: str, params: dict) -> list[dict]:
-    """Fetch JSON list from Socrata endpoint, return [] on failure."""
+def _get(url: str, params: dict) -> list:
+    """Fetch JSON list from Socrata endpoint; return [] on failure."""
     try:
-        # Add $limit to avoid default 1000 row cap issues
         params.setdefault("$limit", _MAX_DOCS)
         r = requests.get(url, params=params, timeout=_TIMEOUT)
         r.raise_for_status()
-        return r.json() if isinstance(r.json(), list) else []
+        data = r.json()
+        return data if isinstance(data, list) else []
     except Exception:
         return []
 
 
-def _fetch_parties(doc_id: str) -> list[dict]:
+def _fetch_parties(doc_id: str) -> list:
     """Fetch all parties for a single document_id."""
     rows = _get(_PARTY_URL, {"document_id": doc_id, "$limit": 10})
     parties = []
     for r in rows:
         ptype = str(r.get("party_type", ""))
-        role = "Grantor/Seller" if ptype == "1" else ("Grantee/Buyer" if ptype == "2" else "Lender" if ptype == "3" else f"Party {ptype}")
+        if ptype == "1":
+            role = "Grantor / Seller"
+        elif ptype == "2":
+            role = "Grantee / Buyer"
+        elif ptype == "3":
+            role = "Lender"
+        else:
+            role = f"Party {ptype}"
         name = r.get("name", "").strip().title()
         if name:
             parties.append({"role": role, "name": name})
     return parties
 
 
-def fetch_acris(bbl: str) -> dict:
-    """
-    Fetch ACRIS document history for a BBL.
-
-    Returns:
-        {
-          "documents":  list[dict],   # all docs, newest-first
-          "deeds":      list[dict],   # deed transfers
-          "mortgages":  list[dict],   # mortgage documents
-          "ucc":        list[dict],   # UCC filings
-          "air_rights": list[dict],   # development/air rights transfers
-          "summary": {
-            "latest_sale_price":   float | None,
-            "latest_sale_date":    str | None,
-            "latest_buyer":        str | None,
-            "active_mortgage_amt": float | None,
-            "active_lender":       str | None,
-            "open_liens":          int,
-            "has_air_rights":      bool,
-            "total_docs":          int,
-          },
-          "acris_url": str,   # link to ACRIS search for this property
-          "error":     str | None,
-        }
-    """
-    parsed = _parse_bbl(bbl)
-    if not parsed:
-        return {"error": f"Invalid BBL: {bbl}", "documents": [], "deeds": [], "mortgages": [], "ucc": [], "air_rights": [], "summary": {}}
-
-    borough, block_pad, lot_pad, block_int, lot_int = parsed
-
-    # Build ACRIS search URL for the property (human-facing link)
-    acris_url = (
-        f"https://a836-acris.nyc.gov/DS/DocumentSearch/BBL?"
-        f"borough_id={borough}&block={block_int}&lot={lot_int}"
-    )
-
-    # Fetch document master — try integer-style first (what ACRIS Socrata expects),
-    # then fall back to zero-padded, then to full BBL $where clause.
-    _empty = {"documents": [], "deeds": [], "mortgages": [], "ucc": [], "air_rights": [],
-              "summary": {"total_docs": 0, "latest_sale_price": None, "latest_sale_date": None,
-                          "latest_buyer": None, "active_mortgage_amt": None,
-                          "active_lender": None, "open_liens": 0, "has_air_rights": False},
-              "acris_url": acris_url, "error": None}
-
-    raw_docs = _get(_DOC_MASTER_URL, {
-        "borough": borough, "block": block_int, "lot": lot_int,
-        "$order": "document_date DESC", "$limit": _MAX_DOCS,
+def _query_master(borough: str, block: str, lot: str,
+                  order: str = "document_date DESC") -> list:
+    """Query ACRIS Document Master by borough + block + lot (integer strings)."""
+    rows = _get(_DOC_MASTER_URL, {
+        "borough": borough, "block": block, "lot": lot,
+        "$order": order, "$limit": _MAX_DOCS,
     })
-    if not raw_docs:
-        # Fallback: zero-padded block/lot
-        raw_docs = _get(_DOC_MASTER_URL, {
+    if not rows:
+        # Retry with zero-padded values (some records use padded form)
+        block_pad = block.zfill(5)
+        lot_pad   = lot.zfill(4)
+        rows = _get(_DOC_MASTER_URL, {
             "borough": borough, "block": block_pad, "lot": lot_pad,
-            "$order": "document_date DESC", "$limit": _MAX_DOCS,
+            "$order": order, "$limit": _MAX_DOCS,
         })
-    if not raw_docs:
-        # Fallback: full 10-digit BBL via $where
-        bbl_clean = re.sub(r"\D", "", str(bbl))
-        raw_docs = _get(_DOC_MASTER_URL, {
-            "$where": f"bbl='{bbl_clean}'",
-            "$order": "document_date DESC", "$limit": _MAX_DOCS,
-        })
+    return rows
 
-    if not raw_docs:
-        return {**_empty, "acris_url": acris_url}
 
-    # Categorize and enrich documents
-    documents, deeds, mortgages, ucc_list, air_list = [], [], [], [], []
+def _build_doc(raw: dict, party_cache: dict) -> dict:
+    """Normalize a raw ACRIS master row into a clean document dict."""
+    doc_id   = raw.get("document_id", "")
+    doc_type = raw.get("doc_type", "—").upper().strip()
+    amount   = None
+    try:
+        amt_raw = raw.get("document_amt") or raw.get("good_through_date") or "0"
+        amount  = float(str(amt_raw).replace(",", "")) or None
+    except (ValueError, TypeError):
+        amount = None
 
-    # Only fetch parties for top 20 most relevant docs to avoid too many requests
-    key_docs = [d for d in raw_docs[:50] if d.get("doc_type","").upper() in
-                (_DEED_TYPES | _MTGE_TYPES | _AIR_TYPES)][:20]
-    party_cache: dict[str, list] = {}
-    for doc in key_docs:
-        did = doc.get("document_id", "")
-        if did and did not in party_cache:
-            party_cache[did] = _fetch_parties(did)
-            time.sleep(0.1)
+    return {
+        "document_id": doc_id,
+        "doc_type":    raw.get("doc_type", "—"),
+        "date":        (raw.get("document_date") or raw.get("recorded_datetime") or "")[:10],
+        "recorded":    (raw.get("recorded_datetime") or "")[:10],
+        "amount":      amount,
+        "parties":     party_cache.get(doc_id, []),
+        "doc_url":     _ACRIS_BASE_URL + doc_id if doc_id else "",
+        "good_through":(raw.get("good_through_date") or "")[:10],
+        "doc_type_raw": doc_type,
+    }
 
-    for raw in raw_docs:
-        doc_type = raw.get("doc_type", "").upper().strip()
-        doc_id   = raw.get("document_id", "")
-        amount   = None
-        try:
-            amount = float(raw.get("document_amt", 0) or 0)
-        except (ValueError, TypeError):
-            amount = None
 
-        doc = {
-            "document_id":   doc_id,
-            "doc_type":      raw.get("doc_type", "—"),
-            "date":          (raw.get("document_date") or raw.get("recorded_datetime") or "")[:10],
-            "recorded":      (raw.get("recorded_datetime") or "")[:10],
-            "amount":        amount,
-            "parties":       party_cache.get(doc_id, []),
-            "doc_url":       _ACRIS_BASE_URL + doc_id if doc_id else "",
-            "good_through":  (raw.get("good_through_date") or "")[:10],
-        }
-        documents.append(doc)
-
-        if doc_type in _DEED_TYPES:
+def _categorize_docs(documents: list) -> dict:
+    """Split documents into category lists."""
+    deeds, mortgages, foreclosures, ucc_list, air_list, assignments, liens = (
+        [], [], [], [], [], [], []
+    )
+    for doc in documents:
+        dt = doc.get("doc_type_raw", "")
+        if dt in _DEED_TYPES or "DEED" in dt:
             deeds.append(doc)
-        elif doc_type in _MTGE_TYPES:
+        elif dt in _MTGE_TYPES or "MTGE" in dt or "MORTGAGE" in dt:
             mortgages.append(doc)
-        elif doc_type in _UCC_TYPES:
+        elif dt in _FRCL_TYPES or "FORECL" in dt or "LIS PEN" in dt:
+            foreclosures.append(doc)
+        elif dt in _UCC_TYPES or dt.startswith("UCC"):
             ucc_list.append(doc)
-        elif doc_type in _AIR_TYPES or "AIR" in doc_type or "DEVEL" in doc_type:
+        elif dt in _AIR_TYPES or "AIR" in dt or "DEVEL" in dt or "EASEMENT" in dt:
             air_list.append(doc)
+        elif dt in _ASSG_TYPES or dt.startswith("ASSG"):
+            assignments.append(doc)
+        elif dt in _LIEN_TYPES or "LIEN" in dt:
+            liens.append(doc)
+    return {
+        "deeds":        deeds,
+        "mortgages":    mortgages,
+        "foreclosures": foreclosures,
+        "ucc":          ucc_list,
+        "air_rights":   air_list,
+        "assignments":  assignments,
+        "liens":        liens,
+    }
 
-    # Build summary
+
+def _build_summary(cats: dict, documents: list) -> dict:
+    """Build high-level summary callout dict from categorized documents."""
+    deeds       = cats["deeds"]
+    mortgages   = cats["mortgages"]
+    foreclosures= cats["foreclosures"]
+    ucc_list    = cats["ucc"]
+    air_list    = cats["air_rights"]
+    liens       = cats["liens"]
+
     latest_sale_price = None
     latest_sale_date  = None
     latest_buyer      = None
     if deeds:
-        top_deed = deeds[0]
-        latest_sale_price = top_deed["amount"] if top_deed["amount"] and top_deed["amount"] > 1000 else None
-        latest_sale_date  = top_deed["date"]
-        buyers = [p["name"] for p in top_deed["parties"] if p["role"] == "Grantee/Buyer"]
+        top = deeds[0]
+        if top["amount"] and top["amount"] > 1_000:
+            latest_sale_price = top["amount"]
+        latest_sale_date = top["date"]
+        buyers = [p["name"] for p in top["parties"] if "Buyer" in p["role"]]
         latest_buyer = buyers[0] if buyers else None
 
     active_mortgage_amt = None
     active_lender       = None
     if mortgages:
-        top_mtge = mortgages[0]
-        active_mortgage_amt = top_mtge["amount"] if top_mtge["amount"] and top_mtge["amount"] > 1000 else None
-        lenders = [p["name"] for p in top_mtge["parties"] if p["role"] == "Lender"]
+        top = mortgages[0]
+        if top["amount"] and top["amount"] > 1_000:
+            active_mortgage_amt = top["amount"]
+        lenders = [p["name"] for p in top["parties"] if "Lender" in p["role"]]
         active_lender = lenders[0] if lenders else None
 
-    summary = {
-        "latest_sale_price":   latest_sale_price,
-        "latest_sale_date":    latest_sale_date,
-        "latest_buyer":        latest_buyer,
-        "active_mortgage_amt": active_mortgage_amt,
-        "active_lender":       active_lender,
-        "open_liens":          len(ucc_list),
-        "has_air_rights":      len(air_list) > 0,
-        "total_docs":          len(documents),
+    return {
+        "latest_sale_price":    latest_sale_price,
+        "latest_sale_date":     latest_sale_date,
+        "latest_buyer":         latest_buyer,
+        "active_mortgage_amt":  active_mortgage_amt,
+        "active_lender":        active_lender,
+        "open_liens":           len(ucc_list) + len(liens),
+        "foreclosure_count":    len(foreclosures),
+        "has_air_rights":       len(air_list) > 0,
+        "assignment_count":     len(cats["assignments"]),
+        "total_docs":           len(documents),
     }
 
+
+def _enrich_parties(raw_docs: list) -> dict:
+    """Fetch parties for top key documents. Returns {doc_id: [party, ...]}."""
+    key_docs = [
+        d for d in raw_docs[:60]
+        if d.get("doc_type", "").upper() in (
+            _DEED_TYPES | _MTGE_TYPES | _AIR_TYPES | _FRCL_TYPES
+        )
+    ][:25]
+    cache: dict = {}
+    for d in key_docs:
+        did = d.get("document_id", "")
+        if did and did not in cache:
+            cache[did] = _fetch_parties(did)
+            time.sleep(0.08)
+    return cache
+
+
+def _attempt(borough: str, block: str, lot: str,
+             acris_url: str, confidence: str) -> Optional[dict]:
+    """
+    Try one specific (borough, block, lot) query.
+    Returns populated result dict if documents found, else None.
+    """
+    raw_docs = _query_master(borough, block, lot)
+    if not raw_docs:
+        return None
+
+    party_cache = _enrich_parties(raw_docs)
+    documents   = [_build_doc(r, party_cache) for r in raw_docs]
+    cats        = _categorize_docs(documents)
+    summary     = _build_summary(cats, documents)
+
     return {
-        "documents":  documents,
-        "deeds":      deeds,
-        "mortgages":  mortgages,
-        "ucc":        ucc_list,
-        "air_rights": air_list,
-        "summary":    summary,
-        "acris_url":  acris_url,
-        "error":      None,
+        "documents":    documents,
+        "deeds":        cats["deeds"],
+        "mortgages":    cats["mortgages"],
+        "foreclosures": cats["foreclosures"],
+        "ucc":          cats["ucc"],
+        "air_rights":   cats["air_rights"],
+        "assignments":  cats["assignments"],
+        "liens":        cats["liens"],
+        "summary":      summary,
+        "acris_url":    acris_url,
+        "confidence":   confidence,
+        "match_method": f"{confidence} — BBL {borough}-{block}-{lot}",
+        "error":        None,
     }
+
+
+def fetch_acris(bbl: str) -> dict:
+    """
+    Fetch ACRIS document history for a BBL with multi-level fallback.
+
+    Fallback order:
+      1. Exact BBL match                     → confidence = "High"
+      2. Condo building-level lot (7501)     → confidence = "Medium"
+      3. Block-only (ignore lot)             → confidence = "Medium"
+      4. Nearby lots (±1, ±2)               → confidence = "Low"
+
+    Returns:
+      {
+        documents, deeds, mortgages, foreclosures, ucc, air_rights,
+        assignments, liens,
+        summary: {
+          latest_sale_price, latest_sale_date, latest_buyer,
+          active_mortgage_amt, active_lender,
+          open_liens, foreclosure_count, has_air_rights,
+          assignment_count, total_docs,
+        },
+        acris_url:    str,
+        confidence:   "High" | "Medium" | "Low" | "None",
+        match_method: str,   # description of which match succeeded
+        error:        str | None,
+      }
+    """
+    parsed = _parse_bbl(bbl)
+
+    _empty = {
+        "documents": [], "deeds": [], "mortgages": [],
+        "foreclosures": [], "ucc": [], "air_rights": [],
+        "assignments": [], "liens": [],
+        "summary": {
+            "latest_sale_price": None, "latest_sale_date": None,
+            "latest_buyer": None, "active_mortgage_amt": None,
+            "active_lender": None, "open_liens": 0,
+            "foreclosure_count": 0, "has_air_rights": False,
+            "assignment_count": 0, "total_docs": 0,
+        },
+        "acris_url":    "",
+        "confidence":   "None",
+        "match_method": "No results found",
+        "error":        None,
+    }
+
+    if not parsed:
+        return {**_empty, "error": f"Invalid BBL: {bbl}"}
+
+    borough, block_pad, lot_pad, block_int, lot_int = parsed
+
+    acris_url_exact = _ACRIS_BBL_URL.format(
+        b=borough, blk=block_int, lt=lot_int
+    )
+    _empty["acris_url"] = acris_url_exact
+
+    # ── Attempt 1: Exact BBL ────────────────────────────────────────────────
+    result = _attempt(borough, block_int, lot_int, acris_url_exact, "High")
+    if result:
+        return result
+
+    # ── Attempt 2: Condo building-level lot (7501) ──────────────────────────
+    condo_lot = "7501"
+    if lot_int != condo_lot:
+        result = _attempt(borough, block_int, condo_lot,
+                          _ACRIS_BBL_URL.format(b=borough, blk=block_int, lt=condo_lot),
+                          "Medium")
+        if result:
+            result["match_method"] = f"Medium — condo building lot {borough}-{block_int}-7501"
+            return result
+
+    # ── Attempt 3: Block-only (ignore lot) ─────────────────────────────────
+    block_url = _ACRIS_BLOCK_URL.format(b=borough, blk=block_int)
+    raw_block = _get(_DOC_MASTER_URL, {
+        "borough": borough, "block": block_int,
+        "$order": "document_date DESC", "$limit": _MAX_DOCS,
+    })
+    if raw_block:
+        party_cache = _enrich_parties(raw_block)
+        documents   = [_build_doc(r, party_cache) for r in raw_block]
+        cats        = _categorize_docs(documents)
+        summary     = _build_summary(cats, documents)
+        return {
+            "documents":    documents,
+            "deeds":        cats["deeds"],
+            "mortgages":    cats["mortgages"],
+            "foreclosures": cats["foreclosures"],
+            "ucc":          cats["ucc"],
+            "air_rights":   cats["air_rights"],
+            "assignments":  cats["assignments"],
+            "liens":        cats["liens"],
+            "summary":      summary,
+            "acris_url":    block_url,
+            "confidence":   "Medium",
+            "match_method": f"Medium — block-level match {borough}-{block_int}",
+            "error":        None,
+        }
+
+    # ── Attempt 4: Nearby lots (±1, ±2) ────────────────────────────────────
+    try:
+        base_lot = int(lot_int)
+    except ValueError:
+        return {**_empty, "error": "BBL parse error"}
+
+    for delta in (1, -1, 2, -2):
+        near_lot = str(max(1, base_lot + delta))
+        result = _attempt(
+            borough, block_int, near_lot,
+            _ACRIS_BBL_URL.format(b=borough, blk=block_int, lt=near_lot),
+            "Low",
+        )
+        if result:
+            result["match_method"] = (
+                f"Low — nearby lot {borough}-{block_int}-{near_lot} "
+                f"(subject lot {lot_int})"
+            )
+            return result
+
+    return {**_empty, "error": None, "match_method": "No documents found after all fallbacks"}

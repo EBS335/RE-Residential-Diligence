@@ -2,9 +2,11 @@
 Nearby Developments — multi-source real estate development pipeline fetcher.
 
 Sources (no API keys required):
-  1. NYC DOB Permits  (ipu4-2q9a) — NB, A1, DM filings within radius
-  2. Google News RSS  (news.google.com/rss) — keyword search
-  3. The Real Deal RSS (therealdeal.com/feed) — NYC RE news
+  1. NYC DOB Permits   (ipu4-2q9a) — NB, A1, DM filings within radius
+  2. Google News RSS   (news.google.com/rss) — keyword search by address
+  3. The Real Deal RSS (therealdeal.com/feed)
+  4. Commercial Observer RSS (commercialobserver.com/feed)
+  5. Bisnow RSS        (bisnow.com/feed)
 
 Each development record uses unified schema:
   address, project_name, developer, asset_type, status,
@@ -39,8 +41,10 @@ _JOB_STATUS_MAP = {
 }
 
 _ASSET_KEYWORDS = {
-    "residential": ["residential", "apartment", "dwelling", "condo", "co-op", "multifamily", "housing"],
-    "commercial":  ["commercial", "office", "hotel", "retail", "warehouse", "industrial"],
+    "residential": ["residential", "apartment", "dwelling", "condo", "co-op",
+                    "multifamily", "housing", "affordable", "senior"],
+    "commercial":  ["commercial", "office", "hotel", "retail", "warehouse",
+                    "industrial", "medical", "community facility"],
     "mixed-use":   ["mixed use", "mixed-use"],
 }
 
@@ -88,7 +92,7 @@ def _fetch_dob(lat: float, lon: float, radius_miles: float) -> tuple[list, str]:
             "initial_cost,stories_prop,filing_date,gis_latitude,gis_longitude"
         ),
         "$order":  "filing_date DESC",
-        "$limit":  "200",
+        "$limit":  "300",
     }
     try:
         resp = requests.get(_DOB_URL, params=params, timeout=_TIMEOUT)
@@ -150,22 +154,28 @@ def _fetch_dob(lat: float, lon: float, radius_miles: float) -> tuple[list, str]:
 _UNIT_RE  = re.compile(r"(\d[\d,]*)\s*(?:unit|apartment|apt|dwelling|residential\s+unit)", re.I)
 _SF_RE    = re.compile(r"(\d[\d,]*)\s*(?:sq\.?\s*ft|sqft|SF|square\s*feet)", re.I)
 _DEV_RE   = re.compile(
-    r"(?:developer|developed by|by)\s+([A-Z][a-zA-Z\s&,\.]+?)(?:\s+(?:has|will|plans|is|broke|received|filed)|,|\.|\Z)",
+    r"(?:developer|developed by|by|from)\s+([A-Z][a-zA-Z\s&,\.]+?)"
+    r"(?:\s+(?:has|will|plans|is|broke|received|filed|announced)|,|\.|\Z)",
     re.I,
 )
 _STATUS_WORDS = {
-    "completed":           "Completed",
-    "delivered":           "Completed",
-    "opened":              "Completed",
-    "under construction":  "Under Construction",
-    "breaking ground":     "Under Construction",
-    "broke ground":        "Under Construction",
-    "approved":            "Approved",
-    "received approval":   "Approved",
-    "planned":             "Planned",
-    "proposed":            "Planned",
-    "will":                "Planned",
-    "plans to":            "Planned",
+    "completed":            "Completed",
+    "delivered":            "Completed",
+    "opened":               "Completed",
+    "certificate of occupancy": "Completed",
+    "under construction":   "Under Construction",
+    "breaking ground":      "Under Construction",
+    "broke ground":         "Under Construction",
+    "topped out":           "Under Construction",
+    "approved":             "Approved",
+    "received approval":    "Approved",
+    "rezoning approved":    "Approved",
+    "land use approval":    "Approved",
+    "planned":              "Planned",
+    "proposed":             "Planned",
+    "will build":           "Planned",
+    "plans to":             "Planned",
+    "seeking approval":     "Planned",
 }
 
 
@@ -190,9 +200,7 @@ def _extract_from_text(text: str) -> dict:
             "status": status, "asset_type": asset_type}
 
 
-# ── Google News RSS ───────────────────────────────────────────────────────────
-
-_GNEWS_URL = "https://news.google.com/rss/search"
+# ── RSS feed parser (shared) ──────────────────────────────────────────────────
 
 _PUB_FMT = ["%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"]
 
@@ -206,56 +214,51 @@ def _parse_pub_date(raw: str) -> str:
     return raw[:10] if raw else ""
 
 
-def _fetch_google_news(
-    lat: float, lon: float, radius_miles: float,
-    address: str = "", neighborhood: str = "",
-) -> tuple[list, str]:
-    """Search Google News RSS for recent development articles."""
-    # Build query — try neighborhood first, fall back to address fragment
-    loc = neighborhood or (address.split(",")[0] if address else "")
-    if not loc:
-        return [], "no_results"
-
-    query = f'"{loc}" real estate development NYC construction'
-    params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
-
+def _parse_rss(content: str, source_name: str,
+               loc_filter: str, cutoff: str,
+               lat: float, lon: float,
+               dev_keywords: list) -> tuple[list, str]:
+    """
+    Generic RSS XML parser. Filters by loc_filter keyword and dev_keywords.
+    Returns (items, status).
+    """
     try:
-        resp = requests.get(_GNEWS_URL, params=params, timeout=_TIMEOUT,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code in (403, 429):
-            return [], "blocked"
-        resp.raise_for_status()
-        content = resp.content
-    except Exception as exc:
-        return [], f"error: {exc}"
-
-    # Parse RSS XML manually (avoid feedparser dependency)
-    try:
-        items_raw = re.findall(r"<item>(.*?)</item>", content.decode("utf-8", errors="ignore"), re.S)
+        items_raw = re.findall(r"<item>(.*?)</item>", content, re.S)
     except Exception:
         return [], "error"
 
-    cutoff = _cutoff_date(36)
     out: list[dict] = []
-    for raw in items_raw[:30]:
+    for raw in items_raw[:50]:
         try:
-            title_m   = re.search(r"<title>(.*?)</title>", raw, re.S)
-            link_m    = re.search(r"<link>(.*?)</link>", raw, re.S)
-            pub_m     = re.search(r"<pubDate>(.*?)</pubDate>", raw, re.S)
-            desc_m    = re.search(r"<description>(.*?)</description>", raw, re.S)
+            title_m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.S)
+            link_m  = re.search(r"<link>(.*?)</link>",         raw, re.S)
+            pub_m   = re.search(r"<pubDate>(.*?)</pubDate>",   raw, re.S)
+            desc_m  = re.search(r"<description>(.*?)</description>", raw, re.S)
 
-            title   = re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""
+            title   = re.sub(r"<[^>]+>|&lt;[^&]+&gt;|&\w+;", "",
+                             title_m.group(1) if title_m else "").strip()
             url     = link_m.group(1).strip() if link_m else ""
             pub_raw = pub_m.group(1).strip()  if pub_m  else ""
-            desc    = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip() if desc_m else ""
+            desc    = re.sub(r"<[^>]+>|\[.*?\]|&\w+;", "",
+                             desc_m.group(1) if desc_m else "").strip()
 
             pub_date = _parse_pub_date(pub_raw)
             if pub_date and pub_date < cutoff:
                 continue
 
             combined = f"{title} {desc}"
-            extracted = _extract_from_text(combined)
 
+            # Location filter — must mention the neighborhood/address
+            if loc_filter and loc_filter.lower() not in combined.lower():
+                # Also accept generic NYC development coverage
+                if "new york" not in combined.lower() and "nyc" not in combined.lower():
+                    continue
+
+            # Must be development-related
+            if dev_keywords and not any(k in combined.lower() for k in dev_keywords):
+                continue
+
+            extracted = _extract_from_text(combined)
             out.append({
                 "address":        title[:80],
                 "project_name":   title[:80],
@@ -265,7 +268,7 @@ def _fetch_google_news(
                 "units":          extracted["units"],
                 "sqft":           extracted["sqft"],
                 "filing_date":    pub_date,
-                "source":         "Google News",
+                "source":         source_name,
                 "url":            url,
                 "lat":            lat,
                 "lon":            lon,
@@ -275,6 +278,63 @@ def _fetch_google_news(
             continue
 
     return out, ("live" if out else "no_results")
+
+
+_DEV_KW = [
+    "development", "tower", "project", "construction", "permit", "approved",
+    "units", "groundbreak", "rezoning", "mixed-use", "affordable housing",
+    "luxury condo", "building", "stories", "floors", "sq ft", "square feet",
+]
+
+
+# ── Google News RSS ───────────────────────────────────────────────────────────
+
+_GNEWS_URL = "https://news.google.com/rss/search"
+
+
+def _fetch_google_news(
+    lat: float, lon: float, radius_miles: float,
+    address: str = "", neighborhood: str = "",
+) -> tuple[list, str]:
+    """Search Google News RSS for recent development articles near the address."""
+    # Use street address first, then neighborhood, then a bare NYC query
+    addr_part = address.split(",")[0].strip() if address else ""
+    loc = addr_part or neighborhood
+    if not loc:
+        return [], "no_results"
+
+    # Build two queries — one hyper-local, one neighborhood-level
+    queries = []
+    if addr_part:
+        queries.append(f'"{addr_part}" NYC development construction')
+    if neighborhood and neighborhood != addr_part:
+        queries.append(f'"{neighborhood}" NYC real estate development')
+
+    cutoff = _cutoff_date(36)
+    out: list[dict] = []
+    status = "no_results"
+
+    for query in queries[:2]:
+        params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
+        try:
+            resp = requests.get(_GNEWS_URL, params=params, timeout=_TIMEOUT,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code in (403, 429):
+                status = "blocked"
+                continue
+            resp.raise_for_status()
+            content = resp.content.decode("utf-8", errors="ignore")
+        except Exception as exc:
+            status = f"error: {exc}"
+            continue
+
+        items, s = _parse_rss(content, "Google News", loc, cutoff, lat, lon, _DEV_KW)
+        out.extend(items)
+        if items:
+            status = "live"
+        time.sleep(0.2)
+
+    return out, status
 
 
 # ── The Real Deal RSS ─────────────────────────────────────────────────────────
@@ -286,8 +346,9 @@ def _fetch_trd(
     lat: float, lon: float, radius_miles: float,
     address: str = "", neighborhood: str = "",
 ) -> tuple[list, str]:
-    """Fetch The Real Deal RSS and filter by neighborhood keyword."""
-    loc = neighborhood or (address.split(",")[0] if address else "")
+    """Fetch The Real Deal RSS and filter by location keyword."""
+    loc = neighborhood or (address.split(",")[0].strip() if address else "")
+    cutoff = _cutoff_date(36)
 
     try:
         resp = requests.get(_TRD_RSS, timeout=_TIMEOUT,
@@ -299,59 +360,59 @@ def _fetch_trd(
     except Exception as exc:
         return [], f"error: {exc}"
 
-    try:
-        items_raw = re.findall(r"<item>(.*?)</item>", content, re.S)
-    except Exception:
-        return [], "error"
+    return _parse_rss(content, "The Real Deal", loc, cutoff, lat, lon, _DEV_KW)
 
+
+# ── Commercial Observer RSS ───────────────────────────────────────────────────
+
+_CO_RSS = "https://commercialobserver.com/feed/"
+
+
+def _fetch_commercial_observer(
+    lat: float, lon: float, radius_miles: float,
+    address: str = "", neighborhood: str = "",
+) -> tuple[list, str]:
+    """Fetch Commercial Observer RSS and filter by location keyword."""
+    loc = neighborhood or (address.split(",")[0].strip() if address else "")
     cutoff = _cutoff_date(36)
-    out: list[dict] = []
-    for raw in items_raw[:40]:
-        try:
-            title_m = re.search(r"<title>(.*?)</title>", raw, re.S)
-            link_m  = re.search(r"<link>(.*?)</link>",   raw, re.S)
-            pub_m   = re.search(r"<pubDate>(.*?)</pubDate>", raw, re.S)
-            desc_m  = re.search(r"<description>(.*?)</description>", raw, re.S)
 
-            title   = re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""
-            url     = link_m.group(1).strip() if link_m else ""
-            pub_raw = pub_m.group(1).strip()  if pub_m  else ""
-            desc    = re.sub(r"<[^>]+>|\[.*?\]|&\w+;", "", desc_m.group(1) if desc_m else "").strip()
+    try:
+        resp = requests.get(_CO_RSS, timeout=_TIMEOUT,
+                            headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code in (403, 429):
+            return [], "blocked"
+        resp.raise_for_status()
+        content = resp.content.decode("utf-8", errors="ignore")
+    except Exception as exc:
+        return [], f"error: {exc}"
 
-            pub_date = _parse_pub_date(pub_raw)
-            if pub_date and pub_date < cutoff:
-                continue
+    return _parse_rss(content, "Commercial Observer", loc, cutoff, lat, lon, _DEV_KW)
 
-            combined = f"{title} {desc}"
-            # Filter to articles mentioning the neighborhood/address
-            if loc and loc.lower() not in combined.lower() and "nyc" not in combined.lower():
-                continue
-            # Must be development-related
-            dev_keywords = ["development", "tower", "project", "construction",
-                            "permit", "approved", "units", "ground-floor", "groundbreak"]
-            if not any(k in combined.lower() for k in dev_keywords):
-                continue
 
-            extracted = _extract_from_text(combined)
-            out.append({
-                "address":        title[:80],
-                "project_name":   title[:80],
-                "developer":      extracted["developer"],
-                "asset_type":     extracted["asset_type"],
-                "status":         extracted["status"],
-                "units":          extracted["units"],
-                "sqft":           extracted["sqft"],
-                "filing_date":    pub_date,
-                "source":         "The Real Deal",
-                "url":            url,
-                "lat":            lat,
-                "lon":            lon,
-                "distance_miles": 0.0,
-            })
-        except Exception:
-            continue
+# ── Bisnow RSS ────────────────────────────────────────────────────────────────
 
-    return out, ("live" if out else "no_results")
+_BISNOW_RSS = "https://www.bisnow.com/new-york/rss.xml"
+
+
+def _fetch_bisnow(
+    lat: float, lon: float, radius_miles: float,
+    address: str = "", neighborhood: str = "",
+) -> tuple[list, str]:
+    """Fetch Bisnow NYC RSS and filter by location keyword."""
+    loc = neighborhood or (address.split(",")[0].strip() if address else "")
+    cutoff = _cutoff_date(36)
+
+    try:
+        resp = requests.get(_BISNOW_RSS, timeout=_TIMEOUT,
+                            headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code in (403, 429):
+            return [], "blocked"
+        resp.raise_for_status()
+        content = resp.content.decode("utf-8", errors="ignore")
+    except Exception as exc:
+        return [], f"error: {exc}"
+
+    return _parse_rss(content, "Bisnow", loc, cutoff, lat, lon, _DEV_KW)
 
 
 # ── Fuzzy dedup ───────────────────────────────────────────────────────────────
@@ -370,8 +431,8 @@ def _fuzzy_dedup(devs: list) -> list:
     """Remove near-duplicates by address prefix + filing year."""
     seen: dict = {}
     for d in devs:
-        addr_key  = d.get("address", "")[:30].lower().strip()
-        year_key  = d.get("filing_date", "")[:4]
+        addr_key = d.get("address", "")[:30].lower().strip()
+        year_key = d.get("filing_date", "")[:4]
         key = (addr_key, year_key)
         if key not in seen or _completeness(d) > _completeness(seen[key]):
             seen[key] = d
@@ -393,17 +454,22 @@ def fetch_nearby_developments(
 
     Sources:
       1. NYC DOB Permits (NB, A1, DM filings — last 36 months)
-      2. Google News RSS (keyword search)
+      2. Google News RSS (keyword search by address + neighborhood)
       3. The Real Deal RSS
+      4. Commercial Observer RSS
+      5. Bisnow NYC RSS
 
     Returns (developments, status_dict).
-    status_dict keys: dob, google_news, the_real_deal, overall
+    status_dict keys: dob, google_news, the_real_deal,
+                      commercial_observer, bisnow, overall
     """
     status: dict = {
-        "dob":          "pending",
-        "google_news":  "pending",
-        "the_real_deal":"pending",
-        "overall":      "no_results",
+        "dob":                "pending",
+        "google_news":        "pending",
+        "the_real_deal":      "pending",
+        "commercial_observer":"pending",
+        "bisnow":             "pending",
+        "overall":            "no_results",
     }
     all_devs: list[dict] = []
 
@@ -416,13 +482,24 @@ def fetch_nearby_developments(
     gn_devs, gn_status = _fetch_google_news(lat, lon, radius_miles, address, neighborhood)
     status["google_news"] = gn_status
     all_devs.extend(gn_devs)
-
-    time.sleep(0.3)
+    time.sleep(0.2)
 
     # Source 3 — The Real Deal RSS
     trd_devs, trd_status = _fetch_trd(lat, lon, radius_miles, address, neighborhood)
     status["the_real_deal"] = trd_status
     all_devs.extend(trd_devs)
+    time.sleep(0.2)
+
+    # Source 4 — Commercial Observer RSS
+    co_devs, co_status = _fetch_commercial_observer(lat, lon, radius_miles, address, neighborhood)
+    status["commercial_observer"] = co_status
+    all_devs.extend(co_devs)
+    time.sleep(0.2)
+
+    # Source 5 — Bisnow RSS
+    bn_devs, bn_status = _fetch_bisnow(lat, lon, radius_miles, address, neighborhood)
+    status["bisnow"] = bn_status
+    all_devs.extend(bn_devs)
 
     # Dedup and sort by filing date (most recent first)
     all_devs = _fuzzy_dedup(all_devs)
