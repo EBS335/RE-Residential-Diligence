@@ -3359,7 +3359,16 @@ if 'geo' in st.session_state:
 
                         if _options:
                             # ── Summary Metrics Table ─────────────────────
-                            _max_far_val = _zrules.get("max_far") or _zrules.get("base_far", 0)
+                            _res_far_v   = _zrules.get("res_far",  0) or 0
+                            _comm_far_v  = _zrules.get("comm_far", 0) or 0
+                            _max_far_raw = _zrules.get("max_far",  0) or 0
+                            _base_far_v  = _zrules.get("base_far", 0) or 0
+                            _max_far_val = max(_res_far_v, _comm_far_v, _max_far_raw, _base_far_v)
+                            _far_type_label = (
+                                "Comm. FAR" if (_comm_far_v > _res_far_v and _comm_far_v >= _base_far_v and _comm_far_v > 0)
+                                else ("Res. FAR" if (_res_far_v > 0 and _res_far_v >= _base_far_v)
+                                else "Base FAR")
+                            )
                             _max_bldg_sf = int(_la_v * _max_far_val) if _max_far_val > 0 else 0
                             _sum_rows = []
                             for _o in _options:
@@ -3393,7 +3402,7 @@ if 'geo' in st.session_state:
                                         "#":           st.column_config.NumberColumn("#", width="small"),
                                         "Gross SF":    st.column_config.NumberColumn("Gross SF", format="%d"),
                                         "Max Bldg SF": st.column_config.NumberColumn("Max Bldg SF", format="%d",
-                                                        help=f"Max buildable SF = lot area × max FAR ({_max_far_val})"),
+                                                        help=f"Max buildable SF = lot area × {_far_type_label} ({_max_far_val})"),
                                         "Net SF":      st.column_config.NumberColumn("Net SF",   format="%d"),
                                         "Est. Units":  st.column_config.NumberColumn("Est. Units", format="%d"),
                                         "Stories":     st.column_config.NumberColumn("Stories",  format="%d"),
@@ -3420,7 +3429,7 @@ if 'geo' in st.session_state:
                                     f"<div style='background:white;border:1px solid #E5E7EB;"
                                     f"border-radius:12px;padding:8px 10px 4px'>"
                                     f"{_risk_badge(rl)}"
-                                    f"<div style='font-weight:700;font-size:0.82rem;margin:5px 0 1px'>"
+                                    f"<div style='font-weight:700;font-size:0.72rem;margin:5px 0 1px'>"
                                     f"{opt['name']}</div></div>",
                                     unsafe_allow_html=True,
                                 )
@@ -3434,16 +3443,16 @@ if 'geo' in st.session_state:
                                 _ta1, _ta2, _ta3, _ta4 = st.columns(4)
                                 _ta1.metric("Gross SF",      f"{_tile_gross:,}")
                                 _ta2.metric("Max Buildable", f"{_tile_max_sf:,}" if _tile_max_sf else "—",
-                                            help=f"Lot area × max FAR ({_max_far_val})")
+                                            help=f"Lot area × {_far_type_label} ({_max_far_val})")
                                 _ta3.metric("Net Rentable",  f"{_tile_net:,}")
                                 _ta4.metric("Ht / Floors",   f"{opt.get('height_ft',0)}ft / {opt.get('floors',0)}")
 
                                 # Strategy + description (collapsible, compact font)
-                                with st.expander("📋 Strategy & Description", expanded=True):
+                                with st.expander("📋 Strategy & Description", expanded=False):
                                     st.markdown(
-                                        f"<div style='font-size:0.78rem;line-height:1.45;color:#374151'>"
+                                        f"<div style='font-size:0.65rem;line-height:1.45;color:#374151'>"
                                         f"<b>Strategy:</b> {opt.get('strategy','')}</div>"
-                                        f"<div style='font-size:0.75rem;line-height:1.45;color:#4B5563;"
+                                        f"<div style='font-size:0.63rem;line-height:1.45;color:#4B5563;"
                                         f"margin-top:4px'>{opt.get('description','')}</div>",
                                         unsafe_allow_html=True,
                                     )
@@ -3536,13 +3545,18 @@ if 'geo' in st.session_state:
                                     f"{_tier_label}</div>",
                                     unsafe_allow_html=True,
                                 )
-                                _tcols = st.columns(len(_tier_opts))
-                                for _tc, _topt in zip(_tcols, _tier_opts):
-                                    with _tc:
-                                        _render_tile(
-                                            _topt,
-                                            f"{_topt['name'].replace(' ','_').replace('/','_')}_{_bbl_disp}",
-                                        )
+                                if _tier == "HIGH" and len(_tier_opts) > 3:
+                                    _tile_rows = [_tier_opts[:3], _tier_opts[3:]]
+                                else:
+                                    _tile_rows = [_tier_opts]
+                                for _tile_row in _tile_rows:
+                                    _tcols = st.columns(len(_tile_row))
+                                    for _tc, _topt in zip(_tcols, _tile_row):
+                                        with _tc:
+                                            _render_tile(
+                                                _topt,
+                                                f"{_topt['name'].replace(' ','_').replace('/','_')}_{_bbl_disp}",
+                                            )
 
                             # ── Side-by-side comparison panel ───────────
                             st.markdown("---")

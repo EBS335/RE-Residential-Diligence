@@ -270,10 +270,19 @@ def _calc_massing(lot_front: float, lot_depth: float, lot_area: float,
     b_depth = max(10, lot_depth - fr - rr)
     footprint = b_front * b_depth
 
-    # FAR to use (prefer residential, fall back to base)
-    far = rules["res_far"] if rules["res_far"] > 0 else rules["base_far"]
+    # FAR to use — take the highest of residential, commercial, and base
+    res_f  = rules.get("res_far",  0) or 0
+    comm_f = rules.get("comm_far", 0) or 0
+    base_f = rules.get("base_far", 0) or 0
+    far = max(res_f, comm_f, base_f)
     if far <= 0:
-        far = rules["base_far"]
+        far = base_f or 1.0
+    # Track which FAR type governs for display annotation
+    far_type = (
+        "Commercial FAR" if (comm_f > res_f and comm_f >= base_f and comm_f > 0)
+        else ("Residential FAR" if (res_f > 0 and res_f >= base_f)
+        else "Base FAR")
+    )
 
     total_area = lot_area * far
 
@@ -293,6 +302,7 @@ def _calc_massing(lot_front: float, lot_depth: float, lot_area: float,
         footprint=footprint,
         fr=fr, rr=rr, sy=sy,
         far=far,
+        far_type=far_type,
         total_area=total_area,
         base_h=base_h, max_h=max_h,
         f2f=f2f,
@@ -859,52 +869,58 @@ def _option_9(lot_front, lot_depth, lot_area, rules, m) -> dict:
 
 
 def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """HIGH — Height Maximizer — Slender Tower"""
+    """HIGH — Tallest Permitted — 50% Lot Coverage"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
     base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
     far              = m["far"]
 
-    fp_ratio = 0.30
-    w = max(10.0, b_front * fp_ratio)
-    d = max(10.0, b_depth * fp_ratio)
-    x0 = sy + (b_front - w) / 2
-    y0 = fr + (b_depth - d) / 2
-    fp_sqft = w * d
+    # 50% of lot area as footprint target, proportional to buildable envelope
+    fp_target = lot_area * 0.50
+    aspect = b_depth / max(1.0, b_front)
+    fp_w   = max(10.0, min(b_front, (fp_target / max(1.0, aspect)) ** 0.5))
+    fp_d   = max(10.0, min(b_depth, fp_target / max(1.0, fp_w)))
+    fp_sqft = fp_w * fp_d
+    x0 = sy + (b_front - fp_w) / 2
+    y0 = fr + (b_depth - fp_d) / 2
+
     far_height = (far * lot_area / fp_sqft) * f2f if fp_sqft > 0 else 0
-    height = min(400.0, max(100.0, far_height if far_height > 0 else (max_h * 1.2 if max_h > 0 else base_h * 3)))
+    height = max(base_h, far_height)
+    if max_h > 0:
+        height = min(height, max_h)
+    height = min(height, 500.0)
     floors = max(1, int(height / f2f))
 
     x_center = sy + b_front / 2
-    if rules.get("sky_exp_plane") and base_h > 0 and max_h > base_h:
-        traces = _sep_stepped_boxes(x_center, fr, w, d, base_h, height,
+    if rules.get("sky_exp_plane") and base_h > 0 and height > base_h:
+        traces = _sep_stepped_boxes(x_center, fr, fp_w, fp_d, base_h, height,
                                     _CLR_HIGH_5, "#7F1D1D", "Building Mass")
     else:
         traces = [
-            _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_HIGH_5, name="Building Mass"),
-            _line_box(x0, y0, 0, x0+w, y0+d, height, color="#7F1D1D"),
+            _box_mesh(x0, y0, 0, x0+fp_w, y0+fp_d, height, color=_CLR_HIGH_5, name="Building Mass"),
+            _line_box(x0, y0, 0, x0+fp_w, y0+fp_d, height, color="#7F1D1D"),
         ]
     traces.append(_label(lot_front/2, -2, height, f"{height:.0f} ft"))
     fig = _make_fig(lot_front, lot_depth, traces,
-                    "10. Height Maximizer — Slender Tower", height, rules)
+                    "10. Tallest Permitted — 50% Lot Coverage", height, rules)
     return _scenario_dict(
-        name="10. Height Maximizer — Slender Tower",
+        name="10. Tallest Permitted — 50% Lot Coverage",
         risk_level="HIGH",
         number=10,
         description=(
-            f"**Ultra-slim 30% footprint** tower rising to **{height:.0f} ft** (**{floors} floors**). "
-            "Maximizes height over footprint for view premium and luxury positioning. "
-            "**Full FAR utilization** on slender floor plate — requires tower rules or favorable sky exposure plane."
+            f"**50% lot coverage** footprint ({fp_sqft:,.0f} SF) rising to **{height:.0f} ft** "
+            f"(**{floors} floors**). Tallest permitted building using half the lot area — "
+            "balances height and coverage while satisfying all FAR and setback requirements."
         ),
         strategy=(
-            "**Luxury/condo-conversion** pricing premium on upper floors. "
-            "High construction cost per SF offset by top-floor revenue. "
-            "Best for sites with unobstructed views or **air rights acquisitions**."
+            "**Maximum height at moderate coverage** — optimal for mid-rise luxury or market-rate rental. "
+            "Larger floor plates than slender towers reduce per-SF construction cost. "
+            "Best for sites where height maximization is the primary goal."
         ),
         fig=fig,
         lot_area=lot_area, far=far,
-        height_ft=height, footprint_sqft=w*d,
-        floors=floors, typical_floor_sqft=w*d,
+        height_ft=height, footprint_sqft=fp_sqft,
+        floors=floors, typical_floor_sqft=fp_sqft,
         loss_factor=0.15,
     )
 

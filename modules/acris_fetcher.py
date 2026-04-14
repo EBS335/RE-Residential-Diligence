@@ -100,20 +100,50 @@ def _fetch_parties(doc_id: str) -> list:
 
 def _query_master(borough: str, block: str, lot: str,
                   order: str = "document_date DESC") -> list:
-    """Query ACRIS Document Master by borough + block + lot (integer strings)."""
-    rows = _get(_DOC_MASTER_URL, {
-        "borough": borough, "block": block, "lot": lot,
-        "$order": order, "$limit": _MAX_DOCS,
+    """
+    Query ACRIS Master via two-step Legals→Master lookup, then direct $where fallbacks.
+
+    Socrata stores block/lot as zero-padded TEXT fields ("00167", "0001").
+    Simple URL params (e.g. ?block=167) may coerce to integers and miss records.
+    Using $where with quoted string literals forces string comparison.
+    """
+    block_pad = str(block).zfill(5)
+    lot_pad   = str(lot).zfill(4)
+
+    # ── Step 1: Legals → document_ids (canonical BBL→doc mapping) ──────────
+    leg_rows = _get(_LEGALS_URL, {
+        "$where": f"borough='{borough}' AND block='{block_pad}' AND lot='{lot_pad}'",
+        "$select": "document_id",
+        "$limit": 300,
     })
-    if not rows:
-        # Retry with zero-padded values (some records use padded form)
-        block_pad = block.zfill(5)
-        lot_pad   = lot.zfill(4)
+    doc_ids = list({r["document_id"] for r in leg_rows if r.get("document_id")})
+    if doc_ids:
+        id_clause = ",".join(f"'{d}'" for d in doc_ids[:200])
         rows = _get(_DOC_MASTER_URL, {
-            "borough": borough, "block": block_pad, "lot": lot_pad,
-            "$order": order, "$limit": _MAX_DOCS,
+            "$where": f"document_id in ({id_clause})",
+            "$order": order,
+            "$limit": _MAX_DOCS,
         })
-    return rows
+        if rows:
+            return rows
+
+    # ── Step 2: Direct $where on Master with zero-padded strings ───────────
+    rows = _get(_DOC_MASTER_URL, {
+        "$where": f"borough='{borough}' AND block='{block_pad}' AND lot='{lot_pad}'",
+        "$order": order,
+        "$limit": _MAX_DOCS,
+    })
+    if rows:
+        return rows
+
+    # ── Step 3: Unpadded fallback ───────────────────────────────────────────
+    block_int = str(block).lstrip("0") or "0"
+    lot_int   = str(lot).lstrip("0") or "0"
+    return _get(_DOC_MASTER_URL, {
+        "$where": f"borough='{borough}' AND block='{block_int}' AND lot='{lot_int}'",
+        "$order": order,
+        "$limit": _MAX_DOCS,
+    })
 
 
 def _build_doc(raw: dict, party_cache: dict) -> dict:
@@ -337,7 +367,7 @@ def fetch_acris(bbl: str) -> dict:
     # ── Attempt 3: Block-only (ignore lot) ─────────────────────────────────
     block_url = _ACRIS_BLOCK_URL.format(b=borough, blk=block_int)
     raw_block = _get(_DOC_MASTER_URL, {
-        "borough": borough, "block": block_int,
+        "$where": f"borough='{borough}' AND block='{block_pad}'",
         "$order": "document_date DESC", "$limit": _MAX_DOCS,
     })
     if raw_block:
