@@ -3272,6 +3272,28 @@ if 'geo' in st.session_state:
                                 [_parse_dim(l.get("lot_frontage_ft", 0)) for l in _valid_adj]
                             )
 
+                        # ── Available FAR values for selector ────────────────
+                        _facil_far_v = 0.0
+                        try:
+                            _facil_far_v = float(str(_zinfo.get("far_facility") or 0).replace(",", ""))
+                        except (ValueError, TypeError):
+                            pass
+                        _res_far_v   = float(_zrules.get("res_far",  0) or 0)
+                        _comm_far_v  = float(_zrules.get("comm_far", 0) or 0)
+                        _base_far_v  = float(_zrules.get("base_far", 0) or 0)
+                        _max_far_raw = float(_zrules.get("max_far",  0) or 0)
+                        _far_sel_opts = ["Auto (Max)"]
+                        if _res_far_v > 0:
+                            _far_sel_opts.append(f"Residential ({_res_far_v:g})")
+                        if _comm_far_v > 0:
+                            _far_sel_opts.append(f"Commercial ({_comm_far_v:g})")
+                        if _facil_far_v > 0:
+                            _far_sel_opts.append(f"Facility ({_facil_far_v:g})")
+                        if _base_far_v > 0 and _base_far_v not in (_res_far_v, _comm_far_v):
+                            _far_sel_opts.append(f"Base ({_base_far_v:g})")
+                        if _max_far_raw > 0 and _max_far_raw > max(_res_far_v, _comm_far_v, _base_far_v, 0):
+                            _far_sel_opts.append(f"Bonus/Max ({_max_far_raw:g})")
+
                         # ── Development Refinement Options ───────────────
                         with st.expander("⚙️ Development Refinement Options", expanded=False):
                             _rc1, _rc2 = st.columns(2)
@@ -3298,11 +3320,54 @@ if 'geo' in st.session_state:
                                 value=st.session_state.get("show_nbr_toggle", False),
                                 key="show_nbr_toggle",
                             )
+                            # FAR type selector
+                            st.markdown(
+                                "<div style='margin-top:10px;font-size:0.75rem;font-weight:600;"
+                                "color:#374151'>📐 FAR Type for Scenario Calculations</div>",
+                                unsafe_allow_html=True,
+                            )
+                            _saved_far_sel = st.session_state.get("_far_sel_val", "Auto (Max)")
+                            _far_sel_idx = (
+                                _far_sel_opts.index(_saved_far_sel)
+                                if _saved_far_sel in _far_sel_opts else 0
+                            )
+                            st.radio(
+                                "FAR type",
+                                _far_sel_opts,
+                                index=_far_sel_idx,
+                                horizontal=True,
+                                key="_far_sel_val",
+                                label_visibility="collapsed",
+                                help="Selects which FAR type drives all massing scenario calculations and the Max Buildable SF.",
+                            )
 
                         _dev_focus  = st.session_state.get("dev_focus", "Residential")
                         _sub_comps  = st.session_state.get("dev_sub_comps", ["Ground Floor Retail"])
                         _show_nbrs  = st.session_state.get("show_nbr_toggle", False)
+                        _far_sel    = st.session_state.get("_far_sel_val", "Auto (Max)")
                         _sub_key    = "_".join(sorted(_sub_comps))
+
+                        # Compute effective FAR from user selection
+                        if _far_sel.startswith("Residential"):
+                            _effective_far = _res_far_v
+                        elif _far_sel.startswith("Commercial"):
+                            _effective_far = _comm_far_v
+                        elif _far_sel.startswith("Facility"):
+                            _effective_far = _facil_far_v
+                        elif _far_sel.startswith("Base"):
+                            _effective_far = _base_far_v
+                        elif _far_sel.startswith("Bonus") or _far_sel.startswith("Max"):
+                            _effective_far = _max_far_raw
+                        else:  # Auto (Max)
+                            _effective_far = max(_res_far_v, _comm_far_v, _facil_far_v, _base_far_v, _max_far_raw)
+
+                        # Build effective zrules — override all FAR fields with selected value
+                        _zrules_effective = dict(_zrules)
+                        if not _far_sel.startswith("Auto") and _effective_far > 0:
+                            _zrules_effective["res_far"]  = _effective_far
+                            _zrules_effective["comm_far"] = _effective_far
+                            _zrules_effective["base_far"] = _effective_far
+                            _zrules_effective["max_far"]  = _effective_far
 
                         # Fetch neighbor lots from PLUTO if toggle enabled
                         _nbr_lots: list = []
@@ -3335,16 +3400,17 @@ if 'geo' in st.session_state:
                             _nbr_lots = st.session_state.get(_nbr_cache_key, [])
 
                         # Build / retrieve massing options
+                        _far_sel_key = _far_sel.split("(")[0].strip().replace(" ", "_")
                         _mass_key = (
                             f"_massing_{_bbl_disp}_comb{len(_valid_adj)}"
-                            f"_f{_dev_focus}_s{_sub_key}_n{int(_show_nbrs)}"
+                            f"_f{_dev_focus}_s{_sub_key}_n{int(_show_nbrs)}_far{_far_sel_key}"
                             if _using_combined else
                             f"_massing_{_bbl_disp}"
-                            f"_f{_dev_focus}_s{_sub_key}_n{int(_show_nbrs)}"
+                            f"_f{_dev_focus}_s{_sub_key}_n{int(_show_nbrs)}_far{_far_sel_key}"
                         )
                         if _mass_key not in st.session_state:
                             st.session_state[_mass_key] = build_massing_options(
-                                _lf_v, _ld_v, _la_v, _primary_zone, _zrules,
+                                _lf_v, _ld_v, _la_v, _primary_zone, _zrules_effective,
                                 lot_widths=_lot_widths,
                                 existing_bldg=_existing_bldg if _existing_bldg["floors"] > 0 else None,
                                 focus=_dev_focus,
@@ -3359,15 +3425,11 @@ if 'geo' in st.session_state:
 
                         if _options:
                             # ── Summary Metrics Table ─────────────────────
-                            _res_far_v   = _zrules.get("res_far",  0) or 0
-                            _comm_far_v  = _zrules.get("comm_far", 0) or 0
-                            _max_far_raw = _zrules.get("max_far",  0) or 0
-                            _base_far_v  = _zrules.get("base_far", 0) or 0
-                            _max_far_val = max(_res_far_v, _comm_far_v, _max_far_raw, _base_far_v)
+                            _max_far_val = _effective_far if _effective_far > 0 else max(_res_far_v, _comm_far_v, _base_far_v)
                             _far_type_label = (
-                                "Comm. FAR" if (_comm_far_v > _res_far_v and _comm_far_v >= _base_far_v and _comm_far_v > 0)
-                                else ("Res. FAR" if (_res_far_v > 0 and _res_far_v >= _base_far_v)
-                                else "Base FAR")
+                                _far_sel.split("(")[0].strip() if not _far_sel.startswith("Auto")
+                                else ("Comm. FAR" if (_comm_far_v > _res_far_v and _comm_far_v > 0)
+                                else ("Res. FAR" if _res_far_v > 0 else "Base FAR"))
                             )
                             _max_bldg_sf = int(_la_v * _max_far_val) if _max_far_val > 0 else 0
                             _sum_rows = []
@@ -3439,21 +3501,40 @@ if 'geo' in st.session_state:
                                     config={"displayModeBar": False},
                                     key=f"mass_{key_suffix}",
                                 )
-                                # 4-metric row: Gross SF | Max Buildable SF | Net Rentable | Height/Floors
-                                _ta1, _ta2, _ta3, _ta4 = st.columns(4)
-                                _ta1.metric("Gross SF",      f"{_tile_gross:,}")
-                                _ta2.metric("Max Buildable", f"{_tile_max_sf:,}" if _tile_max_sf else "—",
-                                            help=f"Lot area × {_far_type_label} ({_max_far_val})")
-                                _ta3.metric("Net Rentable",  f"{_tile_net:,}")
-                                _ta4.metric("Ht / Floors",   f"{opt.get('height_ft',0)}ft / {opt.get('floors',0)}")
+                                # 4-metric row: compact HTML (st.metric is too large for narrow tiles)
+                                _tile_max_sf_str = f"{_tile_max_sf:,}" if _tile_max_sf else "—"
+                                _tile_ht_str = f"{opt.get('height_ft',0)}ft/{opt.get('floors',0)}fl"
+                                st.markdown(
+                                    f"<div style='display:grid;grid-template-columns:repeat(4,1fr);"
+                                    f"gap:3px;margin:6px 0'>"
+                                    f"<div style='text-align:center;padding:5px 2px;background:#F3F4F6;border-radius:6px'>"
+                                    f"<div style='font-size:0.55rem;color:#6B7280;font-weight:700;text-transform:uppercase;"
+                                    f"letter-spacing:0.04em;line-height:1.2'>Gross SF</div>"
+                                    f"<div style='font-size:0.82rem;font-weight:700;color:#111827;line-height:1.3'>{_tile_gross:,}</div></div>"
+                                    f"<div style='text-align:center;padding:5px 2px;background:#EFF6FF;border-radius:6px' "
+                                    f"title='Lot area × {_far_type_label} ({_max_far_val})'>"
+                                    f"<div style='font-size:0.55rem;color:#3B82F6;font-weight:700;text-transform:uppercase;"
+                                    f"letter-spacing:0.04em;line-height:1.2'>Max Bldg SF</div>"
+                                    f"<div style='font-size:0.82rem;font-weight:700;color:#1D4ED8;line-height:1.3'>{_tile_max_sf_str}</div></div>"
+                                    f"<div style='text-align:center;padding:5px 2px;background:#F0FDF4;border-radius:6px'>"
+                                    f"<div style='font-size:0.55rem;color:#16A34A;font-weight:700;text-transform:uppercase;"
+                                    f"letter-spacing:0.04em;line-height:1.2'>Net Rentable</div>"
+                                    f"<div style='font-size:0.82rem;font-weight:700;color:#15803D;line-height:1.3'>{_tile_net:,}</div></div>"
+                                    f"<div style='text-align:center;padding:5px 2px;background:#FDF4FF;border-radius:6px'>"
+                                    f"<div style='font-size:0.55rem;color:#9333EA;font-weight:700;text-transform:uppercase;"
+                                    f"letter-spacing:0.04em;line-height:1.2'>Ht / Floors</div>"
+                                    f"<div style='font-size:0.82rem;font-weight:700;color:#7E22CE;line-height:1.3'>{_tile_ht_str}</div></div>"
+                                    f"</div>",
+                                    unsafe_allow_html=True,
+                                )
 
-                                # Strategy + description (collapsible, compact font)
+                                # Strategy + description (collapsible)
                                 with st.expander("📋 Strategy & Description", expanded=False):
                                     st.markdown(
-                                        f"<div style='font-size:0.65rem;line-height:1.45;color:#374151'>"
+                                        f"<div style='font-size:0.84rem;line-height:1.5;color:#374151'>"
                                         f"<b>Strategy:</b> {opt.get('strategy','')}</div>"
-                                        f"<div style='font-size:0.63rem;line-height:1.45;color:#4B5563;"
-                                        f"margin-top:4px'>{opt.get('description','')}</div>",
+                                        f"<div style='font-size:0.82rem;line-height:1.5;color:#4B5563;"
+                                        f"margin-top:6px'>{opt.get('description','')}</div>",
                                         unsafe_allow_html=True,
                                     )
 
