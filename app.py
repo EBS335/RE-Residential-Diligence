@@ -3636,7 +3636,7 @@ if 'geo' in st.session_state:
                                         with _tc:
                                             _render_tile(
                                                 _topt,
-                                                f"{_topt['name'].replace(' ','_').replace('/','_')}_{_bbl_disp}",
+                                                f"{_topt['name'].replace(' ','_').replace('/','_')}_{_bbl_disp}_{_far_sel_key}",
                                             )
 
                             # ── Side-by-side comparison panel ───────────

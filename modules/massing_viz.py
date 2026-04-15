@@ -286,9 +286,9 @@ def _calc_massing(lot_front: float, lot_depth: float, lot_area: float,
 
     total_area = lot_area * far
 
-    # Height caps
-    base_h = rules["base_height_ft"] or 40
-    max_h  = rules["max_height_ft"]  or base_h * 2
+    # Height caps — max_h=0 means no absolute limit (SEP zones or unlimited)
+    base_h = rules.get("base_height_ft") or 40
+    max_h  = rules.get("max_height_ft")  or 0
 
     # Floor-to-floor assumption: 12 ft residential, 14 ft commercial
     f2f = 12.0
@@ -309,6 +309,24 @@ def _calc_massing(lot_front: float, lot_depth: float, lot_area: float,
         floors_at_base=floors_at_base,
         typical_floor=typical_floor,
     )
+
+
+def _far_height(far: float, lot_area: float, fp_sqft: float, f2f: float,
+                base_h: float, max_h: float, min_h: float = 20.0) -> float:
+    """
+    Height needed to realise `far` on `fp_sqft` footprint.
+    Always ≥ base_h (front-wall/street-wall requirement).
+    Capped at max_h when max_h > 0 (absolute height limit).
+    max_h == 0 means no absolute cap (sky-exposure-plane zones).
+    """
+    if fp_sqft > 0:
+        implied = (far * lot_area / fp_sqft) * f2f
+    else:
+        implied = base_h or min_h
+    h = max(min_h, base_h, implied)
+    if max_h > 0:
+        h = min(h, max_h)
+    return min(h, 600.0)
 
 
 # ── Shared scenario builder helpers ──────────────────────────────────────────
@@ -530,6 +548,8 @@ def _option_3(lot_front, lot_depth, lot_area, rules, m) -> dict:
     x0 = sy + (b_front - w) / 2
     y0 = fr + (b_depth - d) / 2
     height = max(24.0, min(base_h, 35.0))
+    if max_h > 0:
+        height = min(height, max_h)
     floors = max(2, int(height / f2f))
 
     traces = [
@@ -577,6 +597,8 @@ def _option_4(lot_front, lot_depth, lot_area, rules, m) -> dict:
     ry0 = fr + (b_depth - ret_d) / 2
     rx1 = sx1 = sy + (b_front - res_w) / 2
     height = base_h
+    if max_h > 0:
+        height = min(height, max_h)
     floors = max(1, int((height - retail_h) / f2f)) + 1
 
     traces = [
@@ -628,12 +650,11 @@ def _option_5(lot_front, lot_depth, lot_area, rules, m) -> dict:
     d = max(10.0, b_depth * fp_ratio)
     x0 = sy + (b_front - w) / 2
     y0 = fr + (b_depth - d) / 2
-    height = max_h if max_h > 0 else base_h * 1.5
-    height = max(height, 40.0)
+    height = _far_height(far, lot_area, w * d, f2f, base_h, max_h, min_h=40.0)
     floors = max(1, int(height / f2f))
 
     x_center = sy + b_front / 2
-    if rules.get("sky_exp_plane") and base_h > 0 and max_h > base_h:
+    if rules.get("sky_exp_plane") and base_h > 0 and height > base_h:
         traces = _sep_stepped_boxes(x_center, fr, w, d, base_h, height,
                                     _CLR_MED_2, "#F59E0B", "Building Mass")
     else:
@@ -677,11 +698,11 @@ def _option_6(lot_front, lot_depth, lot_area, rules, m) -> dict:
     d = max(10.0, b_depth * fp_ratio)
     x0 = sy + (b_front - w) / 2
     y0 = fr + (b_depth - d) / 2
-    height = max(80.0, max_h if max_h > 0 else base_h * 2.5)
+    height = _far_height(far, lot_area, w * d, f2f, base_h, max_h, min_h=40.0)
     floors = max(1, int(height / f2f))
 
     x_center = sy + b_front / 2
-    if rules.get("sky_exp_plane") and base_h > 0 and max_h > base_h:
+    if rules.get("sky_exp_plane") and base_h > 0 and height > base_h:
         traces = _sep_stepped_boxes(x_center, fr, w, d, base_h, height,
                                     _CLR_HIGH_1, "#DC2626", "Building Mass")
     else:
@@ -728,10 +749,7 @@ def _option_7(lot_front, lot_depth, lot_area, rules, m) -> dict:
     w = min(w, b_front * fp_ratio)
     x0 = red_sy
     y0 = fr
-    # Lower height to maintain same FAR on larger footprint
-    fp_sqft = w * d
-    far_height = (far * (b_front * b_depth) / fp_sqft) * f2f if fp_sqft > 0 else 0
-    height = max(40.0, min(max_h if max_h > 0 else base_h * 2, far_height))
+    height = _far_height(far, lot_area, w * d, f2f, base_h, max_h, min_h=40.0)
     floors = max(1, int(height / f2f))
 
     traces = [
@@ -770,17 +788,19 @@ def _option_8(lot_front, lot_depth, lot_area, rules, m) -> dict:
     base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
     far              = m["far"]
 
-    # Ground floor: near-full lot coverage (podium)
+    # Ground floor: near-full lot coverage (podium) at base height
     pod_w = max(10.0, lot_front * 0.95)
     pod_d = max(10.0, lot_depth * 0.90)
     pod_h = max(base_h, 20.0)
+    if max_h > 0:
+        pod_h = min(pod_h, max_h)
 
-    # Tower above: SEP-stepped, narrower
+    # Tower above: SEP-stepped, narrower — FAR-implied height
     tower_fp = 0.50
     tw = max(10.0, b_front * tower_fp)
     td = max(10.0, b_depth * tower_fp)
     x_center = lot_front / 2
-    height = max(pod_h + 40.0, max_h if max_h > 0 else base_h * 2.5)
+    height = _far_height(far, lot_area, tw * td, f2f, pod_h, max_h, min_h=pod_h + 12.0)
     floors = max(1, int(height / f2f))
 
     traces = [
@@ -834,10 +854,9 @@ def _option_9(lot_front, lot_depth, lot_area, rules, m) -> dict:
     y0 = fr + (b_depth - d) / 2
 
     bonus_far   = far * 1.20
-    fp_sqft     = w * d
-    height_raw  = (bonus_far * lot_area / fp_sqft) / f2f * f2f
-    height      = min(300.0, max(base_h, height_raw))
-    floors      = max(1, int(height / f2f))
+    # Use bonus FAR for height but still respect max_h (if any)
+    height = _far_height(bonus_far, lot_area, w * d, f2f, base_h, max_h, min_h=base_h)
+    floors = max(1, int(height / f2f))
 
     traces = [
         _box_mesh(x0, y0, 0, x0+w, y0+d, height, color=_CLR_HIGH_4, name="Building Mass"),
@@ -884,11 +903,7 @@ def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
     x0 = sy + (b_front - fp_w) / 2
     y0 = fr + (b_depth - fp_d) / 2
 
-    far_height = (far * lot_area / fp_sqft) * f2f if fp_sqft > 0 else 0
-    height = max(base_h, far_height)
-    if max_h > 0:
-        height = min(height, max_h)
-    height = min(height, 500.0)
+    height = _far_height(far, lot_area, fp_sqft, f2f, base_h, max_h, min_h=base_h)
     floors = max(1, int(height / f2f))
 
     x_center = sy + b_front / 2
