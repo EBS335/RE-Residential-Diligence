@@ -539,7 +539,7 @@ def _option_3(lot_front, lot_depth, lot_area, rules, m) -> dict:
     """MED — Low-Rise Residential (2–3 Stories)"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
-    base_h, f2f      = m["base_h"], m["f2f"]
+    base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
     far              = m["far"]
 
     fp_ratio = 0.80
@@ -584,7 +584,7 @@ def _option_4(lot_front, lot_depth, lot_area, rules, m) -> dict:
     """MED — Mid-Rise Mixed-Use"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
-    base_h, f2f      = m["base_h"], m["f2f"]
+    base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
     far              = m["far"]
 
     retail_h  = 15.0
