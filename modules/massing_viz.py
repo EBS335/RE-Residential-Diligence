@@ -444,6 +444,40 @@ def _scenario_dict(name, risk_level, description, strategy,
     }
 
 
+def _floor_table_html(tiers: list) -> str:
+    """Build a compact HTML floor-table for embedding in scenario descriptions.
+
+    tiers: list of dicts with keys:
+        label (str), floor_start (int), floor_end (int),
+        width_ft (float), depth_ft (float), floor_sqft (float)
+    """
+    rows = ""
+    for t in tiers:
+        fl_range = (str(t["floor_start"]) if t["floor_start"] == t["floor_end"]
+                    else f"{t['floor_start']}–{t['floor_end']}")
+        rows += (
+            f"<tr>"
+            f"<td style='padding:2px 6px;font-weight:600'>{t['label']}</td>"
+            f"<td style='padding:2px 6px;text-align:center'>{fl_range}</td>"
+            f"<td style='padding:2px 6px;text-align:right'>"
+            f"{t['width_ft']:.0f}′×{t['depth_ft']:.0f}′</td>"
+            f"<td style='padding:2px 6px;text-align:right'>"
+            f"{int(t['floor_sqft']):,} SF</td>"
+            f"</tr>"
+        )
+    return (
+        "<table style='width:100%;border-collapse:collapse;font-size:0.72rem;"
+        "margin-top:6px;border:1px solid #E5E7EB'>"
+        "<thead><tr style='background:#F3F4F6'>"
+        "<th style='padding:3px 6px;text-align:left'>Tier</th>"
+        "<th style='padding:3px 6px;text-align:center'>Floors</th>"
+        "<th style='padding:3px 6px;text-align:right'>Plate Size</th>"
+        "<th style='padding:3px 6px;text-align:right'>Floor SF</th>"
+        "</tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
 # ── 10 Scenario builders ──────────────────────────────────────────────────────
 
 def _option_1(lot_front, lot_depth, lot_area, rules, m, existing_bldg=None) -> dict:
@@ -713,6 +747,10 @@ def _option_6(lot_front, lot_depth, lot_area, rules, m) -> dict:
     traces.append(_label(lot_front/2, -2, height, f"{height:.0f} ft"))
     fig = _make_fig(lot_front, lot_depth, traces,
                     "6. Max FAR — Full Buildable Footprint", height, rules)
+    floor_tbl = _floor_table_html([{
+        "label": "All Floors", "floor_start": 1, "floor_end": floors,
+        "width_ft": w, "depth_ft": d, "floor_sqft": w * d,
+    }])
     return _scenario_dict(
         name="6. Max FAR — Full Buildable Footprint",
         risk_level="HIGH",
@@ -722,6 +760,7 @@ def _option_6(lot_front, lot_depth, lot_area, rules, m) -> dict:
             f"required setback line, rising to **{height:.0f} ft** (**{floors} floors**). "
             "Maximum floor-plate efficiency — no setback margin wasted. "
             "Fully as-of-right at max FAR with standard front/rear/side yards."
+            + floor_tbl
         ),
         strategy=(
             "Largest possible floor plate at standard setbacks maximizes rentable SF per floor "
@@ -784,7 +823,7 @@ def _option_7(lot_front, lot_depth, lot_area, rules, m) -> dict:
 
 
 def _option_8(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """HIGH — Max FAR — Full Setback Footprint, Podium + Stepped Tower"""
+    """HIGH — Max FAR — Full Setback Podium + 75% Footprint Tower"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
     base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
@@ -796,49 +835,74 @@ def _option_8(lot_front, lot_depth, lot_area, rules, m) -> dict:
     pod_h = max(base_h, 20.0)
     if max_h > 0:
         pod_h = min(pod_h, max_h)
+    pod_floors = max(1, int(pod_h / f2f))
 
-    # Tower above podium: same full buildable footprint — SEP steps it back above base_h
-    tw = pod_w
-    td = pod_d
+    # Tower above podium: 75% of buildable footprint, centered
+    # Smaller plate → same FAR requires more floors → significantly taller than option 6
+    tw  = max(10.0, pod_w * 0.75)
+    td  = max(10.0, pod_d * 0.75)
+    tx0 = sy + (b_front - tw) / 2
+    ty0 = fr + (pod_d - td) / 2
     x_center = sy + b_front / 2
+
     height = _far_height(far, lot_area, tw * td, f2f, pod_h, max_h, min_h=pod_h + 12.0)
     floors = max(1, int(height / f2f))
+    tower_floors = max(0, floors - pod_floors)
 
     traces = [
-        # Podium fills setback envelope
+        # Podium fills full setback envelope
         _box_mesh(sy, fr, 0, sy + pod_w, fr + pod_d, pod_h,
                   color=_CLR_HIGH_3, name="Podium"),
         _line_box(sy, fr, 0, sy + pod_w, fr + pod_d, pod_h,
                   color="#991B1B"),
     ]
-    # Tower above — SEP steps it back if applicable, otherwise same footprint
+    # Tower above — SEP applies to tower footprint; plain box otherwise
     if height > pod_h:
-        traces.extend(_sep_stepped_boxes(
-            x_center, fr, tw, td, pod_h, height,
-            _CLR_HIGH_3, "#991B1B", "Tower Above",
-        ))
+        if rules.get("sky_exp_plane"):
+            traces.extend(_sep_stepped_boxes(
+                x_center, ty0, tw, td, pod_h, height,
+                _CLR_HIGH_3, "#991B1B", "Tower Above",
+            ))
+        else:
+            traces.extend([
+                _box_mesh(tx0, ty0, pod_h, tx0 + tw, ty0 + td, height,
+                          color=_CLR_HIGH_3, name="Tower Above"),
+                _line_box(tx0, ty0, pod_h, tx0 + tw, ty0 + td, height,
+                          color="#991B1B"),
+            ])
     traces.append(_label(lot_front/2, -2, height, f"{height:.0f} ft"))
     fig = _make_fig(lot_front, lot_depth, traces,
-                    "8. Full Setback Footprint + Stepped Tower", height, rules)
+                    "8. Full Setback Podium + 75% Tower", height, rules)
+    tiers = [{
+        "label": "Podium", "floor_start": 1, "floor_end": pod_floors,
+        "width_ft": pod_w, "depth_ft": pod_d, "floor_sqft": pod_w * pod_d,
+    }]
+    if tower_floors > 0:
+        tiers.append({
+            "label": "Tower", "floor_start": pod_floors + 1, "floor_end": floors,
+            "width_ft": tw, "depth_ft": td, "floor_sqft": tw * td,
+        })
+    floor_tbl = _floor_table_html(tiers)
     return _scenario_dict(
-        name="8. Max FAR — Full Setback Footprint + Stepped Tower",
+        name="8. Max FAR — Full Setback Podium + 75% Tower",
         risk_level="HIGH",
         number=8,
         description=(
-            f"**Full buildable footprint** podium ({pod_w:.0f}′×{pod_d:.0f}′) to {pod_h:.0f} ft, "
-            f"then SEP-stepped tower to **{height:.0f} ft** (**{floors} floors**). "
-            "Maximum floor plate at grade transitions to code-compliant step-backs above base height. "
-            "Ground floor maximizes retail/amenity SF."
+            f"**Full buildable footprint** podium ({pod_w:.0f}′×{pod_d:.0f}′) to {pod_h:.0f} ft "
+            f"({pod_floors} floors), then **75% footprint tower** ({tw:.0f}′×{td:.0f}′) above — "
+            f"total **{height:.0f} ft** (**{floors} floors**). "
+            "Narrower tower plate converts FAR into additional height well above option 6."
+            + floor_tbl
         ),
         strategy=(
-            "Largest possible ground floor program at every setback line; tower above steps back "
-            "per sky exposure plane for full code compliance. "
+            "Largest possible ground floor program at every setback line; narrower tower above "
+            "maximizes height while keeping lower floors at full coverage. "
             "Ideal for high-foot-traffic corridors — maximizes both commercial and residential income."
         ),
         fig=fig,
         lot_area=lot_area, far=far,
-        height_ft=height, footprint_sqft=pod_w*pod_d,
-        floors=floors, typical_floor_sqft=tw*td,
+        height_ft=height, footprint_sqft=pod_w * pod_d,
+        floors=floors, typical_floor_sqft=tw * td,
         loss_factor=0.15,
     )
 
@@ -891,15 +955,15 @@ def _option_9(lot_front, lot_depth, lot_area, rules, m) -> dict:
 
 
 def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
-    """HIGH — Tallest Permitted — Full Buildable Footprint"""
+    """HIGH — Tallest Permitted — Full Width, 90% Depth (Rear Yard Buffer)"""
     b_front, b_depth = m["b_front"], m["b_depth"]
     fr, rr, sy       = m["fr"], m["rr"], m["sy"]
     base_h, max_h, f2f = m["base_h"], m["max_h"], m["f2f"]
     far              = m["far"]
 
-    # Full buildable footprint at every required setback line
-    fp_w   = max(10.0, b_front)
-    fp_d   = max(10.0, b_depth)
+    # Full street-facing width, 90% buildable depth — rear yard buffer for light/air
+    fp_w    = max(10.0, b_front)
+    fp_d    = max(10.0, b_depth * 0.90)
     fp_sqft = fp_w * fp_d
     x0 = sy
     y0 = fr
@@ -918,21 +982,26 @@ def _option_10(lot_front, lot_depth, lot_area, rules, m) -> dict:
         ]
     traces.append(_label(lot_front/2, -2, height, f"{height:.0f} ft"))
     fig = _make_fig(lot_front, lot_depth, traces,
-                    "10. Tallest Permitted — Full Buildable Footprint", height, rules)
+                    "10. Tallest Permitted — Full Width, Rear Yard", height, rules)
+    floor_tbl = _floor_table_html([{
+        "label": "All Floors", "floor_start": 1, "floor_end": floors,
+        "width_ft": fp_w, "depth_ft": fp_d, "floor_sqft": fp_sqft,
+    }])
     return _scenario_dict(
-        name="10. Tallest Permitted — Full Buildable Footprint",
+        name="10. Tallest Permitted — Full Width, Rear Yard",
         risk_level="HIGH",
         number=10,
         description=(
-            f"**Full buildable footprint** ({fp_w:.0f}′×{fp_d:.0f}′ = {fp_sqft:,.0f} SF) — "
-            f"every setback line used — rising to **{height:.0f} ft** (**{floors} floors**). "
-            "Tallest code-compliant building achievable at maximum floor plate. "
-            "SEP step-back applied above base height where required."
+            f"**Full street width** ({fp_w:.0f}′) × **90% buildable depth** ({fp_d:.0f}′ = "
+            f"{fp_sqft:,.0f} SF) — rear yard buffer improves light, air, and amenity options — "
+            f"rising to **{height:.0f} ft** (**{floors} floors**). "
+            "Slightly taller than option 6 due to reduced footprint; fully as-of-right."
+            + floor_tbl
         ),
         strategy=(
-            "Maximum height AND maximum floor plate simultaneously — the densest as-of-right "
-            "envelope the zoning envelope permits. Optimal for high-value markets where both "
-            "height premium and floor efficiency are critical."
+            "**Maximum street presence** with a rear yard buffer for light wells, amenity terraces, "
+            "or future courtyard programming. Marginally taller than option 6; shorter and wider "
+            "than the podium+tower in option 8. Best for street-facing retail with residential above."
         ),
         fig=fig,
         lot_area=lot_area, far=far,
