@@ -3066,6 +3066,14 @@ if 'geo' in st.session_state:
                 # ── Assessed Values (PLUTO) ───────────────────────────────
                 _assess_land = _zinfo.get("assess_land")
                 _assess_total = _zinfo.get("assess_total")
+                try:
+                    _assess_land = float(_assess_land) if _assess_land else None
+                except (TypeError, ValueError):
+                    _assess_land = None
+                try:
+                    _assess_total = float(_assess_total) if _assess_total else None
+                except (TypeError, ValueError):
+                    _assess_total = None
                 if _assess_land or _assess_total:
                     st.markdown(
                         "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
