@@ -19,7 +19,9 @@ from modules.data_fetcher import fetch_all_listings
 from modules.analyzer import compute_summary, compute_insights
 from modules.visualizer import build_map, build_bar_chart, build_range_chart
 from modules.zola_fetcher import fetch_zoning_info
-from modules.zoning_rules import get_zoning_rules, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info
+from modules.zoning_rules import get_zoning_rules, get_zoning_citations, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info
+from modules.cityrealty_fetcher import fetch_cityrealty_comps
+from modules.pip_fetcher import fetch_property_history
 from modules.massing_viz import build_massing_options, floor_plate_fig
 from modules.comps_research import search_competing_devs, generate_pipeline_summary
 from modules.neighborhood_fetcher import fetch_neighborhood_data
@@ -1949,8 +1951,8 @@ if 'geo' in st.session_state:
         _section_header("📊", "Comparables Analysis",
                         "Residential · Commercial · Retail · Property Sales")
 
-        _tab_res, _tab_comm, _tab_retail, _tab_sales = st.tabs([
-            "🏠 Residential", "🏢 Commercial", "🏪 Retail", "💰 Property Sales"
+        _tab_res, _tab_comm, _tab_retail, _tab_sales, _tab_cr = st.tabs([
+            "🏠 Residential", "🏢 Commercial", "🏪 Retail", "💰 Property Sales", "🏙️ CityRealty"
         ])
 
         # ── Fetch shared datasets once ────────────────────────────────────────
@@ -2384,6 +2386,100 @@ if 'geo' in st.session_state:
                     st.dataframe(pd.DataFrame(_sp_rows), use_container_width=True,
                                  height=min(len(_sp_rows)*35+40, 380))
             st.caption("Source: NYC Rolling Sales (usep-8jbt) · NYC Open Data · No API key required")
+
+        # ── Tab 5: CityRealty Building Comparables ────────────────────────────
+        with _tab_cr:
+            st.markdown("#### 🏙️ CityRealty — Comparable Buildings")
+            st.caption(
+                "Recent sales and rental listings from comparable buildings in the area. "
+                "Click any building name to view its full history on CityRealty.com."
+            )
+            _cr_key = f"_cr_{neighborhood.lower()}_{borough.lower()}"
+            if _cr_key not in st.session_state:
+                with st.spinner("Searching CityRealty for comparable buildings…"):
+                    _cr_comps_raw, _cr_status = fetch_cityrealty_comps(
+                        address_input.strip(), neighborhood, borough, lat, lon
+                    )
+                st.session_state[_cr_key] = {"comps": _cr_comps_raw, "status": _cr_status}
+            _cr_data   = st.session_state.get(_cr_key, {})
+            _cr_comps  = _cr_data.get("comps", [])
+            _cr_st     = _cr_data.get("status", {})
+
+            # Quick-access neighbourhood browse links
+            _cr_rent_url = _cr_st.get("hood_rent_url", "")
+            _cr_sale_url = _cr_st.get("hood_sale_url", "")
+            _cr_srch_url = _cr_st.get("cr_search_url", "https://www.cityrealty.com")
+            _cr_lnk_cols = st.columns(3)
+            _cr_lnk_cols[0].markdown(f"[🏠 {neighborhood} Rentals ↗]({_cr_rent_url})" if _cr_rent_url else "")
+            _cr_lnk_cols[1].markdown(f"[💰 {neighborhood} Sales ↗]({_cr_sale_url})" if _cr_sale_url else "")
+            _cr_lnk_cols[2].markdown(f"[🔍 Search CityRealty ↗]({_cr_srch_url})" if _cr_srch_url else "")
+
+            if _cr_comps:
+                # Render building comp cards in rows of 3
+                for _ci in range(0, len(_cr_comps), 3):
+                    _cr_chunk = _cr_comps[_ci:_ci+3]
+                    _cr_cols  = st.columns(len(_cr_chunk))
+                    for _cj, (_crc, _crd) in enumerate(zip(_cr_cols, _cr_chunk)):
+                        _bname  = _crd.get("building_name") or _crd.get("address") or "Building"
+                        _addr   = _crd.get("address", "")
+                        _hood_d = _crd.get("neighborhood", neighborhood)
+                        _link   = _crd.get("link", "")
+                        _hist   = _crd.get("history_link", _link)
+                        _ltype  = _crd.get("listing_type", "")
+                        _sale   = _crd.get("last_sale", "")
+                        _snip   = _crd.get("snippet", "")
+                        _ltype_badge = {"rental": "#1D4ED8", "condo": "#15803D", "co-op": "#92400E"}.get(_ltype, "#6B7280")
+                        with _crc:
+                            _title_html = (
+                                f'<a href="{_link}" target="_blank" '
+                                f'style="color:#1A3A6B;text-decoration:none">'
+                                f'{_bname[:48]} ↗</a>'
+                                if _link else _bname[:48]
+                            )
+                            _sale_html = (
+                                f"<div style='font-size:0.72rem;color:#374151;margin-bottom:4px'>"
+                                f"Last sale: <b>{_sale}</b></div>"
+                                if _sale else ""
+                            )
+                            _snip_html = (
+                                f"<div style='font-size:0.68rem;color:#9CA3AF;line-height:1.4'>{_snip[:120]}</div>"
+                                if _snip else ""
+                            )
+                            _hist_html = (
+                                f"<div style='margin-top:6px'>"
+                                f"<a href='{_hist}' target='_blank' "
+                                f"style='font-size:0.68rem;color:#1A3A6B;text-decoration:none'>"
+                                f"📜 Full History ↗</a></div>"
+                                if _hist and _hist != _link else ""
+                            )
+                            st.markdown(
+                                f"<div style='background:white;border:1px solid #E5E7EB;"
+                                f"border-radius:10px;padding:12px 14px;margin-bottom:10px;min-height:130px'>"
+                                f"<div style='display:flex;justify-content:space-between;"
+                                f"align-items:flex-start;margin-bottom:6px'>"
+                                f"<div style='font-size:0.82rem;font-weight:700;color:#111827;"
+                                f"line-height:1.3'>{_title_html}</div>"
+                                f"<span style='background:{_ltype_badge};color:white;padding:1px 6px;"
+                                f"border-radius:8px;font-size:0.62rem;font-weight:700;"
+                                f"white-space:nowrap;margin-left:4px'>"
+                                f"{_ltype.title() if _ltype else 'Building'}</span>"
+                                f"</div>"
+                                f"<div style='font-size:0.72rem;color:#6B7280;margin-bottom:4px'>{_hood_d}</div>"
+                                f"{_sale_html}{_snip_html}{_hist_html}"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
+            else:
+                st.info(
+                    f"No CityRealty building results found for **{neighborhood}**. "
+                    f"Browse directly: [Rentals ↗]({_cr_rent_url}) · [Sales ↗]({_cr_sale_url}) · "
+                    f"[Search ↗]({_cr_srch_url})"
+                )
+            st.caption(
+                f"Data from [CityRealty.com]({_cr_srch_url}) · "
+                "Click any building card to view its full sale/rental history · "
+                "Results via public search — no login required"
+            )
 
         # ── Photo Gallery (horizontal scroll carousel) ─────────────────────
         _photos_avail = [l for l in listings if l.get("photos")]
@@ -2848,6 +2944,145 @@ if 'geo' in st.session_state:
                         else:
                             st.info("No ACRIS documents found for this BBL.")
 
+                # ── NYC Property Information Portal ───────────────────────
+                st.markdown("---")
+                st.markdown(
+                    "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                    "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                    "🏛️ Full Property History — DOB, HPD & ECB Records</div>",
+                    unsafe_allow_html=True,
+                )
+                _pip_key = f"_pip_{_bbl_disp}"
+                if _pip_key not in st.session_state and _bbl_disp != "—":
+                    with st.spinner("Fetching DOB permits, complaints & violation history…"):
+                        st.session_state[_pip_key] = fetch_property_history(
+                            _bbl_disp,
+                            borough_name=borough,
+                            address=address_input.strip(),
+                        )
+                _pip = st.session_state.get(_pip_key, {})
+                _pip_sum = _pip.get("summary", {}) if _pip else {}
+                _pip_url = _pip.get("pip_url", "")
+
+                if _pip_url:
+                    st.markdown(
+                        f"🔗 [View on NYC Property Information Portal ↗]({_pip_url})",
+                    )
+
+                if _pip_sum:
+                    _pp1, _pp2, _pp3, _pp4, _pp5 = st.columns(5)
+                    def _pip_card(col, icon, label, val, sub=""):
+                        with col:
+                            st.markdown(
+                                f"<div style='background:white;border:1px solid #E5E7EB;"
+                                f"border-radius:8px;padding:8px 10px;text-align:center'>"
+                                f"<div style='font-size:0.62rem;color:#6B7280;font-weight:700;"
+                                f"text-transform:uppercase;letter-spacing:0.05em'>{icon} {label}</div>"
+                                f"<div style='font-size:1.1rem;font-weight:700;color:#111827;margin:2px 0'>{val}</div>"
+                                f"<div style='font-size:0.65rem;color:#9CA3AF'>{sub}</div>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
+                    _pip_card(_pp1, "📋", "DOB Permits",    _pip_sum.get("total_permits", 0),
+                              f"{_pip_sum.get('active_permits', 0)} active")
+                    _pip_card(_pp2, "🏗️", "DOB Jobs",       _pip_sum.get("total_jobs", 0),
+                              f"{_pip_sum.get('new_building_jobs', 0)} NB · {_pip_sum.get('alteration_jobs', 0)} Alt")
+                    _pip_card(_pp3, "⚠️", "DOB Violations", _pip_sum.get("total_dob_viol", 0),
+                              f"{_pip_sum.get('open_dob_viol', 0)} open")
+                    _pip_card(_pp4, "📣", "DOB Complaints",  _pip_sum.get("total_complaints", 0),
+                              f"{_pip_sum.get('open_complaints', 0)} open")
+                    _pip_card(_pp5, "🏠", "Dwelling Units",  _pip_sum.get("dwelling_units", "—"), "HPD registered")
+
+                    # ── Expandable DOB detail tables ──────────────────────
+                    with st.expander("🏗️ DOB Job Filings", expanded=False):
+                        _jobs = _pip.get("jobs", [])
+                        if _jobs:
+                            _job_rows = [{
+                                "Date":        j.get("filing_date", ""),
+                                "Job #":       j.get("job_number", ""),
+                                "Type":        j.get("job_type", ""),
+                                "Status":      j.get("job_status", ""),
+                                "Description": j.get("description", "")[:80],
+                                "Existing SF": j.get("existing_sqft", ""),
+                                "Proposed SF": j.get("proposed_sqft", ""),
+                                "Owner":       j.get("owner", "")[:30],
+                            } for j in _jobs[:60]]
+                            st.dataframe(pd.DataFrame(_job_rows), use_container_width=True,
+                                         hide_index=True, height=min(400, 40+35*len(_job_rows)))
+                        else:
+                            st.info("No DOB job filings found.")
+
+                    with st.expander("📋 DOB Permit Issuances", expanded=False):
+                        _perms = _pip.get("permits", [])
+                        if _perms:
+                            _perm_rows = [{
+                                "Issued":      p.get("issuance_date", ""),
+                                "Expires":     p.get("expiration_date", ""),
+                                "Permit Type": p.get("permit_type", ""),
+                                "Job Type":    p.get("job_type", ""),
+                                "Status":      p.get("permit_status", ""),
+                                "Description": p.get("description", "")[:80],
+                                "Owner":       p.get("owner", "")[:30],
+                                "Permittee":   p.get("permittee", "")[:30],
+                            } for p in _perms[:80]]
+                            st.dataframe(pd.DataFrame(_perm_rows), use_container_width=True,
+                                         hide_index=True, height=min(400, 40+35*len(_perm_rows)))
+                        else:
+                            st.info("No DOB permit issuances found.")
+
+                    with st.expander("⚠️ DOB Violations", expanded=False):
+                        _dobv = _pip.get("dob_violations", [])
+                        if _dobv:
+                            _dobv_rows = [{
+                                "Issued":      v.get("issue_date", ""),
+                                "Category":    v.get("category", ""),
+                                "Description": v.get("description", "")[:80],
+                                "Status":      v.get("status", ""),
+                                "Closed":      v.get("disposition_date", ""),
+                                "ECB #":       v.get("ecb_number", ""),
+                            } for v in _dobv[:60]]
+                            st.dataframe(pd.DataFrame(_dobv_rows), use_container_width=True,
+                                         hide_index=True, height=min(400, 40+35*len(_dobv_rows)))
+                        else:
+                            st.info("No DOB violations found.")
+
+                    with st.expander("📣 DOB Complaints", expanded=False):
+                        _comps_dob = _pip.get("complaints", [])
+                        if _comps_dob:
+                            _comp_rows = [{
+                                "Date":        c.get("date", ""),
+                                "Category":    c.get("category", ""),
+                                "Description": c.get("description", "")[:80],
+                                "Status":      c.get("status", ""),
+                                "Disposition": c.get("disposition", "")[:40],
+                                "Unit":        c.get("unit", ""),
+                            } for c in _comps_dob[:60]]
+                            st.dataframe(pd.DataFrame(_comp_rows), use_container_width=True,
+                                         hide_index=True, height=min(400, 40+35*len(_comp_rows)))
+                        else:
+                            st.info("No DOB complaints found.")
+
+                    _hpd_bld = _pip.get("hpd_building", {})
+                    if _hpd_bld:
+                        st.caption(
+                            f"HPD Building ID: **{_hpd_bld.get('building_id','—')}** · "
+                            f"Registration ID: {_hpd_bld.get('registration_id','—')} · "
+                            f"Dwelling Units: {_hpd_bld.get('dwelling_units','—')} · "
+                            f"Management Program: {_hpd_bld.get('management_program','—') or 'None'}"
+                        )
+
+                elif _pip and _pip.get("error"):
+                    st.warning(f"Property history unavailable: {_pip['error']}")
+                elif _bbl_disp != "—":
+                    st.info("Fetching property history… rerun if empty.")
+
+                if _pip_url:
+                    st.caption(
+                        f"Sources: NYC Open Data DOB (ipu4-2q9a, ic3t-wcy2, eabe-havv, 3h2n-5cm9) · "
+                        f"HPD Buildings (kj4p-ruqc) · "
+                        f"[NYC Property Information Portal ↗]({_pip_url})"
+                    )
+
                 # ── Adjacent Lot Aggregation ──────────────────────────────
                 _subj_bbl = _zinfo.get("bbl", "")
                 with st.expander("🏘️ Add Adjacent Lots", expanded=False):
@@ -3134,45 +3369,110 @@ if 'geo' in st.session_state:
                     )
                     st.caption(_zrules.get("description", ""))
 
-                    _ec1, _ec2, _ec3 = st.columns(3)
-                    def _erow(lbl, val, width="170px"):
+                    _zcite = get_zoning_citations(_primary_zone)
+
+                    def _erow(lbl, val, width="165px", link=None):
                         v = str(val) if val not in (None, 0, "0", "") else None
-                        body = f"<b>{v}</b>" if v else "<span style='color:#9CA3AF'>—</span>"
+                        if v and link:
+                            body = f"<b><a href='{link}' target='_blank' style='color:#1A3A6B;text-decoration:none'>{v} ↗</a></b>"
+                        elif v:
+                            body = f"<b>{v}</b>"
+                        else:
+                            body = "<span style='color:#9CA3AF'>—</span>"
                         return (
                             f"<div style='display:flex;gap:8px;margin-bottom:5px'>"
                             f"<span style='color:#6B7280;min-width:{width}'>{lbl}</span>"
                             f"{body}</div>"
                         )
 
+                    _ec1, _ec2, _ec3 = st.columns(3)
+
+                    # ── Column 1: FAR Limits (all four types + PLUTO actual) ──
                     with _ec1:
                         st.markdown("**FAR Limits**")
-                        st.markdown(
-                            _erow("Base FAR",       _zrules.get("base_far")) +
-                            _erow("Max FAR (bonus)", _zrules.get("max_far")) +
-                            _erow("Residential FAR",_zrules.get("res_far")) +
-                            _erow("Commercial FAR", _zrules.get("comm_far")),
-                            unsafe_allow_html=True,
+                        _facil_far_v = float(str(_zinfo.get("far_facility") or 0).replace(",", ""))
+                        _built_far_v = float(str(_zinfo.get("builtfar") or _zinfo.get("built_far") or 0).replace(",", ""))
+                        _far_html = (
+                            _erow("Base FAR",         _zrules.get("base_far"),
+                                  link=_zcite.get("far_url")) +
+                            _erow("Max FAR (w/ bonus)", _zrules.get("max_far"),
+                                  link=_zcite.get("far_url")) +
+                            _erow("Residential FAR",  _zrules.get("res_far"),
+                                  link=_zcite.get("far_url")) +
+                            _erow("Commercial FAR",   _zrules.get("comm_far"),
+                                  link=_zcite.get("far_url")) +
+                            (_erow("Facility FAR",    f"{_facil_far_v:g}",
+                                   link=_zcite.get("far_url")) if _facil_far_v > 0 else "") +
+                            (_erow("Built FAR (actual)", f"{_built_far_v:g}") if _built_far_v > 0 else "")
                         )
+                        st.markdown(_far_html, unsafe_allow_html=True)
+                        if _zcite.get("far_citation"):
+                            st.caption(f"📖 [{_zcite['far_citation']}]({_zcite.get('far_url', '#')})")
+                        if _zcite.get("mih_eligible"):
+                            st.caption(f"🏠 [Mandatory Inclusionary Housing (MIH)]({_zcite.get('mih_url','#')}) may unlock bonus FAR")
+                        if _zcite.get("quality_housing"):
+                            st.caption(f"🏗️ [Quality Housing Program]({_zcite.get('far_url','#')}) — alternative bulk envelope available")
+
+                    # ── Column 2: Height & Setbacks ──────────────────────────
                     with _ec2:
                         st.markdown("**Height & Setbacks**")
                         _bh = _zrules.get("base_height_ft", 0)
                         _mh = _zrules.get("max_height_ft", 0)
-                        st.markdown(
-                            _erow("Base Height",    f"{_bh} ft" if _bh else "Sky exposure plane") +
-                            _erow("Max Height",     f"{_mh} ft" if _mh else "No absolute limit") +
-                            _erow("Front Yard",     f"{_zrules.get('front_yard_ft',0)} ft") +
-                            _erow("Rear Yard",      f"{_zrules.get('rear_yard_ft',0)} ft") +
-                            _erow("Side Yard",      f"{_zrules.get('side_yard_ft',0)} ft"),
-                            unsafe_allow_html=True,
+                        _fr = _zrules.get("front_yard_ft", 0)
+                        _rr = _zrules.get("rear_yard_ft", 0)
+                        _sy = _zrules.get("side_yard_ft", 0)
+                        _sep = _zrules.get("sky_exp_plane", False)
+                        _ht_html = (
+                            _erow("Base Height",
+                                  f"{_bh} ft (street-wall max)" if _bh else "Sky Exposure Plane governs",
+                                  link=_zcite.get("height_url")) +
+                            _erow("Max Height",
+                                  f"{_mh} ft (absolute)" if _mh else ("No absolute cap" if _sep else "—"),
+                                  link=_zcite.get("height_url")) +
+                            (_erow("SEP Setback",
+                                   "2.7:1 slope above base height",
+                                   link=_zcite.get("height_url")) if _sep else "") +
+                            _erow("Front Yard Depth", f"{_fr} ft" if _fr else "None required",
+                                  link=_zcite.get("height_url")) +
+                            _erow("Rear Yard Depth",  f"{_rr} ft" if _rr else "None required",
+                                  link=_zcite.get("height_url")) +
+                            _erow("Side Yard Depth",  f"{_sy} ft/side" if _sy else "None required",
+                                  link=_zcite.get("height_url"))
                         )
+                        st.markdown(_ht_html, unsafe_allow_html=True)
+                        if _zcite.get("height_citation"):
+                            st.caption(f"📖 [{_zcite['height_citation']}]({_zcite.get('height_url','#')})")
+
+                    # ── Column 3: Lot Coverage + Controls + Citations ─────────
                     with _ec3:
-                        st.markdown("**Rules & Controls**")
+                        st.markdown("**Lot Coverage & Controls**")
                         _lc = _zrules.get("lot_coverage_pct", 0)
+                        _ctrl_html = (
+                            _erow("Max Lot Coverage",  f"{_lc}%" if _lc else "No direct limit",
+                                  link=_zcite.get("far_url")) +
+                            _erow("Contextual Rules",  "Yes — street-wall + base/max" if _zrules.get("contextual") else "No") +
+                            _erow("Tower Rules",       "Yes — tower-on-base w/ open space" if _zrules.get("tower_rules") else "No") +
+                            _erow("Sky Exp. Plane",    "Yes — 2.7:1 slope" if _zrules.get("sky_exp_plane") else "No") +
+                            _erow("Use Regulations",   "ZR §" + ("22" if _primary_zone.startswith("R") else "32" if _primary_zone.startswith("C") else "42") + "-00",
+                                  link=_zcite.get("use_url")) +
+                            _erow("Off-Street Parking", _zcite.get("parking_citation", ""),
+                                  link=_zcite.get("parking_url"))
+                        )
+                        st.markdown(_ctrl_html, unsafe_allow_html=True)
+                        if _zcite.get("lot_cov_citation"):
+                            st.caption(f"📖 [{_zcite['lot_cov_citation']}]({_zcite.get('far_url','#')})")
+
+                    # ── ZR Citation footer ────────────────────────────────────
+                    if _zcite.get("article_url"):
                         st.markdown(
-                            _erow("Max Lot Coverage",  f"{_lc}%" if _lc else "—") +
-                            _erow("Contextual Rules",  "Yes" if _zrules.get("contextual") else "No") +
-                            _erow("Tower Rules",       "Yes" if _zrules.get("tower_rules") else "No") +
-                            _erow("Sky Exp. Plane",    "Yes" if _zrules.get("sky_exp_plane") else "No"),
+                            f"<div style='margin-top:8px;font-size:0.72rem;color:#6B7280'>"
+                            f"📚 <b>NYC Zoning Resolution:</b> "
+                            f"<a href='{_zcite['article_url']}' target='_blank' style='color:#1A3A6B'>Bulk Regulations</a> · "
+                            f"<a href='{_zcite.get('use_url',_zcite['article_url'])}' target='_blank' style='color:#1A3A6B'>Use Regulations</a> · "
+                            f"<a href='{_zcite.get('parking_url',_zcite['article_url'])}' target='_blank' style='color:#1A3A6B'>Parking Regulations</a> · "
+                            f"<a href='{_zcite.get('zr_main_url','https://zr.planning.nyc.gov')}' target='_blank' style='color:#1A3A6B'>Full ZR Browser</a> · "
+                            f"<a href='{_zcite.get('zola_url','https://zola.planning.nyc.gov')}' target='_blank' style='color:#1A3A6B'>ZOLA Map</a>"
+                            f"</div>",
                             unsafe_allow_html=True,
                         )
 

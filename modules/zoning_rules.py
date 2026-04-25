@@ -585,6 +585,137 @@ def all_districts() -> list[str]:
     return sorted(_RULES.keys())
 
 
+# ── NYC Zoning Resolution URL constants ──────────────────────────────────────
+_ZR_BASE   = "https://zr.planning.nyc.gov"
+_R_BULK    = f"{_ZR_BASE}/article-ii/chapter-3"    # ZR §23-00  Residence bulk
+_R_USE     = f"{_ZR_BASE}/article-ii/chapter-2"    # ZR §22-00  Residence uses
+_R_PARK    = f"{_ZR_BASE}/article-ii/chapter-5"    # ZR §25-00  Residence parking
+_C_BULK    = f"{_ZR_BASE}/article-iii/chapter-3"   # ZR §33-00  Commercial bulk
+_C_USE     = f"{_ZR_BASE}/article-iii/chapter-2"   # ZR §32-00  Commercial uses
+_C_PARK    = f"{_ZR_BASE}/article-iii/chapter-6"   # ZR §36-00  Commercial parking
+_M_BULK    = f"{_ZR_BASE}/article-iv/chapter-3"    # ZR §43-00  Mfg bulk
+_M_USE     = f"{_ZR_BASE}/article-iv/chapter-2"    # ZR §42-00  Mfg uses
+_M_PARK    = f"{_ZR_BASE}/article-iv/chapter-4"    # ZR §44-00  Mfg parking
+_MIH_URL   = "https://www.nyc.gov/site/planning/plans/mih/mandatory-inclusionary-housing.page"
+_IH_URL    = "https://www.nyc.gov/site/planning/zoning/districts-tools/inclusionary-housing.page"
+_ZR_IH     = f"{_ZR_BASE}/article-ii/chapter-3"    # ZR §23-154 Inclusionary Housing
+_ZR_ZOLA   = "https://zola.planning.nyc.gov"
+
+
+def get_zoning_citations(district: str) -> dict:
+    """Return NYC Zoning Resolution citations and links for the given district.
+
+    Returns a dict with keys:
+        far_citation        — ZR section(s) governing FAR
+        far_url             — URL to that article/chapter
+        height_citation     — ZR section governing height & setbacks
+        height_url
+        lot_cov_citation    — ZR section governing lot coverage / open space
+        use_citation        — ZR use regulations section
+        use_url
+        parking_citation    — ZR off-street parking section
+        parking_url
+        article_url         — bulk regulations chapter (master link)
+        zr_main_url         — NYC ZR homepage
+        quality_housing     — bool: Quality Housing Program applies
+        mih_eligible        — bool: Mandatory Inclusionary Housing may apply
+        mih_url             — MIH programme page
+        ih_url              — Inclusionary Housing programme page
+        zola_url            — ZOLA lookup for this district
+    """
+    import re as _re
+    if not district:
+        return {}
+
+    d = str(district).strip().upper().split("/")[0].strip()
+    first = d[0] if d else ""
+
+    # Residential
+    if first == "R":
+        r_match = _re.match(r"^R(\d+)", d)
+        r_num   = int(r_match.group(1)) if r_match else 0
+        high    = r_num >= 6
+
+        if r_num <= 5:
+            far_cit    = "ZR §23-141–§23-15 (Residential Floor Area, R1–R5)"
+            height_cit = "ZR §23-60–§23-65 (Height & Setback, R1–R5)"
+            cov_cit    = "ZR §23-141–§23-145 (Lot Coverage, R1–R5)"
+            mih        = False
+        elif r_num <= 7:
+            far_cit    = "ZR §23-15, §23-154 (FAR + Inclusionary Housing Bonus)"
+            height_cit = "ZR §23-60–§23-66, §23-662 (Height, Setback & Sky Exposure Plane)"
+            cov_cit    = "ZR §23-22–§23-231 (Open Space Ratio)"
+            mih        = True
+        else:
+            far_cit    = "ZR §23-15, §23-154, §23-16 (FAR + QH Program + IH)"
+            height_cit = "ZR §23-60–§23-66, §23-662 (Height, Setback & Sky Exposure Plane)"
+            cov_cit    = "ZR §23-22–§23-231 (Open Space Ratio)"
+            mih        = True
+
+        return {
+            "far_citation":     far_cit,
+            "far_url":          _R_BULK,
+            "height_citation":  height_cit,
+            "height_url":       _R_BULK,
+            "lot_cov_citation": cov_cit,
+            "use_citation":     "ZR §22-00 (Residential Use Regulations)",
+            "use_url":          _R_USE,
+            "parking_citation": "ZR §25-00 (Off-Street Parking & Loading)",
+            "parking_url":      _R_PARK,
+            "article_url":      _R_BULK,
+            "zr_main_url":      _ZR_BASE,
+            "quality_housing":  high,
+            "mih_eligible":     mih,
+            "mih_url":          _MIH_URL,
+            "ih_url":           _IH_URL,
+            "zola_url":         _ZR_ZOLA,
+        }
+
+    # Commercial
+    if first == "C":
+        return {
+            "far_citation":     "ZR §33-12, §33-13 (Commercial Floor Area Ratio)",
+            "far_url":          _C_BULK,
+            "height_citation":  "ZR §33-43 (Commercial Height & Setback)",
+            "height_url":       _C_BULK,
+            "lot_cov_citation": "ZR §33-29 (Lot Coverage & Open Space)",
+            "use_citation":     "ZR §32-00 (Commercial Use Regulations)",
+            "use_url":          _C_USE,
+            "parking_citation": "ZR §36-00 (Off-Street Parking & Loading)",
+            "parking_url":      _C_PARK,
+            "article_url":      _C_BULK,
+            "zr_main_url":      _ZR_BASE,
+            "quality_housing":  False,
+            "mih_eligible":     False,
+            "mih_url":          _MIH_URL,
+            "ih_url":           _IH_URL,
+            "zola_url":         _ZR_ZOLA,
+        }
+
+    # Manufacturing
+    if first == "M":
+        return {
+            "far_citation":     "ZR §43-12 (Manufacturing Floor Area Ratio)",
+            "far_url":          _M_BULK,
+            "height_citation":  "ZR §43-43 (Manufacturing Height & Setback)",
+            "height_url":       _M_BULK,
+            "lot_cov_citation": "ZR §43-14 (Lot Coverage)",
+            "use_citation":     "ZR §42-00 (Manufacturing Use Regulations)",
+            "use_url":          _M_USE,
+            "parking_citation": "ZR §44-00 (Off-Street Parking & Loading)",
+            "parking_url":      _M_PARK,
+            "article_url":      _M_BULK,
+            "zr_main_url":      _ZR_BASE,
+            "quality_housing":  False,
+            "mih_eligible":     False,
+            "mih_url":          _MIH_URL,
+            "ih_url":           _IH_URL,
+            "zola_url":         _ZR_ZOLA,
+        }
+
+    return {}
+
+
 # ── Special Districts Lookup ──────────────────────────────────────────────────
 # Maps NYC special purpose district codes → {name, description, url}
 # Source: NYC Planning Zoning Resolution, Article IX
