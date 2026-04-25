@@ -81,8 +81,70 @@ _DOB_CAT = {
     "SAFETY":       "Safety",
 }
 
-_BOROUGH_NAME = {"1": "Manhattan", "2": "Bronx", "3": "Brooklyn", "4": "Queens", "5": "Staten Island"}
-_BOROUGH_CODE_DOB = {"1": "MANHATTAN", "2": "BRONX", "3": "BROOKLYN", "4": "QUEENS", "5": "STATEN ISLAND"}
+def _extract_sales_from_acris(acris_dict: dict) -> list[dict]:
+    """Extract sale transactions from ACRIS document list."""
+    sales = []
+    docs = acris_dict.get("documents", []) if acris_dict else []
+    for d in docs:
+        dt = str(d.get("doc_type", "")).upper()
+        # Deeds typically represent sales
+        if any(x in dt for x in ("DEED", "SPECDEED")):
+            date = d.get("date", "")
+            amt = d.get("amount")
+            parties = d.get("parties", [])
+            seller = buyer = ""
+            for p in parties:
+                role = p.get("role", "").upper()
+                if "SELLER" in role or "GRANTOR" in role:
+                    seller = p.get("name", "")
+                elif "BUYER" in role or "GRANTEE" in role:
+                    buyer = p.get("name", "")
+            sales.append({
+                "date": date, "amount": amt, "seller": seller, "buyer": buyer,
+                "doc_type": d.get("doc_type"), "doc_url": d.get("doc_url"),
+            })
+    return sales
+
+
+def _extract_mortgages_from_acris(acris_dict: dict) -> list[dict]:
+    """Extract mortgage documents from ACRIS document list."""
+    mortgages = []
+    docs = acris_dict.get("documents", []) if acris_dict else []
+    for d in docs:
+        dt = str(d.get("doc_type", "")).upper()
+        if any(x in dt for x in ("MTGE", "MORTGAGE", "LNAGMT")):
+            date = d.get("date", "")
+            amt = d.get("amount")
+            parties = d.get("parties", [])
+            lender = borrower = ""
+            for p in parties:
+                role = p.get("role", "").upper()
+                if "LENDER" in role or "MORTGAGEE" in role:
+                    lender = p.get("name", "")
+                elif "BORROWER" in role or "MORTGAGOR" in role:
+                    borrower = p.get("name", "")
+            mortgages.append({
+                "date": date, "amount": amt, "lender": lender, "borrower": borrower,
+                "doc_type": d.get("doc_type"), "doc_url": d.get("doc_url"),
+            })
+    return mortgages
+
+
+def _extract_liens_from_acris(acris_dict: dict) -> list[dict]:
+    """Extract lien/UCC documents from ACRIS document list."""
+    liens = []
+    docs = acris_dict.get("documents", []) if acris_dict else []
+    for d in docs:
+        dt = str(d.get("doc_type", "")).upper()
+        if any(x in dt for x in ("UCC", "LIEN", "JUDGMENT")):
+            date = d.get("date", "")
+            parties = d.get("parties", [])
+            party_str = "; ".join(f"{p.get('role')}: {p.get('name')}" for p in parties[:2])
+            liens.append({
+                "date": date, "type": d.get("doc_type"), "parties": party_str,
+                "doc_url": d.get("doc_url"),
+            })
+    return liens
 
 
 def _fetch_dob_permits(block5: str, lot4: str, borough_name: str) -> list[dict]:

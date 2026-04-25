@@ -3369,6 +3369,19 @@ if 'geo' in st.session_state:
                     )
                     st.caption(_zrules.get("description", ""))
 
+                    # ── Check for split/multiple zones ──────────────────────
+                    _zone_2 = _zinfo.get("zoning_dist2", "")
+                    _zone_3 = _zinfo.get("zoning_dist3", "")
+                    _all_zones = [_primary_zone] + [z for z in [_zone_2, _zone_3] if z and z != "—"]
+                    _is_split_z = len(_all_zones) > 1
+
+                    if _is_split_z:
+                        st.warning(
+                            f"🔀 **Split Zoning:** This lot is regulated by {len(_all_zones)} zoning districts: "
+                            f"{' + '.join(_all_zones)}. Most restrictive standards apply per NYC ZR. "
+                            f"Development must comply with ALL districts."
+                        )
+
                     _zcite = get_zoning_citations(_primary_zone)
 
                     def _erow(lbl, val, width="165px", link=None):
@@ -3387,7 +3400,7 @@ if 'geo' in st.session_state:
 
                     _ec1, _ec2, _ec3 = st.columns(3)
 
-                    # ── Column 1: FAR Limits (all four types + PLUTO actual) ──
+                    # ── Column 1: FAR Limits (all types + split zone comparison) ──
                     with _ec1:
                         st.markdown("**FAR Limits**")
                         _facil_far_v = float(str(_zinfo.get("far_facility") or 0).replace(",", ""))
@@ -3400,7 +3413,26 @@ if 'geo' in st.session_state:
                             _erow("Residential FAR",  _zrules.get("res_far"),
                                   link=_zcite.get("far_url")) +
                             _erow("Commercial FAR",   _zrules.get("comm_far"),
-                                  link=_zcite.get("far_url")) +
+                                  link=_zcite.get("far_url"))
+                        )
+                        # ── Split zone: show BOTH zones FAR comparison ──────────
+                        if _is_split_z and _zone_2:
+                            _zrules_2 = get_zoning_rules(_zone_2)
+                            if _zrules_2:
+                                _far_html += (
+                                    f"<div style='margin-top:8px;border-top:1px solid #E5E7EB;padding-top:8px'>"
+                                    f"<b style='color:#6B7280;font-size:0.85em'>Secondary Zone ({_zone_2})</b>"
+                                    f"</div>" +
+                                    _erow("Base FAR",         _zrules_2.get("base_far"),
+                                          link=get_zoning_citations(_zone_2).get("far_url")) +
+                                    _erow("Max FAR",          _zrules_2.get("max_far"),
+                                          link=get_zoning_citations(_zone_2).get("far_url")) +
+                                    _erow("Residential FAR",  _zrules_2.get("res_far"),
+                                          link=get_zoning_citations(_zone_2).get("far_url")) +
+                                    _erow("Commercial FAR",   _zrules_2.get("comm_far"),
+                                          link=get_zoning_citations(_zone_2).get("far_url"))
+                                )
+                        _far_html += (
                             (_erow("Facility FAR",    f"{_facil_far_v:g}",
                                    link=_zcite.get("far_url")) if _facil_far_v > 0 else "") +
                             (_erow("Built FAR (actual)", f"{_built_far_v:g}") if _built_far_v > 0 else "")
