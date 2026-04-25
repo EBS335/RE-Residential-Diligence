@@ -21,7 +21,12 @@ from modules.visualizer import build_map, build_bar_chart, build_range_chart
 from modules.zola_fetcher import fetch_zoning_info
 from modules.zoning_rules import get_zoning_rules, get_zoning_citations, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info
 from modules.cityrealty_fetcher import fetch_cityrealty_comps
-from modules.pip_fetcher import fetch_property_history
+from modules.pip_fetcher import (
+    fetch_property_history,
+    _extract_sales_from_acris,
+    _extract_mortgages_from_acris,
+    _extract_liens_from_acris,
+)
 from modules.massing_viz import build_massing_options, floor_plate_fig
 from modules.comps_research import search_competing_devs, generate_pipeline_summary
 from modules.neighborhood_fetcher import fetch_neighborhood_data
@@ -2415,70 +2420,70 @@ if 'geo' in st.session_state:
             _cr_lnk_cols[2].markdown(f"[🔍 Search CityRealty ↗]({_cr_srch_url})" if _cr_srch_url else "")
 
             if _cr_comps:
-                # Render building comp cards in rows of 3
-                for _ci in range(0, len(_cr_comps), 3):
-                    _cr_chunk = _cr_comps[_ci:_ci+3]
-                    _cr_cols  = st.columns(len(_cr_chunk))
-                    for _cj, (_crc, _crd) in enumerate(zip(_cr_cols, _cr_chunk)):
-                        _bname  = _crd.get("building_name") or _crd.get("address") or "Building"
-                        _addr   = _crd.get("address", "")
-                        _hood_d = _crd.get("neighborhood", neighborhood)
-                        _link   = _crd.get("link", "")
-                        _hist   = _crd.get("history_link", _link)
-                        _ltype  = _crd.get("listing_type", "")
-                        _sale   = _crd.get("last_sale", "")
-                        _snip   = _crd.get("snippet", "")
-                        _ltype_badge = {"rental": "#1D4ED8", "condo": "#15803D", "co-op": "#92400E"}.get(_ltype, "#6B7280")
-                        with _crc:
-                            _title_html = (
-                                f'<a href="{_link}" target="_blank" '
-                                f'style="color:#1A3A6B;text-decoration:none">'
-                                f'{_bname[:48]} ↗</a>'
-                                if _link else _bname[:48]
-                            )
-                            _sale_html = (
-                                f"<div style='font-size:0.72rem;color:#374151;margin-bottom:4px'>"
-                                f"Last sale: <b>{_sale}</b></div>"
-                                if _sale else ""
-                            )
-                            _snip_html = (
-                                f"<div style='font-size:0.68rem;color:#9CA3AF;line-height:1.4'>{_snip[:120]}</div>"
-                                if _snip else ""
-                            )
-                            _hist_html = (
-                                f"<div style='margin-top:6px'>"
-                                f"<a href='{_hist}' target='_blank' "
-                                f"style='font-size:0.68rem;color:#1A3A6B;text-decoration:none'>"
-                                f"📜 Full History ↗</a></div>"
-                                if _hist and _hist != _link else ""
-                            )
-                            st.markdown(
-                                f"<div style='background:white;border:1px solid #E5E7EB;"
-                                f"border-radius:10px;padding:12px 14px;margin-bottom:10px;min-height:130px'>"
-                                f"<div style='display:flex;justify-content:space-between;"
-                                f"align-items:flex-start;margin-bottom:6px'>"
-                                f"<div style='font-size:0.82rem;font-weight:700;color:#111827;"
-                                f"line-height:1.3'>{_title_html}</div>"
-                                f"<span style='background:{_ltype_badge};color:white;padding:1px 6px;"
-                                f"border-radius:8px;font-size:0.62rem;font-weight:700;"
-                                f"white-space:nowrap;margin-left:4px'>"
-                                f"{_ltype.title() if _ltype else 'Building'}</span>"
-                                f"</div>"
-                                f"<div style='font-size:0.72rem;color:#6B7280;margin-bottom:4px'>{_hood_d}</div>"
-                                f"{_sale_html}{_snip_html}{_hist_html}"
-                                f"</div>",
-                                unsafe_allow_html=True,
-                            )
+                st.markdown("**📊 Comparable Buildings Summary**")
+                # Build table format with building details and CityRealty links
+                _cr_table_rows = []
+                for _crd in _cr_comps:
+                    _bname  = _crd.get("building_name") or _crd.get("address") or "Building"
+                    _addr   = _crd.get("address", "")
+                    _link   = _crd.get("link", "")
+                    _hist_link = _crd.get("history_link", _link)
+                    _ltype  = _crd.get("listing_type", "")
+                    _sale   = _crd.get("last_sale", "") or "—"
+
+                    # Build clickable links
+                    _bld_link = f"[{_bname}]({_link})" if _link else _bname
+                    _hist_lnk = f"[Sales History ↗]({_hist_link})" if _hist_link else "—"
+                    _rent_lnk = f"[Rental Listings ↗]({_hist_link.replace('/sales', '/rentals')})" if _hist_link else "—"
+
+                    _cr_table_rows.append({
+                        "Building": _bld_link,
+                        "Address": _addr[:50],
+                        "Type": _ltype.title() if _ltype else "—",
+                        "Last Sale": _sale,
+                        "Sales Link": _hist_lnk,
+                        "Rentals Link": _rent_lnk,
+                    })
+
+                # Display as DataFrame table
+                _cr_df = pd.DataFrame(_cr_table_rows)
+                st.markdown(_cr_df.to_markdown(index=False), unsafe_allow_html=True)
+
+                # Alternative: use dataframe display with custom column config
+                st.dataframe(
+                    _cr_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Building": st.column_config.TextColumn("Building", width=180),
+                        "Address": st.column_config.TextColumn("Address", width=150),
+                        "Type": st.column_config.TextColumn("Type", width=90),
+                        "Last Sale": st.column_config.TextColumn("Last Sale", width=100),
+                        "Sales Link": st.column_config.LinkColumn("Sales History", width=120, display_text="View ↗"),
+                        "Rentals Link": st.column_config.LinkColumn("Rentals", width=110, display_text="View ↗"),
+                    },
+                    height=min(400, 50 + 35 * len(_cr_table_rows)),
+                )
+
+                st.markdown("**💡 How to use:**")
+                st.caption(
+                    "• Click any **Building** name to see the full property page on CityRealty\n"
+                    "• Click **Sales History** to view recent sales/purchase prices\n"
+                    "• Click **Rentals** to see current and recent rental listings\n"
+                    "Use this data to benchmark your property's market position."
+                )
             else:
                 st.info(
                     f"No CityRealty building results found for **{neighborhood}**. "
                     f"Browse directly: [Rentals ↗]({_cr_rent_url}) · [Sales ↗]({_cr_sale_url}) · "
                     f"[Search ↗]({_cr_srch_url})"
                 )
+
+            st.markdown("---")
             st.caption(
-                f"Data from [CityRealty.com]({_cr_srch_url}) · "
-                "Click any building card to view its full sale/rental history · "
-                "Results via public search — no login required"
+                f"**Data Sources:** [CityRealty.com]({_cr_srch_url}) · "
+                "Building search via DuckDuckGo · No authentication required\n"
+                "Links point directly to CityRealty's official building pages with full transaction history"
             )
 
         # ── Photo Gallery (horizontal scroll carousel) ─────────────────────
@@ -2944,6 +2949,98 @@ if 'geo' in st.session_state:
                         else:
                             st.info("No ACRIS documents found for this BBL.")
 
+                    # ── Extract and display ACRIS Sales, Mortgages, Liens ───────
+                    st.markdown("---")
+
+                    _sales = _extract_sales_from_acris(_acris)
+                    _mortgages = _extract_mortgages_from_acris(_acris)
+                    _liens = _extract_liens_from_acris(_acris)
+
+                    # Sales History table
+                    if _sales:
+                        st.markdown(
+                            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                            "💰 Sales History (ACRIS)</div>",
+                            unsafe_allow_html=True,
+                        )
+                        _sales_rows = [{
+                            "Date":       s.get("date", ""),
+                            "Seller":     s.get("seller", "")[:50],
+                            "Buyer":      s.get("buyer", "")[:50],
+                            "Price":      f"${s.get('amount', 0):,.0f}" if s.get('amount') else "—",
+                            "Doc Type":   s.get("doc_type", ""),
+                            "Doc Link":   s.get("doc_url", ""),
+                        } for s in _sales[:30]]
+                        st.dataframe(
+                            pd.DataFrame(_sales_rows),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(400, 40 + 35 * len(_sales_rows)),
+                            column_config={
+                                "Doc Link": st.column_config.LinkColumn(
+                                    "Doc Link", display_text="View →"
+                                )
+                            },
+                        )
+                        st.caption(f"Total: {len(_sales)} deeds/sales found")
+
+                    # Mortgages table
+                    if _mortgages:
+                        st.markdown(
+                            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                            "🏦 Mortgages (ACRIS)</div>",
+                            unsafe_allow_html=True,
+                        )
+                        _mtg_rows = [{
+                            "Date":       m.get("date", ""),
+                            "Lender":     m.get("lender", "")[:50],
+                            "Borrower":   m.get("borrower", "")[:50],
+                            "Amount":     f"${m.get('amount', 0):,.0f}" if m.get('amount') else "—",
+                            "Doc Type":   m.get("doc_type", ""),
+                            "Doc Link":   m.get("doc_url", ""),
+                        } for m in _mortgages[:30]]
+                        st.dataframe(
+                            pd.DataFrame(_mtg_rows),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(400, 40 + 35 * len(_mtg_rows)),
+                            column_config={
+                                "Doc Link": st.column_config.LinkColumn(
+                                    "Doc Link", display_text="View →"
+                                )
+                            },
+                        )
+                        st.caption(f"Total: {len(_mortgages)} mortgages found")
+
+                    # Liens/UCC table
+                    if _liens:
+                        st.markdown(
+                            "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                            "⚖️ Liens & UCC (ACRIS)</div>",
+                            unsafe_allow_html=True,
+                        )
+                        _lien_rows = [{
+                            "Date":       l.get("date", ""),
+                            "Type":       l.get("type", ""),
+                            "Parties":    l.get("parties", "")[:60],
+                            "Doc Link":   l.get("doc_url", ""),
+                        } for l in _liens[:30]]
+                        st.dataframe(
+                            pd.DataFrame(_lien_rows),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(400, 40 + 35 * len(_lien_rows)),
+                            column_config={
+                                "Doc Link": st.column_config.LinkColumn(
+                                    "Doc Link", display_text="View →"
+                                )
+                            },
+                        )
+                        st.caption(f"Total: {len(_liens)} liens/UCC found")
+
                 # ── NYC Property Information Portal ───────────────────────
                 st.markdown("---")
                 st.markdown(
@@ -2968,6 +3065,40 @@ if 'geo' in st.session_state:
                     st.markdown(
                         f"🔗 [View on NYC Property Information Portal ↗]({_pip_url})",
                     )
+
+                # ── Assessed Values (PLUTO) ───────────────────────────────
+                _assess_land = _zinfo.get("assess_land")
+                _assess_total = _zinfo.get("assess_total")
+                if _assess_land or _assess_total:
+                    st.markdown(
+                        "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
+                        "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
+                        "💵 Assessed Values (NYC PLUTO)</div>",
+                        unsafe_allow_html=True,
+                    )
+                    _av1, _av2 = st.columns(2)
+                    with _av1:
+                        st.markdown(
+                            f"<div style='background:white;border:1px solid #E5E7EB;"
+                            f"border-radius:8px;padding:12px 14px'>"
+                            f"<div style='font-size:0.65rem;color:#6B7280;font-weight:700'>"
+                            f"LAND VALUE</div>"
+                            f"<div style='font-size:1.2rem;font-weight:700;color:#111827'>"
+                            f"${_assess_land:,.0f}" if _assess_land else "—"
+                            f"</div></div>",
+                            unsafe_allow_html=True,
+                        )
+                    with _av2:
+                        st.markdown(
+                            f"<div style='background:white;border:1px solid #E5E7EB;"
+                            f"border-radius:8px;padding:12px 14px'>"
+                            f"<div style='font-size:0.65rem;color:#6B7280;font-weight:700'>"
+                            f"TOTAL VALUE</div>"
+                            f"<div style='font-size:1.2rem;font-weight:700;color:#111827'>"
+                            f"${_assess_total:,.0f}" if _assess_total else "—"
+                            f"</div></div>",
+                            unsafe_allow_html=True,
+                        )
 
                 if _pip_sum:
                     _pp1, _pp2, _pp3, _pp4, _pp5 = st.columns(5)
