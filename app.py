@@ -2447,9 +2447,6 @@ if 'geo' in st.session_state:
 
                 # Display as DataFrame table
                 _cr_df = pd.DataFrame(_cr_table_rows)
-                st.markdown(_cr_df.to_markdown(index=False), unsafe_allow_html=True)
-
-                # Alternative: use dataframe display with custom column config
                 st.dataframe(
                     _cr_df,
                     use_container_width=True,
