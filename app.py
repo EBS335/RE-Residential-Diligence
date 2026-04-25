@@ -3078,24 +3078,26 @@ if 'geo' in st.session_state:
                     )
                     _av1, _av2 = st.columns(2)
                     with _av1:
+                        _land_val = f"${_assess_land:,.0f}" if _assess_land else "—"
                         st.markdown(
                             f"<div style='background:white;border:1px solid #E5E7EB;"
                             f"border-radius:8px;padding:12px 14px'>"
                             f"<div style='font-size:0.65rem;color:#6B7280;font-weight:700'>"
                             f"LAND VALUE</div>"
                             f"<div style='font-size:1.2rem;font-weight:700;color:#111827'>"
-                            f"${_assess_land:,.0f}" if _assess_land else "—"
+                            f"{_land_val}"
                             f"</div></div>",
                             unsafe_allow_html=True,
                         )
                     with _av2:
+                        _total_val = f"${_assess_total:,.0f}" if _assess_total else "—"
                         st.markdown(
                             f"<div style='background:white;border:1px solid #E5E7EB;"
                             f"border-radius:8px;padding:12px 14px'>"
                             f"<div style='font-size:0.65rem;color:#6B7280;font-weight:700'>"
                             f"TOTAL VALUE</div>"
                             f"<div style='font-size:1.2rem;font-weight:700;color:#111827'>"
-                            f"${_assess_total:,.0f}" if _assess_total else "—"
+                            f"{_total_val}"
                             f"</div></div>",
                             unsafe_allow_html=True,
                         )
