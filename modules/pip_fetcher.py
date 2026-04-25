@@ -81,6 +81,15 @@ _DOB_CAT = {
     "SAFETY":       "Safety",
 }
 
+# Borough code to name mapping
+_BOROUGH_NAME = {
+    "1": "Manhattan",
+    "2": "Bronx",
+    "3": "Brooklyn",
+    "4": "Queens",
+    "5": "Staten Island",
+}
+
 def _extract_sales_from_acris(acris_dict: dict) -> list[dict]:
     """Extract sale transactions from ACRIS document list."""
     sales = []
