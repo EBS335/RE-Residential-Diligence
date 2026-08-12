@@ -4509,7 +4509,7 @@ with tab_property:
 
 with tab_sitefinder:
     from modules.site_finder_ui import render_site_finder
-    render_site_finder()
+    render_site_finder(anthropic_key=anthropic_key)
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown("""
