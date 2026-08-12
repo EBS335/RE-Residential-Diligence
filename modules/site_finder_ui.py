@@ -27,7 +27,15 @@ from modules.zola_fetcher import bbl_to_zola_url
 from modules.acris_fetcher import fetch_acris
 from modules.ownership_research import enrich_ownership_batch, DEFAULT_BATCH_SIZE
 from modules.site_finder_market import enrich_market_data, fetch_market_comps
-from modules.site_finder_valuation import estimate_acquisition_cost, build_business_plan
+from modules.site_finder_valuation import estimate_acquisition_cost
+from modules.underwriting_engine import (
+    build_scenarios, build_cash_flows, simple_sponsor_returns, lp_gp_waterfall,
+    run_sensitivity, DEFAULT_HOLD_YEARS_POST_STAB, DEFAULT_RENT_GROWTH_PCT,
+    DEFAULT_EXPENSE_GROWTH_PCT, DEFAULT_EXIT_CAP_SPREAD_BPS, DEFAULT_SELLING_COST_PCT,
+    DEFAULT_CONSTRUCTION_LTC, DEFAULT_CONSTRUCTION_RATE, DEFAULT_PERM_LTV,
+    DEFAULT_PERM_DSCR_MIN, DEFAULT_PERM_RATE, DEFAULT_PERM_AMORT_YEARS,
+    DEFAULT_PREFERRED_RETURN_PCT, DEFAULT_PROMOTE_TIERS, DEFAULT_GP_CO_INVEST_PCT,
+)
 from modules.report_exporter import build_excel_workbook, build_pdf_report, build_pptx_report
 from modules.site_finder_agents import (
     run_all_agents, has_anthropic_key, AGENT_ORDER,
@@ -562,18 +570,18 @@ def _render_property_detail(prop: dict) -> None:
         if not mc and not pipe:
             st.caption("Not yet fetched — click above to pull live market comps and nearby pipeline for this property.")
 
-    _render_valuation_section(prop)
+    _render_underwriting_section(prop)
 
     _render_ai_diligence_section(prop)
 
     with st.expander("⬇️ Export This Property", expanded=False):
         ic = prop.get("ic_summary")
-        plan_for_export = st.session_state.get(f"{_SF_PREFIX}bizplan_{prop['bbl']}")
+        uw_for_export = st.session_state.get(f"{_SF_PREFIX}uw_export_{prop['bbl']}")
         prop_for_export = dict(prop)
-        if plan_for_export:
-            prop_for_export["business_plan"] = plan_for_export
+        if uw_for_export:
+            prop_for_export["underwriting"] = uw_for_export
         else:
-            st.caption("Tip: compute the Acquisition Estimate & Business Plan above to include it in these exports.")
+            st.caption("Tip: generate a pro forma above to include it in these exports.")
 
         ex1, ex2 = st.columns(2)
         with ex1:
@@ -609,72 +617,232 @@ def _render_property_detail(prop: dict) -> None:
     )
 
 
-# ── Preliminary Acquisition Estimate & Business Plan (free/keyless, no LLM) ─
+# ── Underwriting Engine: multi-year pro forma, financing, IRR, sensitivity ──
+# (free/keyless, no LLM — deterministic arithmetic over already-collected data)
 
-def _render_valuation_section(prop: dict) -> None:
+def _pct_input(label: str, value: float, key: str, step: float = 0.5, help: str | None = None) -> float:
+    """A percentage-denominated number_input, stored/returned as a 0-1 fraction."""
+    pct = st.number_input(label, min_value=-50.0, max_value=100.0, value=round(value * 100, 2),
+                           step=step, key=key, help=help)
+    return pct / 100.0
+
+
+def _flatten_underwriting_for_export(scenario: dict, cf_result: dict, returns_result: dict, equity_structure: str) -> dict:
+    """Small flat summary dict for report_exporter.py — decoupled from the
+    engine's internal nested cash-flow/tier-breakdown shapes."""
+    out = {
+        "scenario_label": scenario["label"],
+        "total_dev_cost": cf_result["total_dev_cost"],
+        "year1_noi": cf_result["year1_noi"],
+        "equity_structure": equity_structure,
+    }
+    if equity_structure == "waterfall":
+        out["irr"] = returns_result.get("lp_irr")
+        out["equity_multiple"] = returns_result.get("lp_equity_multiple")
+        out["lp_irr"] = returns_result.get("lp_irr")
+        out["gp_irr"] = returns_result.get("gp_irr")
+        out["lp_equity_multiple"] = returns_result.get("lp_equity_multiple")
+        out["gp_equity_multiple"] = returns_result.get("gp_equity_multiple")
+        out["total_gp_promote"] = returns_result.get("total_gp_promote")
+    else:
+        out["irr"] = returns_result.get("irr")
+        out["equity_multiple"] = returns_result.get("equity_multiple")
+    return out
+
+
+def _render_underwriting_section(prop: dict) -> None:
     st.markdown("---")
-    st.markdown("#### 💰 Preliminary Acquisition Estimate & Business Plan")
+    st.markdown("#### 📊 Underwriting Pro Forma")
     st.caption(
-        "Deterministic screening math from free NYC Open Data only — prior sale, "
-        "neighborhood comps, or assessed value; illustrative construction cost "
-        "rules of thumb. Not an appraisal, broker opinion of value, or GC estimate."
+        "Deterministic multi-year screening model — construction → stabilization → "
+        "exit, with financing and a hand-computed IRR. Not a lender-grade or "
+        "GP-facing underwriting package; assumptions are editable rules of thumb."
     )
+    if not prop.get("borough"):
+        st.caption("⚠️ Unit-size assumptions use a citywide default (no neighborhood-level SF data for this property).")
 
-    plan_key = f"{_SF_PREFIX}bizplan_{prop['bbl']}"
-    if st.button("📐 Compute Acquisition Estimate & Business Plan", key=f"{_SF_PREFIX}calc_plan_{prop['bbl']}"):
+    bbl = prop["bbl"]
+    scenarios_key = f"{_SF_PREFIX}uw_scenarios_{bbl}"
+
+    if st.button("📊 Generate Development Scenarios & Pro Forma", key=f"{_SF_PREFIX}uw_gen_{bbl}"):
         working = prop
         if not prop.get("market_comps"):
             with st.spinner("Fetching neighborhood sales comps (NYC Rolling Sales, free)…"):
                 working = dict(prop)
                 working["market_comps"] = fetch_market_comps(prop)
                 st.session_state[f"{_SF_PREFIX}selected_prop"] = working
-        st.session_state[plan_key] = build_business_plan(working)
+        st.session_state[scenarios_key] = build_scenarios(working, working.get("market_comps"))
         st.rerun()
 
-    plan = st.session_state.get(plan_key)
-    if not plan:
-        st.caption("Not yet computed — click above to generate a concise preliminary estimate.")
+    scenarios = st.session_state.get(scenarios_key)
+    if scenarios is None:
+        st.caption("Not yet generated — click above to build 3-4 comparable development scenarios.")
+        return
+    if not scenarios:
+        st.warning("No scenarios could be generated for this property (missing lot SF).")
         return
 
-    acq = plan["acquisition"]
-    v1, v2, v3 = st.columns(3)
-    v1.metric(
-        "Est. Acquisition Cost",
-        f"${acq['estimate']:,.0f}" if acq["estimate"] else "—",
-        acq["confidence"] + " confidence",
-    )
-    v2.metric("Est. Total Dev. Cost", f"${plan['total_dev_cost']:,.0f}")
-    v3.metric(
-        "Est. Profit",
-        f"${plan['profit']:,.0f}" if plan["profit"] is not None else "—",
-        f"{plan['margin_pct']:.0f}% margin" if plan["margin_pct"] is not None else "no comps",
-    )
-    st.caption(f"**Acquisition basis:** {acq['basis']}")
+    market_comps = prop.get("market_comps")
+    acq = estimate_acquisition_cost(prop)
 
-    with st.expander("Cost & revenue breakdown", expanded=False):
-        b1, b2 = st.columns(2)
-        with b1:
-            st.markdown("**Development Cost**")
-            st.markdown(
-                f"- Acquisition: ${acq['estimate']:,.0f}" if acq["estimate"] else "- Acquisition: —"
+    # ── Quick comparison table across all scenarios, default assumptions ──
+    comp_rows = []
+    for s in scenarios:
+        cf = build_cash_flows(s, acq, market_comps=market_comps, borough=prop.get("borough", "Manhattan"))
+        quick = simple_sponsor_returns(cf["annual_cash_flows"])
+        comp_rows.append({
+            "Scenario": s["label"], "Use Type": s["use_type"].replace("_", " ").title(),
+            "FAR Basis": s["far_basis"].replace("_", " ").title(),
+            "Dev Cost": f"${cf['total_dev_cost']:,.0f}",
+            "Year 1 NOI": f"${cf['year1_noi']:,.0f}" if cf["year1_noi"] else "—",
+            "Quick IRR": f"{quick['irr']:.1%}" if quick["irr"] is not None else "N/A",
+        })
+    st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+
+    scenario_labels = [s["label"] for s in scenarios]
+    chosen_label = st.selectbox("Drill into a scenario", options=scenario_labels, key=f"{_SF_PREFIX}uw_scenario_{bbl}")
+    scenario = next(s for s in scenarios if s["label"] == chosen_label)
+    if scenario["assumptions_note"]:
+        st.caption(" · ".join(scenario["assumptions_note"]))
+
+    # ── Financing & hold assumptions ───────────────────────────────────────
+    with st.expander("⚙️ Financing & Hold Assumptions", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            hold_years = st.number_input("Hold period (yrs)", min_value=1, max_value=20,
+                                          value=DEFAULT_HOLD_YEARS_POST_STAB, key=f"{_SF_PREFIX}uw_hold_{bbl}")
+            rent_growth = _pct_input("Rent growth %/yr", DEFAULT_RENT_GROWTH_PCT, f"{_SF_PREFIX}uw_rentg_{bbl}")
+            expense_growth = _pct_input("Expense growth %/yr", DEFAULT_EXPENSE_GROWTH_PCT, f"{_SF_PREFIX}uw_expg_{bbl}")
+        with c2:
+            exit_spread_bps = st.number_input("Exit cap spread (bps over going-in)", min_value=-200, max_value=500,
+                                               value=DEFAULT_EXIT_CAP_SPREAD_BPS, step=10, key=f"{_SF_PREFIX}uw_exitspread_{bbl}")
+            construction_ltc = _pct_input("Construction LTC %", DEFAULT_CONSTRUCTION_LTC, f"{_SF_PREFIX}uw_ltc_{bbl}")
+            construction_rate = _pct_input("Construction rate %", DEFAULT_CONSTRUCTION_RATE, f"{_SF_PREFIX}uw_crate_{bbl}", step=0.125)
+        with c3:
+            perm_ltv = _pct_input("Perm loan LTV %", DEFAULT_PERM_LTV, f"{_SF_PREFIX}uw_ltv_{bbl}")
+            perm_dscr_min = st.number_input("Perm loan min DSCR", min_value=1.0, max_value=2.0,
+                                             value=DEFAULT_PERM_DSCR_MIN, step=0.05, key=f"{_SF_PREFIX}uw_dscr_{bbl}")
+            perm_rate = _pct_input("Perm loan rate %", DEFAULT_PERM_RATE, f"{_SF_PREFIX}uw_prate_{bbl}", step=0.125)
+        perm_amort_years = st.number_input("Perm loan amortization (yrs)", min_value=10, max_value=40,
+                                            value=DEFAULT_PERM_AMORT_YEARS, key=f"{_SF_PREFIX}uw_amort_{bbl}")
+
+    financing_kwargs = {
+        "construction_ltc": construction_ltc, "construction_rate": construction_rate,
+        "perm_ltv": perm_ltv, "perm_dscr_min": perm_dscr_min,
+        "perm_rate": perm_rate, "perm_amort_years": perm_amort_years,
+    }
+    cf_kwargs = {
+        "market_comps": market_comps, "borough": prop.get("borough", "Manhattan"),
+        "hold_years": hold_years, "rent_growth_pct": rent_growth,
+        "expense_growth_pct": expense_growth, "exit_cap_spread_bps": exit_spread_bps,
+        "financing_kwargs": financing_kwargs,
+    }
+
+    # ── Equity structure ────────────────────────────────────────────────────
+    equity_choice = st.radio(
+        "Equity Structure", ["Simple Sponsor IRR", "LP/GP Waterfall"],
+        key=f"{_SF_PREFIX}uw_equity_{bbl}", horizontal=True,
+    )
+    equity_structure = "waterfall" if equity_choice == "LP/GP Waterfall" else "simple"
+
+    waterfall_kwargs = {}
+    if equity_structure == "waterfall":
+        with st.expander("💼 Waterfall Assumptions", expanded=True):
+            w1, w2 = st.columns(2)
+            with w1:
+                pref_pct = _pct_input("Preferred return %", DEFAULT_PREFERRED_RETURN_PCT, f"{_SF_PREFIX}uw_pref_{bbl}")
+            with w2:
+                gp_co_invest = _pct_input("GP co-invest % of equity", DEFAULT_GP_CO_INVEST_PCT, f"{_SF_PREFIX}uw_gpco_{bbl}")
+            st.caption("Promote tiers (GP % of cash above each IRR hurdle):")
+            tiers = []
+            for i, (lo, hi, default_pct) in enumerate(DEFAULT_PROMOTE_TIERS):
+                hi_label = f"{hi:.0%}" if hi is not None else "∞"
+                gp_pct = st.slider(f"{lo:.0%}–{hi_label} IRR", 0.0, 1.0, default_pct, step=0.05,
+                                    key=f"{_SF_PREFIX}uw_tier{i}_{bbl}", format="%.0f%%")
+                tiers.append((lo, hi, gp_pct))
+            waterfall_kwargs = {"preferred_return_pct": pref_pct, "promote_tiers": tiers, "gp_co_invest_pct": gp_co_invest}
+
+    # ── Compute & render the selected scenario's pro forma ─────────────────
+    cf_result = build_cash_flows(scenario, acq, **cf_kwargs)
+
+    if equity_structure == "waterfall":
+        returns = lp_gp_waterfall(cf_result["annual_cash_flows"], **waterfall_kwargs)
+        headline_irr, headline_em = returns["lp_irr"], returns["lp_equity_multiple"]
+    else:
+        returns = simple_sponsor_returns(cf_result["annual_cash_flows"])
+        headline_irr, headline_em = returns["irr"], returns["equity_multiple"]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Levered IRR" + (" (LP)" if equity_structure == "waterfall" else ""),
+              f"{headline_irr:.1%}" if headline_irr is not None else "N/A")
+    m2.metric("Equity Multiple" + (" (LP)" if equity_structure == "waterfall" else ""),
+              f"{headline_em:.2f}x" if headline_em is not None else "N/A")
+    m3.metric("Total Dev. Cost", f"${cf_result['total_dev_cost']:,.0f}")
+    m4.metric("Year 1 NOI", f"${cf_result['year1_noi']:,.0f}" if cf_result["year1_noi"] else "—")
+
+    if equity_structure == "waterfall":
+        g1, g2 = st.columns(2)
+        g1.metric("GP IRR", f"{returns['gp_irr']:.1%}" if returns["gp_irr"] is not None else "N/A")
+        g2.metric("GP Promote ($)", f"${returns['total_gp_promote']:,.0f}")
+        st.caption(returns.get("note", ""))
+
+    with st.expander("Annual Cash Flow Detail", expanded=False):
+        cf_rows = [{
+            "Year": c["year"], "Phase": c["phase"], "NOI": f"${c['noi']:,.0f}",
+            "Debt Service": f"${c['debt_service']:,.0f}",
+            "Reversion": f"${c['reversion_proceeds']:,.0f}" if c["reversion_proceeds"] else "—",
+            "Equity CF": f"${c['equity_cf']:,.0f}",
+        } for c in cf_result["annual_cash_flows"]]
+        st.dataframe(pd.DataFrame(cf_rows), use_container_width=True, hide_index=True)
+
+    with st.expander("Financing Detail", expanded=False):
+        fin = cf_result["financing"]
+        st.markdown(
+            f"- Construction loan: ${fin['construction_loan_amount']:,.0f} "
+            f"(interest accrued: ${fin['construction_interest_accrued']:,.0f})\n"
+            f"- Permanent loan: ${fin['perm_loan_amount']:,.0f} "
+            f"(binding constraint: {fin['binding_constraint']})\n"
+            f"- Annual debt service: ${fin['annual_debt_service']:,.0f}\n"
+            f"- {fin['note']}"
+        )
+
+    with st.expander("📉 Sensitivity / Stress Test", expanded=False):
+        if st.button("Run Sensitivity", key=f"{_SF_PREFIX}uw_sens_{bbl}"):
+            sens = run_sensitivity(
+                scenario, acq, base_kwargs=cf_kwargs,
+                equity_structure=equity_structure, waterfall_kwargs=waterfall_kwargs,
             )
-            st.markdown(f"- Closing costs (~3%): ${plan['closing_cost']:,.0f}")
-            st.markdown(f"- Hard cost ({plan['hard_cost_basis']} @ ${plan['hard_cost_psf']:,.0f}/GSF): ${plan['hard_cost']:,.0f}")
-            st.markdown(f"- Soft costs (~20% of hard): ${plan['soft_cost']:,.0f}")
-            st.markdown(f"- Contingency (~10%): ${plan['contingency']:,.0f}")
-            st.markdown(f"- **Total: ${plan['total_dev_cost']:,.0f}**")
-        with b2:
-            st.markdown("**Buildable Area & Revenue**")
-            st.markdown(f"- Gross buildable SF (max FAR × lot): {plan['gross_buildable_sf']:,.0f}")
-            st.markdown(f"- Net buildable SF (~85% efficiency): {plan['net_buildable_sf']:,.0f}")
-            if plan["revenue"] is not None:
-                st.markdown(f"- Revenue @ ${plan['revenue_psf']:,.0f}/SF: ${plan['revenue']:,.0f}")
-            else:
-                st.markdown("- Revenue: — (no neighborhood comps found)")
+            st.session_state[f"{_SF_PREFIX}uw_sens_result_{bbl}"] = sens
 
-    st.markdown("**Key Takeaways**")
-    for b in plan["bullets"]:
-        st.markdown(f"- {b}")
+        sens = st.session_state.get(f"{_SF_PREFIX}uw_sens_result_{bbl}")
+        if sens:
+            try:
+                import plotly.graph_objects as go
+                tornado = sens["tornado_ranking"]
+                fig = go.Figure(go.Bar(
+                    x=[t["irr_range"] * 100 for t in tornado],
+                    y=[t["lever"].replace("_", " ").title() for t in tornado],
+                    orientation="h",
+                ))
+                fig.update_layout(
+                    title="IRR Sensitivity (percentage-point swing)", xaxis_title="IRR range (pp)",
+                    height=280, margin=dict(l=10, r=10, t=40, b=10),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                pass
+
+            for lever, rows in sens["grid"].items():
+                st.markdown(f"**{lever.replace('_', ' ').title()}**")
+                grid_row = {f"{r['delta_pct']:+.0%}": (f"{r['irr']:.1%}" if r["irr"] is not None else "N/A") for r in rows}
+                st.dataframe(pd.DataFrame([grid_row]), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Not yet run — click above to stress-test rent, hard cost, exit cap rate, and interest rate.")
+
+    # Stash a flattened summary for the export section below.
+    st.session_state[f"{_SF_PREFIX}uw_export_{bbl}"] = _flatten_underwriting_for_export(
+        scenario, cf_result, returns, equity_structure
+    )
 
 
 # ── Phase 4: AI Diligence Agents + Investment Committee ─────────────────────
@@ -747,7 +915,13 @@ def _render_ai_diligence_section(prop: dict) -> None:
         def _cb(agent_key, i, n):
             progress.progress(i / n, text=f"Running {agent_key.replace('_', ' ').title()} Agent… ({i}/{n})")
 
-        outputs = run_all_agents(prop, anthropic_key, progress_callback=_cb)
+        agent_input = prop
+        uw_summary = st.session_state.get(f"{_SF_PREFIX}uw_export_{prop['bbl']}")
+        if uw_summary:
+            agent_input = dict(prop)
+            agent_input["underwriting"] = uw_summary
+
+        outputs = run_all_agents(agent_input, anthropic_key, progress_callback=_cb)
         progress.empty()
 
         updated = dict(prop)

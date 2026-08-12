@@ -141,6 +141,19 @@ def _write_property_detail_sheet(sh, p: dict, header_fill, header_font) -> None:
     if pipe:
         _kv("Nearby Pipeline Projects", pipe.get("count", 0))
         _kv("Nearby Pipeline Units", pipe.get("total_units", 0))
+        row += 1
+
+    uw = p.get("underwriting")
+    if uw:
+        _kv("Underwriting Scenario", uw.get("scenario_label", ""))
+        _kv("Total Dev. Cost", uw.get("total_dev_cost", ""))
+        _kv("Year 1 NOI", uw.get("year1_noi", ""))
+        _kv("Levered IRR", f"{uw['irr']:.1%}" if uw.get("irr") is not None else "—")
+        _kv("Equity Multiple", f"{uw['equity_multiple']:.2f}x" if uw.get("equity_multiple") is not None else "—")
+        if uw.get("equity_structure") == "waterfall":
+            _kv("LP IRR", f"{uw['lp_irr']:.1%}" if uw.get("lp_irr") is not None else "—")
+            _kv("GP IRR", f"{uw['gp_irr']:.1%}" if uw.get("gp_irr") is not None else "—")
+            _kv("GP Promote ($)", uw.get("total_gp_promote", ""))
 
     for col, width in (("A", 24), ("B", 40)):
         sh.column_dimensions[col].width = width
@@ -259,6 +272,32 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
         story.append(Paragraph(
             "Free-data screening estimate only — not underwriting, an appraisal, "
             "or a GC cost estimate.", styles["Italic"],
+        ))
+        story.append(Spacer(1, 10))
+
+    uw = prop.get("underwriting")
+    if uw:
+        story.append(Paragraph("Underwriting Pro Forma", h2))
+        story.append(Paragraph(f"Scenario: {uw.get('scenario_label', '—')}", styles["Normal"]))
+        irr_str = f"{uw['irr']:.1%}" if uw.get("irr") is not None else "N/A"
+        em_str = f"{uw['equity_multiple']:.2f}x" if uw.get("equity_multiple") is not None else "N/A"
+        headline_line = (
+            f"Levered IRR: {irr_str} &nbsp;·&nbsp; Equity Multiple: {em_str} &nbsp;·&nbsp; "
+            f"Total Dev. Cost: ${uw.get('total_dev_cost', 0):,.0f} &nbsp;·&nbsp; "
+            f"Year 1 NOI: ${uw.get('year1_noi', 0):,.0f}"
+        )
+        story.append(Paragraph(headline_line, styles["Normal"]))
+        if uw.get("equity_structure") == "waterfall":
+            lp_irr = f"{uw['lp_irr']:.1%}" if uw.get("lp_irr") is not None else "N/A"
+            gp_irr = f"{uw['gp_irr']:.1%}" if uw.get("gp_irr") is not None else "N/A"
+            story.append(Paragraph(
+                f"LP/GP Waterfall — LP IRR: {lp_irr} &nbsp;·&nbsp; GP IRR: {gp_irr} &nbsp;·&nbsp; "
+                f"GP Promote: ${uw.get('total_gp_promote', 0):,.0f}",
+                styles["Normal"],
+            ))
+        story.append(Paragraph(
+            "Preliminary underwriting model — a hand-rolled deterministic pro forma, "
+            "not a lender-grade or GP-facing underwriting package.", styles["Italic"],
         ))
         story.append(Spacer(1, 10))
 
@@ -417,6 +456,66 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
         )
         note.text_frame.paragraphs[0].font.size = Pt(10)
         note.text_frame.paragraphs[0].font.italic = True
+
+    # ── Slide 4: Underwriting Pro Forma ──────────────────────────────────────
+    uw = prop.get("underwriting")
+    if uw:
+        slide4 = prs.slides.add_slide(blank)
+        title4 = slide4.shapes.add_textbox(Inches(0.6), Inches(0.4), Inches(12), Inches(0.7))
+        title4.text_frame.text = "Underwriting Pro Forma"
+        title4.text_frame.paragraphs[0].font.size = Pt(26)
+        title4.text_frame.paragraphs[0].font.bold = True
+        title4.text_frame.paragraphs[0].font.color.rgb = NAVY
+
+        irr_str = f"{uw['irr']:.1%}" if uw.get("irr") is not None else "N/A"
+        em_str = f"{uw['equity_multiple']:.2f}x" if uw.get("equity_multiple") is not None else "N/A"
+        uw_metrics = [
+            ("LEVERED IRR", irr_str),
+            ("EQUITY MULTIPLE", em_str),
+            ("TOTAL DEV. COST", f"${uw.get('total_dev_cost', 0):,.0f}"),
+            ("HOLD PERIOD", uw.get("scenario_label", "—")),
+        ]
+        x = Inches(0.6)
+        for label, val in uw_metrics:
+            box = slide4.shapes.add_textbox(x, Inches(1.3), Inches(2.9), Inches(1.3))
+            f = box.text_frame
+            f.word_wrap = True
+            f.text = val
+            f.paragraphs[0].font.size = Pt(20 if label != "HOLD PERIOD" else 14)
+            f.paragraphs[0].font.bold = True
+            f.paragraphs[0].font.color.rgb = NAVY
+            p2 = f.add_paragraph()
+            p2.text = label
+            p2.font.size = Pt(11)
+            x += Inches(3.1)
+
+        body4 = slide4.shapes.add_textbox(Inches(0.6), Inches(2.9), Inches(12), Inches(3.5))
+        fb4 = body4.text_frame
+        fb4.word_wrap = True
+        if uw.get("equity_structure") == "waterfall":
+            lp_irr = f"{uw['lp_irr']:.1%}" if uw.get("lp_irr") is not None else "N/A"
+            gp_irr = f"{uw['gp_irr']:.1%}" if uw.get("gp_irr") is not None else "N/A"
+            fb4.text = "LP/GP Waterfall"
+            fb4.paragraphs[0].font.bold = True
+            fb4.paragraphs[0].font.size = Pt(16)
+            for line in (
+                f"LP IRR: {lp_irr}  ·  GP IRR: {gp_irr}",
+                f"GP Promote: ${uw.get('total_gp_promote', 0):,.0f}",
+            ):
+                p = fb4.add_paragraph()
+                p.text = f"• {line}"
+                p.font.size = Pt(14)
+        else:
+            fb4.text = "Simple Sponsor IRR — single all-equity-in/all-cash-out perspective."
+            fb4.paragraphs[0].font.size = Pt(14)
+
+        note4 = slide4.shapes.add_textbox(Inches(0.6), Inches(6.9), Inches(12), Inches(0.5))
+        note4.text_frame.text = (
+            "Preliminary underwriting model — a hand-rolled deterministic pro forma, "
+            "not a lender-grade or GP-facing underwriting package."
+        )
+        note4.text_frame.paragraphs[0].font.size = Pt(10)
+        note4.text_frame.paragraphs[0].font.italic = True
 
     buf = io.BytesIO()
     prs.save(buf)

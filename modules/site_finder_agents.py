@@ -127,6 +127,14 @@ def _property_context(prop: dict) -> str:
     pipe = prop.get("pipeline")
     if pipe:
         ctx["pipeline"] = {"count": pipe.get("count"), "total_units": pipe.get("total_units")}
+    uw = prop.get("underwriting")
+    if uw:
+        ctx["underwriting"] = {
+            "scenario_label": uw.get("scenario_label"),
+            "irr": uw.get("irr"), "equity_multiple": uw.get("equity_multiple"),
+            "total_dev_cost": uw.get("total_dev_cost"),
+            "equity_structure": uw.get("equity_structure"),
+        }
     return json.dumps(ctx, default=str, indent=2)
 
 
