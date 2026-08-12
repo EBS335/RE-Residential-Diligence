@@ -126,3 +126,52 @@ def compute_deal_score(
         "tier":      tier,
         "breakdown": breakdown,
     }
+
+
+def compute_bulk_deal_scores(properties: list[dict]) -> list[dict]:
+    """
+    Score a list of Site Finder properties (as produced by
+    modules.site_sourcing.enrich_property) using the SAME
+    compute_deal_score() engine above, then return them sorted by
+    score descending. Purely additive — does not alter single-property
+    scoring behaviour.
+
+    Each input dict should carry (all optional, defaults are neutral):
+        unused_far_pct, distress_level (0/1/2), neighborhood_rent_premium,
+        zoning_dist, listings_nearby, assemblage_uplift_pct, has_overlay
+
+    Missing fields are inferred where possible from Site Finder's own
+    `unused_far_pct` / `distress_signal` keys so callers don't have to
+    pre-map everything by hand.
+
+    Returns a NEW list of dicts (input dicts are not mutated), each with
+    an added "deal_score" key holding the compute_deal_score() result.
+    """
+    _distress_map = {
+        "No Signal":       0,
+        "Weak Signal":     0,
+        "Moderate Signal": 1,
+        "Strong Signal":   2,
+    }
+
+    scored: list[dict] = []
+    for prop in properties:
+        distress_level = prop.get("distress_level")
+        if distress_level is None:
+            distress_level = _distress_map.get(prop.get("distress_signal", ""), 0)
+
+        result = compute_deal_score(
+            unused_far_pct=prop.get("unused_far_pct", 0.0),
+            distress_level=distress_level,
+            neighborhood_rent_premium=prop.get("neighborhood_rent_premium", 0.0),
+            zoning_dist=prop.get("zoning_dist", ""),
+            listings_nearby=prop.get("listings_nearby", 0),
+            assemblage_uplift_pct=prop.get("assemblage_uplift_pct", 0.0),
+            has_overlay=prop.get("has_overlay", False),
+        )
+        out = dict(prop)
+        out["deal_score"] = result
+        scored.append(out)
+
+    scored.sort(key=lambda p: p["deal_score"]["score"], reverse=True)
+    return scored
