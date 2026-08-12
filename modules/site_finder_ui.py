@@ -15,6 +15,9 @@ professional diligence.
 from __future__ import annotations
 import pandas as pd
 import streamlit as st
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
 
 from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE
 from modules.site_sourcing import enrich_property, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
@@ -23,7 +26,8 @@ from modules.zoning_rules import get_zoning_rules, get_zoning_citations
 from modules.zola_fetcher import bbl_to_zola_url
 from modules.acris_fetcher import fetch_acris
 from modules.ownership_research import enrich_ownership_batch, DEFAULT_BATCH_SIZE
-from modules.site_finder_market import enrich_market_data
+from modules.site_finder_market import enrich_market_data, fetch_market_comps
+from modules.site_finder_valuation import estimate_acquisition_cost, build_business_plan
 from modules.report_exporter import build_excel_workbook, build_pdf_report, build_pptx_report
 from modules.site_finder_agents import (
     run_all_agents, has_anthropic_key, AGENT_ORDER,
@@ -164,6 +168,56 @@ def _render_summary_cards(properties: list[dict]) -> None:
     c4.metric("Avg. Deal Score", f"{avg_score:.0f} / 100")
 
 
+# ── Results map ──────────────────────────────────────────────────────────────
+
+_TIER_MARKER_COLOR = {
+    "Strong Lead": "green",
+    "Watch":       "orange",
+    "Pass":        "lightgray",
+}
+
+
+def _render_results_map(properties: list[dict]) -> None:
+    """
+    Flag every result on a free OpenStreetMap/CartoDB basemap (same tile
+    provider already used in the Property Analysis tab's visualizer.py —
+    no paid mapping API, no key required).
+    """
+    located = [p for p in properties if p.get("latitude") and p.get("longitude")]
+    missing = len(properties) - len(located)
+
+    if not located:
+        st.caption("No coordinates available to plot for these results.")
+        return
+
+    st.markdown("#### 🗺️ Map View")
+    center_lat = sum(p["latitude"] for p in located) / len(located)
+    center_lon = sum(p["longitude"] for p in located) / len(located)
+
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="CartoDB positron")
+    cluster = MarkerCluster().add_to(m)
+
+    for p in located:
+        ds = p.get("deal_score", {})
+        color = _TIER_MARKER_COLOR.get(ds.get("tier"), "blue")
+        popup_html = (
+            f"<b>{p.get('address', '')}</b><br>"
+            f"BBL {p.get('bbl', '')}<br>"
+            f"Deal Score: {ds.get('score', '—')}/100 ({ds.get('tier', '—')})<br>"
+            f"Strategy: {', '.join(p.get('strategies', [])) or '—'}"
+        )
+        folium.Marker(
+            location=[p["latitude"], p["longitude"]],
+            icon=folium.Icon(color=color, icon="flag", prefix="fa"),
+            tooltip=p.get("address", ""),
+            popup=folium.Popup(popup_html, max_width=260),
+        ).add_to(cluster)
+
+    st_folium(m, use_container_width=True, height=420, key=f"{_SF_PREFIX}results_map")
+    legend = " · ".join(f"🟢 {t}" if c == "green" else (f"🟠 {t}" if c == "orange" else f"⚪ {t}") for t, c in _TIER_MARKER_COLOR.items())
+    st.caption(f"{legend}" + (f" · {missing} of {len(properties)} results have no coordinates and are not plotted" if missing else ""))
+
+
 # ── Results table ────────────────────────────────────────────────────────────
 
 def _apply_ownership_cache(top: list[dict]) -> list[dict]:
@@ -184,6 +238,9 @@ def _render_results_table(properties: list[dict]) -> None:
 
     top = properties[:50]
     top = _apply_ownership_cache(top)
+
+    _render_results_map(top)
+    st.markdown("---")
 
     has_ownership = any("owner_type" in p for p in top)
 
@@ -451,15 +508,24 @@ def _render_property_detail(prop: dict) -> None:
         if not mc and not pipe:
             st.caption("Not yet fetched — click above to pull live market comps and nearby pipeline for this property.")
 
+    _render_valuation_section(prop)
+
     _render_ai_diligence_section(prop)
 
     with st.expander("⬇️ Export This Property", expanded=False):
         ic = prop.get("ic_summary")
+        plan_for_export = st.session_state.get(f"{_SF_PREFIX}bizplan_{prop['bbl']}")
+        prop_for_export = dict(prop)
+        if plan_for_export:
+            prop_for_export["business_plan"] = plan_for_export
+        else:
+            st.caption("Tip: compute the Acquisition Estimate & Business Plan above to include it in these exports.")
+
         ex1, ex2 = st.columns(2)
         with ex1:
             if st.button("📄 Build PDF report", key=f"{_SF_PREFIX}pdf_{prop['bbl']}", use_container_width=True):
                 try:
-                    st.session_state[f"{_SF_PREFIX}pdf_bytes"] = build_pdf_report(prop, ic)
+                    st.session_state[f"{_SF_PREFIX}pdf_bytes"] = build_pdf_report(prop_for_export, ic)
                 except ImportError as exc:
                     st.error(str(exc))
             if st.session_state.get(f"{_SF_PREFIX}pdf_bytes"):
@@ -471,7 +537,7 @@ def _render_property_detail(prop: dict) -> None:
         with ex2:
             if st.button("📽️ Build PowerPoint pitch", key=f"{_SF_PREFIX}pptx_{prop['bbl']}", use_container_width=True):
                 try:
-                    st.session_state[f"{_SF_PREFIX}pptx_bytes"] = build_pptx_report(prop, ic)
+                    st.session_state[f"{_SF_PREFIX}pptx_bytes"] = build_pptx_report(prop_for_export, ic)
                 except ImportError as exc:
                     st.error(str(exc))
             if st.session_state.get(f"{_SF_PREFIX}pptx_bytes"):
@@ -487,6 +553,74 @@ def _render_property_detail(prop: dict) -> None:
         "records, risk analysis, and 3D massing visualizations, copy this "
         f"address into the **🏢 Property Analysis** tab: `{prop['address']}`"
     )
+
+
+# ── Preliminary Acquisition Estimate & Business Plan (free/keyless, no LLM) ─
+
+def _render_valuation_section(prop: dict) -> None:
+    st.markdown("---")
+    st.markdown("#### 💰 Preliminary Acquisition Estimate & Business Plan")
+    st.caption(
+        "Deterministic screening math from free NYC Open Data only — prior sale, "
+        "neighborhood comps, or assessed value; illustrative construction cost "
+        "rules of thumb. Not an appraisal, broker opinion of value, or GC estimate."
+    )
+
+    plan_key = f"{_SF_PREFIX}bizplan_{prop['bbl']}"
+    if st.button("📐 Compute Acquisition Estimate & Business Plan", key=f"{_SF_PREFIX}calc_plan_{prop['bbl']}"):
+        working = prop
+        if not prop.get("market_comps"):
+            with st.spinner("Fetching neighborhood sales comps (NYC Rolling Sales, free)…"):
+                working = dict(prop)
+                working["market_comps"] = fetch_market_comps(prop)
+                st.session_state[f"{_SF_PREFIX}selected_prop"] = working
+        st.session_state[plan_key] = build_business_plan(working)
+        st.rerun()
+
+    plan = st.session_state.get(plan_key)
+    if not plan:
+        st.caption("Not yet computed — click above to generate a concise preliminary estimate.")
+        return
+
+    acq = plan["acquisition"]
+    v1, v2, v3 = st.columns(3)
+    v1.metric(
+        "Est. Acquisition Cost",
+        f"${acq['estimate']:,.0f}" if acq["estimate"] else "—",
+        acq["confidence"] + " confidence",
+    )
+    v2.metric("Est. Total Dev. Cost", f"${plan['total_dev_cost']:,.0f}")
+    v3.metric(
+        "Est. Profit",
+        f"${plan['profit']:,.0f}" if plan["profit"] is not None else "—",
+        f"{plan['margin_pct']:.0f}% margin" if plan["margin_pct"] is not None else "no comps",
+    )
+    st.caption(f"**Acquisition basis:** {acq['basis']}")
+
+    with st.expander("Cost & revenue breakdown", expanded=False):
+        b1, b2 = st.columns(2)
+        with b1:
+            st.markdown("**Development Cost**")
+            st.markdown(
+                f"- Acquisition: ${acq['estimate']:,.0f}" if acq["estimate"] else "- Acquisition: —"
+            )
+            st.markdown(f"- Closing costs (~3%): ${plan['closing_cost']:,.0f}")
+            st.markdown(f"- Hard cost ({plan['hard_cost_basis']} @ ${plan['hard_cost_psf']:,.0f}/GSF): ${plan['hard_cost']:,.0f}")
+            st.markdown(f"- Soft costs (~20% of hard): ${plan['soft_cost']:,.0f}")
+            st.markdown(f"- Contingency (~10%): ${plan['contingency']:,.0f}")
+            st.markdown(f"- **Total: ${plan['total_dev_cost']:,.0f}**")
+        with b2:
+            st.markdown("**Buildable Area & Revenue**")
+            st.markdown(f"- Gross buildable SF (max FAR × lot): {plan['gross_buildable_sf']:,.0f}")
+            st.markdown(f"- Net buildable SF (~85% efficiency): {plan['net_buildable_sf']:,.0f}")
+            if plan["revenue"] is not None:
+                st.markdown(f"- Revenue @ ${plan['revenue_psf']:,.0f}/SF: ${plan['revenue']:,.0f}")
+            else:
+                st.markdown("- Revenue: — (no neighborhood comps found)")
+
+    st.markdown("**Key Takeaways**")
+    for b in plan["bullets"]:
+        st.markdown(f"- {b}")
 
 
 # ── Phase 4: AI Diligence Agents + Investment Committee ─────────────────────

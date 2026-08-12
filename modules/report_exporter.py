@@ -181,10 +181,12 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
 
     ds = prop.get("deal_score", {})
     rec = (ic_summary or {}).get("recommendation", "—")
+    plan = prop.get("business_plan")
+    acq_val = plan["acquisition"]["estimate"] if plan and plan.get("acquisition") else None
     headline = [
-        ["DEAL SCORE", "RECOMMENDATION", "LOT SF", "UNUSED FAR"],
+        ["DEAL SCORE", "RECOMMENDATION", "EST. ACQUISITION", "UNUSED FAR"],
         [f"{ds.get('score', '—')}/100 ({ds.get('tier', '—')})", rec,
-         f"{prop.get('lot_sf', 0):,.0f}", f"{prop.get('unused_far_pct', 0):.0f}%"],
+         f"${acq_val:,.0f}" if acq_val else "—", f"{prop.get('unused_far_pct', 0):.0f}%"],
     ]
     t = Table(headline, colWidths=[1.6 * inch] * 4)
     t.setStyle(TableStyle([
@@ -240,6 +242,26 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
         ))
         story.append(Spacer(1, 10))
 
+    if plan:
+        profit_str = f"${plan['profit']:,.0f}" if plan["profit"] is not None else "—"
+        margin_str = f"{plan['margin_pct']:.0f}%" if plan["margin_pct"] is not None else "—"
+        story.append(Paragraph("Preliminary Acquisition Estimate & Business Plan", h2))
+        story.append(Paragraph(
+            f"Basis: {plan['acquisition']['basis']}", styles["Normal"],
+        ))
+        story.append(Paragraph(
+            f"Est. total development cost: ${plan['total_dev_cost']:,.0f} &nbsp;·&nbsp; "
+            f"Est. profit: {profit_str} &nbsp;·&nbsp; Margin: {margin_str}",
+            styles["Normal"],
+        ))
+        for bullet in plan.get("bullets", []):
+            story.append(Paragraph(f"• {bullet}", styles["Normal"]))
+        story.append(Paragraph(
+            "Free-data screening estimate only — not underwriting, an appraisal, "
+            "or a GC cost estimate.", styles["Italic"],
+        ))
+        story.append(Spacer(1, 10))
+
     doc.build(story)
     return buf.getvalue()
 
@@ -281,10 +303,12 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
     sub.text_frame.paragraphs[0].font.size = Pt(16)
 
     ds = prop.get("deal_score", {})
+    plan = prop.get("business_plan")
+    acq_val = plan["acquisition"]["estimate"] if plan and plan.get("acquisition") else None
     metrics = [
         ("DEAL SCORE", f"{ds.get('score', '—')}/100"),
         ("TIER", ds.get("tier", "—")),
-        ("LOT SF", f"{prop.get('lot_sf', 0):,.0f}"),
+        ("EST. ACQUISITION", f"${acq_val:,.0f}" if acq_val else "—"),
         ("UNUSED FAR", f"{prop.get('unused_far_pct', 0):.0f}%"),
     ]
     x = Inches(0.6)
@@ -345,6 +369,54 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
             p = f2.add_paragraph()
             p.text = f"• {r}"
             p.font.size = Pt(13)
+
+    # ── Slide 3: Preliminary Acquisition Estimate & Business Plan ───────────
+    if plan:
+        slide3 = prs.slides.add_slide(blank)
+        title3 = slide3.shapes.add_textbox(Inches(0.6), Inches(0.4), Inches(12), Inches(0.7))
+        title3.text_frame.text = "Preliminary Acquisition Estimate & Business Plan"
+        title3.text_frame.paragraphs[0].font.size = Pt(26)
+        title3.text_frame.paragraphs[0].font.bold = True
+        title3.text_frame.paragraphs[0].font.color.rgb = NAVY
+
+        profit_str = f"${plan['profit']:,.0f}" if plan["profit"] is not None else "—"
+        margin_str = f"{plan['margin_pct']:.0f}%" if plan["margin_pct"] is not None else "—"
+        bp_metrics = [
+            ("EST. ACQUISITION", f"${acq_val:,.0f}" if acq_val else "—"),
+            ("EST. TOTAL COST", f"${plan['total_dev_cost']:,.0f}"),
+            ("EST. PROFIT", profit_str),
+            ("EST. MARGIN", margin_str),
+        ]
+        x = Inches(0.6)
+        for label, val in bp_metrics:
+            box = slide3.shapes.add_textbox(x, Inches(1.3), Inches(2.9), Inches(1.1))
+            f = box.text_frame
+            f.text = val
+            f.paragraphs[0].font.size = Pt(22)
+            f.paragraphs[0].font.bold = True
+            f.paragraphs[0].font.color.rgb = NAVY
+            p2 = f.add_paragraph()
+            p2.text = label
+            p2.font.size = Pt(11)
+            x += Inches(3.1)
+
+        body = slide3.shapes.add_textbox(Inches(0.6), Inches(2.6), Inches(12), Inches(4.2))
+        fb = body.text_frame
+        fb.word_wrap = True
+        fb.text = f"Basis: {plan['acquisition']['basis']}"
+        fb.paragraphs[0].font.size = Pt(13)
+        fb.paragraphs[0].font.italic = True
+        for bullet in plan.get("bullets", []):
+            p = fb.add_paragraph()
+            p.text = f"• {bullet}"
+            p.font.size = Pt(14)
+
+        note = slide3.shapes.add_textbox(Inches(0.6), Inches(6.9), Inches(12), Inches(0.5))
+        note.text_frame.text = (
+            "Free-data screening estimate only — not underwriting, an appraisal, or a GC cost estimate."
+        )
+        note.text_frame.paragraphs[0].font.size = Pt(10)
+        note.text_frame.paragraphs[0].font.italic = True
 
     buf = io.BytesIO()
     prs.save(buf)
