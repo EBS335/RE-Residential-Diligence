@@ -519,3 +519,35 @@ def fetch_dob_pipeline(
     """
     from modules.nyc_sales_fetcher import fetch_dob_permits
     return fetch_dob_permits(lat, lon, radius_miles)
+
+
+# ---------------------------------------------------------------------------
+# Tax abatement / rent stabilization / transit / demographics signals
+# ---------------------------------------------------------------------------
+
+def fetch_tax_abatement_signal(prop: dict) -> dict:
+    """Rules-based tax abatement (485-x/J-51/ICAP) signal for a property.
+    Pure calculation, no network call — see modules/abatement_estimator.py."""
+    from modules.abatement_estimator import estimate_tax_abatement
+    return estimate_tax_abatement(prop)
+
+
+def fetch_rent_stabilization_signal(prop: dict) -> dict:
+    """Rules-based rent-stabilization signal for a property.
+    Pure calculation, no network call — see modules/rent_stab_estimator.py."""
+    from modules.rent_stab_estimator import estimate_rent_stabilization
+    return estimate_rent_stabilization(prop)
+
+
+def fetch_transit_proximity(lat: float, lon: float) -> dict:
+    """Nearest-subway-station distance for a lat/lon point.
+    See modules/transit_fetcher.py."""
+    from modules.transit_fetcher import fetch_transit_proximity as _f
+    return _f(lat, lon)
+
+
+def fetch_demographics(zip_code: str) -> dict:
+    """ZCTA-level population & median household income.
+    See modules/demographics_fetcher.py."""
+    from modules.demographics_fetcher import fetch_demographics as _f
+    return _f(zip_code)

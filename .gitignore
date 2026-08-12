@@ -24,3 +24,10 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local persistence & logs (portfolio_db.py / app_logging.py)
+data/
+logs/
+
+# Test cache
+.pytest_cache/

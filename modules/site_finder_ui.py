@@ -102,12 +102,22 @@ def _render_criteria_form() -> dict | None:
                 key=f"{_SF_PREFIX}risk",
             )
 
+        sv1, sv2 = st.columns([1, 2])
+        with sv1:
+            save_this = st.checkbox("💾 Save this search", key=f"{_SF_PREFIX}save_search_cb")
+        with sv2:
+            search_name = st.text_input(
+                "Search name", key=f"{_SF_PREFIX}save_search_name",
+                placeholder="e.g. Brooklyn vacant lots, R6+",
+                label_visibility="collapsed",
+            )
+
         submitted = st.form_submit_button("🔎 Search NYC Development Sites", type="primary", use_container_width=True)
 
     if not submitted:
         return None
 
-    return {
+    criteria = {
         "boroughs":            boroughs,
         "zip_codes":           [z.strip() for z in zip_codes.split(",") if z.strip()],
         "min_price":           min_price or None,
@@ -123,6 +133,40 @@ def _render_criteria_form() -> dict | None:
         "strategies":          strategies,
         "risk":                risk,
     }
+
+    if save_this and search_name.strip():
+        from modules.portfolio_db import save_search
+        save_search(search_name.strip(), criteria)
+        st.toast(f"Saved search “{search_name.strip()}” — find it in the 📁 Portfolio tab.", icon="💾")
+
+    return criteria
+
+
+def load_saved_criteria_into_widgets(criteria: dict) -> None:
+    """
+    Pre-seed the Investment Criteria form's widget session_state from a
+    saved-search criteria dict (the same shape _render_criteria_form()
+    returns), so the form reflects the saved values the next time it
+    renders. Called from the Portfolio tab's "▶ Re-run" action — Streamlit
+    tabs can't be switched programmatically the way multipage apps can, so
+    the realistic flow is: load criteria here, then the user clicks over
+    to the 🔍 Site Finder tab themselves and the form is already populated.
+    """
+    criteria = criteria or {}
+    st.session_state[f"{_SF_PREFIX}boroughs"] = criteria.get("boroughs") or []
+    st.session_state[f"{_SF_PREFIX}zips"] = ", ".join(criteria.get("zip_codes") or [])
+    st.session_state[f"{_SF_PREFIX}minprice"] = criteria.get("min_price") or 0
+    st.session_state[f"{_SF_PREFIX}maxprice"] = criteria.get("max_price") or 0
+    st.session_state[f"{_SF_PREFIX}targetpsf"] = criteria.get("target_psf") or 0
+    st.session_state[f"{_SF_PREFIX}minlot"] = criteria.get("min_lot_sf") or 0
+    st.session_state[f"{_SF_PREFIX}maxlot"] = criteria.get("max_lot_sf") or 0
+    st.session_state[f"{_SF_PREFIX}minfar"] = criteria.get("min_far") or 0.0
+    st.session_state[f"{_SF_PREFIX}maxfar"] = criteria.get("max_far") or 0.0
+    st.session_state[f"{_SF_PREFIX}minunits"] = criteria.get("min_units") or 0
+    st.session_state[f"{_SF_PREFIX}maxunits"] = criteria.get("max_units") or 0
+    st.session_state[f"{_SF_PREFIX}ptypes"] = criteria.get("property_types") or ["Any"]
+    st.session_state[f"{_SF_PREFIX}strategies"] = criteria.get("strategies") or []
+    st.session_state[f"{_SF_PREFIX}risk"] = criteria.get("risk") or "Moderate"
 
 
 # ── Search execution + scoring ──────────────────────────────────────────────
@@ -311,6 +355,16 @@ def _render_results_table(properties: list[dict]) -> None:
             st.session_state[f"{_SF_PREFIX}selected_bbl"] = top[idx]["bbl"]
             st.session_state[f"{_SF_PREFIX}selected_prop"] = top[idx]
             st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### ☆ Save to Portfolio")
+    save_choice = st.selectbox("Choose a result to save", options=options, key=f"{_SF_PREFIX}save_choice")
+    if save_choice != options[0]:
+        save_idx = options.index(save_choice) - 1
+        if st.button("☆ Save to Portfolio", key=f"{_SF_PREFIX}save_btn"):
+            from modules.portfolio_db import save_property
+            save_property(top[save_idx], status="Watching")
+            st.success(f"Saved {top[save_idx]['address']} to Portfolio.")
 
     st.markdown("---")
     st.markdown("#### ⬇️ Export")

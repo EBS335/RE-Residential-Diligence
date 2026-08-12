@@ -15,7 +15,14 @@ from dotenv import load_dotenv
 import pandas as pd
 import plotly.graph_objects as go
 
-from modules.data_fetcher import fetch_all_listings
+from modules.data_fetcher import (
+    fetch_all_listings,
+    fetch_tax_abatement_signal,
+    fetch_rent_stabilization_signal,
+    fetch_transit_proximity,
+    fetch_demographics,
+)
+from modules.app_logging import init_logging, get_logger, record_source_status
 from modules.analyzer import compute_summary, compute_insights
 from modules.visualizer import build_map, build_bar_chart, build_range_chart
 from modules.zola_fetcher import fetch_zoning_info
@@ -41,6 +48,7 @@ from modules.unit_mix import (
 from modules.risk_matrix import MACRO_RISKS, get_micro_risks
 
 load_dotenv()
+init_logging()
 
 
 # ── AI market summary helper ──────────────────────────────────────────────────
@@ -573,6 +581,66 @@ def _in_nyc(lat: float, lon: float) -> bool:
     return b["lat_min"] <= lat <= b["lat_max"] and b["lon_min"] <= lon <= b["lon_max"]
 
 
+_BBL_BOROUGH_NAMES = {
+    "1": "Manhattan", "2": "Bronx", "3": "Brooklyn", "4": "Queens", "5": "Staten Island",
+}
+
+
+def _map_zinfo_to_portfolio_schema(zinfo: dict, address: str, lat: float, lon: float) -> dict:
+    """
+    Adapt zola_fetcher.fetch_zoning_info()'s dict (single-address flow,
+    used by the Property Analysis tab) into the same normalized property
+    shape modules/property_search.py._normalize_row() produces (bulk Site
+    Finder flow), so a property saved from either tab renders identically
+    in the Portfolio comparison view. The two source dicts use different
+    field names and zinfo's numeric fields are pre-formatted display
+    strings (e.g. "$500,000", "2.00"), not raw floats — parsed back out here.
+    """
+    def _num(v, default=0.0):
+        try:
+            if v is None:
+                return default
+            s = str(v).strip().replace("$", "").replace(",", "")
+            if s in ("", "—", "-"):
+                return default
+            return float(s)
+        except (TypeError, ValueError):
+            return default
+
+    zinfo = zinfo or {}
+    far_res = _num(zinfo.get("far_residential"))
+    far_comm = _num(zinfo.get("far_commercial"))
+    far_built = _num(zinfo.get("far_built"))
+    far_max = max(far_res, far_comm)
+    unused_far = max(0.0, far_max - far_built)
+
+    return {
+        "bbl":              zinfo.get("bbl", ""),
+        "address":          address or zinfo.get("matched_label", ""),
+        "borough":          _BBL_BOROUGH_NAMES.get(zinfo.get("borough_code", ""), ""),
+        "zip_code":         zinfo.get("zip_code", ""),
+        "owner":            zinfo.get("owner", ""),
+        "lot_sf":           _num(zinfo.get("lot_area_sqft")),
+        "bldg_sf":          _num(zinfo.get("bldg_area_sqft")),
+        "year_built":       zinfo.get("year_built", ""),
+        "units_res":        _num(zinfo.get("units_res")),
+        "far_built":        far_built,
+        "far_residential":  far_res,
+        "far_commercial":   far_comm,
+        "far_max":          far_max,
+        "unused_far":       unused_far,
+        "unused_far_pct":   (unused_far / far_max * 100.0) if far_max > 0 else 0.0,
+        "assess_land":      _num(zinfo.get("assess_land")),
+        "assess_total":     _num(zinfo.get("assess_total")),
+        "exempt_land":      _num(zinfo.get("exempt_land")),
+        "exempt_total":     _num(zinfo.get("exempt_total")),
+        "historic_dist":    zinfo.get("historic_dist", ""),
+        "latitude":         lat,
+        "longitude":        lon,
+        "zoning_dist":      zinfo.get("zoning_dist", ""),
+    }
+
+
 def _parse_nom_result(result: dict) -> dict:
     addr          = result.get("address", {})
     city_district = addr.get("city_district") or addr.get("suburb") or ""
@@ -972,6 +1040,24 @@ with st.sidebar:
         "- [Google Maps Platform](https://console.cloud.google.com) *(optional)*"
     )
 
+    st.divider()
+    with st.expander("🩺 Data Health", expanded=False):
+        _health = st.session_state.get("_source_health", {})
+        if not _health:
+            st.caption("No data sources queried yet this session.")
+        else:
+            for _src_name, _info in _health.items():
+                _icon = "🟢" if _info["ok"] else "🔴"
+                st.markdown(
+                    f"{_icon} **{_src_name}** — {_info['detail'] or 'OK'}  \n"
+                    f"<span style='font-size:0.7rem;color:#9CA3AF'>{_info['ts']}</span>",
+                    unsafe_allow_html=True,
+                )
+        from modules.app_logging import get_recent_logs
+        _recent_logs = get_recent_logs()
+        if _recent_logs:
+            st.text_area("Recent log lines", value="\n".join(_recent_logs[-30:]), height=150, disabled=True)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # HEADER
@@ -990,7 +1076,9 @@ st.markdown("""
 # TOP-LEVEL TABS — Property Analysis (existing) vs. Site Finder (new)
 # ═════════════════════════════════════════════════════════════════════════════
 
-tab_property, tab_sitefinder = st.tabs(["🏢 Property Analysis", "🔍 Site Finder"])
+tab_property, tab_sitefinder, tab_portfolio = st.tabs(
+    ["🏢 Property Analysis", "🔍 Site Finder", "📁 Portfolio"]
+)
 
 with tab_property:
     # ═════════════════════════════════════════════════════════════════════════════
@@ -2836,11 +2924,25 @@ with tab_property:
                         unsafe_allow_html=True,
                     )
 
+                    if _bbl_disp and _bbl_disp != "—":
+                        if st.button("☆ Save to Portfolio", key="pa_save_to_portfolio"):
+                            from modules.portfolio_db import save_property
+                            save_property(
+                                _map_zinfo_to_portfolio_schema(_zinfo, _zinfo_label, lat, lon),
+                                status="Watching",
+                            )
+                            st.success("Saved to Portfolio.")
+
                     # ── ACRIS Property History ───────────────────────────────
                     _acris_key = f"_acris_{_bbl_disp}"
                     if _acris_key not in st.session_state and _bbl_disp != "—":
                         with st.spinner("Fetching ACRIS document history…"):
                             st.session_state[_acris_key] = fetch_acris(_bbl_disp)
+                            record_source_status(
+                                "ACRIS",
+                                ok=(not st.session_state[_acris_key].get("error")),
+                                detail=st.session_state[_acris_key].get("error") or "",
+                            )
                     _acris = st.session_state.get(_acris_key, {})
                     _acris_sum = _acris.get("summary", {}) if _acris else {}
                     if _acris and _acris.get("acris_url"):
@@ -3060,6 +3162,11 @@ with tab_property:
                                 borough_name=borough,
                                 address=address_input.strip(),
                             )
+                            record_source_status(
+                                "DOB/HPD Property History",
+                                ok=(not st.session_state[_pip_key].get("error")),
+                                detail=st.session_state[_pip_key].get("error") or "",
+                            )
                     _pip = st.session_state.get(_pip_key, {})
                     _pip_sum = _pip.get("summary", {}) if _pip else {}
                     _pip_url = _pip.get("pip_url", "")
@@ -3226,6 +3333,97 @@ with tab_property:
                             f"HPD Buildings (kj4p-ruqc) · "
                             f"[NYC Property Information Portal ↗]({_pip_url})"
                         )
+
+                    # ── Tax Abatement, Rent Stabilization & Transit ──────────
+                    st.markdown("##### 🏛️ Tax Abatement, Rent Stabilization & Transit")
+                    st.caption(
+                        "The abatement and rent-stabilization signals below are rules-based "
+                        "ESTIMATES, not authoritative — NYC has no free public API for either. "
+                        "Confirm with NYC DOF / DHCR before relying on them."
+                    )
+
+                    _abate_key = f"_abate_{_bbl_disp}"
+                    if _abate_key not in st.session_state and _bbl_disp != "—":
+                        st.session_state[_abate_key] = fetch_tax_abatement_signal(_zinfo)
+                    _abate = st.session_state.get(_abate_key, {})
+                    record_source_status(
+                        "Tax Abatement Estimate", ok=(not _abate.get("error")), detail=_abate.get("error") or ""
+                    )
+
+                    _rentstab_key = f"_rentstab_{_bbl_disp}"
+                    if _rentstab_key not in st.session_state and _bbl_disp != "—":
+                        st.session_state[_rentstab_key] = fetch_rent_stabilization_signal(_zinfo)
+                    _rentstab = st.session_state.get(_rentstab_key, {})
+                    record_source_status(
+                        "Rent Stabilization Estimate", ok=(not _rentstab.get("error")), detail=_rentstab.get("error") or ""
+                    )
+
+                    _transit_key = f"_transit_{lat:.5f}_{lon:.5f}"
+                    if _transit_key not in st.session_state:
+                        st.session_state[_transit_key] = fetch_transit_proximity(lat, lon)
+                    _transit = st.session_state.get(_transit_key, {})
+                    record_source_status(
+                        "Transit Proximity", ok=(not _transit.get("error")), detail=_transit.get("error") or ""
+                    )
+
+                    _zip_for_demo = _zinfo.get("zip_code", "")
+                    _demo_key = f"_demo_{_zip_for_demo}"
+                    if _demo_key not in st.session_state and _zip_for_demo:
+                        st.session_state[_demo_key] = fetch_demographics(_zip_for_demo)
+                    _demo = st.session_state.get(_demo_key, {})
+                    record_source_status(
+                        "Demographics (Census)", ok=(not _demo.get("error")), detail=_demo.get("error") or ""
+                    )
+
+                    _tr1, _tr2 = st.columns(2)
+                    with _tr1:
+                        if _abate.get("error"):
+                            st.caption(f"Tax abatement: {_abate['error']}")
+                        else:
+                            _exempt = _abate.get("currently_exempt")
+                            _exempt_lbl = (
+                                f"✅ Currently exempt (${_abate['exempt_value']:,.0f})" if _exempt and _abate.get("exempt_value")
+                                else ("✅ Currently exempt" if _exempt else "No current exemption on record")
+                            )
+                            st.markdown(f"**Tax Exemption Status** — {_exempt_lbl}  \n"
+                                        f"<span style='font-size:0.72rem;color:#6B7280'>Verified from PLUTO</span>",
+                                        unsafe_allow_html=True)
+                            _progs = [p for p in _abate.get("estimated_programs", []) if p.get("eligible_estimate")]
+                            if _progs:
+                                st.caption("Estimated (unverified) eligibility: " +
+                                           ", ".join(f"{p['program']} ({p['confidence']:.0%} conf.)" for p in _progs))
+
+                        if _rentstab.get("error"):
+                            st.caption(f"Rent stabilization: {_rentstab['error']}")
+                        else:
+                            _rs_lbl = "⚠️ Likely Rent Stabilized" if _rentstab.get("likely_stabilized") else "Unlikely rent stabilized"
+                            st.markdown(
+                                f"**Rent Stabilization** — {_rs_lbl} "
+                                f"<span style='font-size:0.72rem;color:#6B7280'>(estimated, {_rentstab.get('confidence', 0):.0%} conf. — not verified)</span>  \n"
+                                f"<a href='{_rentstab.get('dhcr_lookup_url', '')}' target='_blank' "
+                                f"style='font-size:0.75rem'>Confirm via DHCR building list →</a>",
+                                unsafe_allow_html=True,
+                            )
+
+                    with _tr2:
+                        if _transit.get("error"):
+                            st.caption(f"Transit: {_transit['error']}")
+                        elif _transit.get("nearest_station"):
+                            _lines = ", ".join(_transit.get("nearest_lines", [])) or "—"
+                            st.markdown(
+                                f"**🚇 Nearest Subway** — {_transit['nearest_station']} ({_lines})  \n"
+                                f"{_transit.get('distance_miles', '—')} mi away · "
+                                f"{_transit.get('stations_within_half_mile', 0)} station(s) within ½ mi"
+                            )
+                        if _demo.get("error"):
+                            st.caption(f"Demographics: {_demo['error']}")
+                        elif _demo.get("population") is not None:
+                            _inc = _demo.get("median_household_income")
+                            st.markdown(
+                                f"**ZIP {_demo.get('zcta','')} Demographics** (Census ACS 5-Yr)  \n"
+                                f"Population: {_demo['population']:,} · "
+                                f"Median HH Income: {'${:,}'.format(_inc) if _inc else '—'}"
+                            )
 
                     # ── Adjacent Lot Aggregation ──────────────────────────────
                     _subj_bbl = _zinfo.get("bbl", "")
@@ -4510,6 +4708,10 @@ with tab_property:
 with tab_sitefinder:
     from modules.site_finder_ui import render_site_finder
     render_site_finder(anthropic_key=anthropic_key)
+
+with tab_portfolio:
+    from modules.portfolio_ui import render_portfolio
+    render_portfolio()
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown("""

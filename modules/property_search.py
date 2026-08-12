@@ -245,6 +245,8 @@ def _normalize_row(r: dict) -> dict:
         "unused_far_pct":   (unused_far / far_max * 100.0) if far_max > 0 else 0.0,
         "assess_land":      f("assessland"),
         "assess_total":     f("assesstot"),
+        "exempt_land":      f("exemptland"),
+        "exempt_total":     f("exempttot"),
         "is_vacant":        lu_code == "11" or bldg_area <= 0,
         "historic_dist":    r.get("histdist", "") or "",
         "landmark":         r.get("landmark", "") or "",

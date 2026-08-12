@@ -23,6 +23,10 @@ from __future__ import annotations
 import re
 import time
 import requests
+
+from modules.app_logging import get_logger
+
+log = get_logger(__name__)
 from typing import Optional
 
 _DOC_MASTER_URL = "https://data.cityofnewyork.us/resource/bnx9-e6tj.json"
@@ -74,7 +78,8 @@ def _get(url: str, params: dict) -> list:
         r.raise_for_status()
         data = r.json()
         return data if isinstance(data, list) else []
-    except Exception:
+    except Exception as exc:
+        log.warning("acris_fetcher request to %s failed: %s", url, exc)
         return []
 
 

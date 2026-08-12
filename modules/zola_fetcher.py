@@ -13,6 +13,10 @@ No API keys required. Both APIs are maintained by NYC Planning Labs.
 import re
 import requests
 
+from modules.app_logging import get_logger
+
+log = get_logger(__name__)
+
 # ── API endpoints ─────────────────────────────────────────────────────────────
 _GEOSEARCH_URL = "https://geosearch.planninglabs.nyc/v2/search"
 _PLUTO_URL     = "https://data.cityofnewyork.us/resource/64uk-42ks.json"
@@ -113,7 +117,8 @@ def geosearch_bbl(address: str, lat: float = None, lon: float = None) -> dict | 
         r = requests.get(_GEOSEARCH_URL, params=params, timeout=10)
         r.raise_for_status()
         features = r.json().get("features", [])
-    except Exception:
+    except Exception as exc:
+        log.warning("geosearch_bbl failed for %r: %s", address, exc)
         return None
 
     if not features:
@@ -154,7 +159,8 @@ def fetch_pluto(bbl: str) -> dict | None:
         r = requests.get(_PLUTO_URL, params={"bbl": bbl_clean}, timeout=10)
         r.raise_for_status()
         rows = r.json()
-    except Exception:
+    except Exception as exc:
+        log.warning("fetch_pluto failed for BBL %s: %s", bbl_clean, exc)
         return None
 
     return rows[0] if rows else None
@@ -306,6 +312,7 @@ def fetch_zoning_info(address: str, lat: float = None, lon: float = None) -> dic
         # ── Assessment Values ──────────────────────────────────────────────
         "assess_land":      _dollar("assessland"),
         "assess_total":     _dollar("assesstot"),
+        "exempt_land":      _dollar("exemptland"),
         "exempt_total":     _dollar("exempttot"),
 
         # ── Location Metadata ──────────────────────────────────────────────

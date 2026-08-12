@@ -187,12 +187,19 @@ def enrich_property(prop: dict) -> dict:
     Attach strategy classification + opportunity score to a normalized
     PLUTO property dict (from property_search.search_properties). Does not
     mutate the input; returns a new dict with added keys:
-        strategies        — list[str]
+        strategies         — list[str]
         opportunity        — {score, tier, drivers}
         distress_signal    — str (quick pass, PLUTO-only — no violation counts)
+        tax_abatement       — rules-based 485-x/J-51/ICAP estimate (PLUTO-only, cheap)
+        rent_stab_signal    — rules-based rent-stabilization estimate (PLUTO-only, cheap)
     """
+    from modules.abatement_estimator import estimate_tax_abatement
+    from modules.rent_stab_estimator import estimate_rent_stabilization
+
     out = dict(prop)
-    out["strategies"]     = classify_strategies(prop)
-    out["opportunity"]    = compute_opportunity_score(prop)
+    out["strategies"]      = classify_strategies(prop)
+    out["opportunity"]     = compute_opportunity_score(prop)
     out["distress_signal"] = quick_distress_signal(prop)
+    out["tax_abatement"]    = estimate_tax_abatement(prop)
+    out["rent_stab_signal"] = estimate_rent_stabilization(prop)
     return out

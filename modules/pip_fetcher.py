@@ -22,6 +22,10 @@ from __future__ import annotations
 import re
 import requests
 
+from modules.app_logging import get_logger
+
+log = get_logger(__name__)
+
 _TIMEOUT        = 14
 _PIP_BASE       = "https://propertyinformationportal.nyc.gov"
 _DOB_PERMITS    = "https://data.cityofnewyork.us/resource/ipu4-2q9a.json"
@@ -54,8 +58,10 @@ def _get(url: str, params: dict) -> list[dict]:
         r = requests.get(url, params=params, headers=_HEADERS, timeout=_TIMEOUT)
         if r.status_code == 200:
             return r.json() if isinstance(r.json(), list) else []
-    except Exception:
-        pass
+    except Exception as exc:
+        # Individual sub-request failures (one of 6 DOB/HPD endpoints) are
+        # frequent/expected — debug level, not warning, to avoid log spam.
+        log.debug("pip_fetcher request to %s failed: %s", url, exc)
     return []
 
 
@@ -340,6 +346,7 @@ def fetch_property_history(
             "error": None,
         }
     except Exception as exc:
+        log.warning("fetch_property_history failed for BBL %s: %s", bbl10, exc)
         return {
             "pip_url":        pip_url,
             "permits":        [],

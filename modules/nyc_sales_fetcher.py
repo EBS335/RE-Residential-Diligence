@@ -14,6 +14,10 @@ import re
 import requests
 from typing import Optional
 
+from modules.app_logging import get_logger
+
+log = get_logger(__name__)
+
 _SALES_URL  = "https://data.cityofnewyork.us/resource/usep-8jbt.json"
 _DOB_URL    = "https://data.cityofnewyork.us/resource/ipu4-2q9a.json"
 _TIMEOUT    = 20
@@ -78,6 +82,7 @@ def fetch_nyc_sales(
         resp.raise_for_status()
         rows = resp.json()
     except Exception as exc:
+        log.warning("fetch_nyc_sales failed: %s", exc)
         return [], f"error: {exc}"
 
     if not isinstance(rows, list):
@@ -165,6 +170,7 @@ def fetch_dob_permits(
         resp.raise_for_status()
         rows = resp.json()
     except Exception as exc:
+        log.warning("fetch_dob_permits failed: %s", exc)
         return [], f"error: {exc}"
 
     if not isinstance(rows, list):
