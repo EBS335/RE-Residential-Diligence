@@ -924,3 +924,72 @@ def get_special_district_info(code: str) -> dict | None:
     if not code:
         return None
     return SPECIAL_DISTRICTS.get(str(code).strip().upper())
+
+
+# ── Entitlement path reference (typical NYC timeline/cost by approval type) ──
+# Static, illustrative rules-of-thumb — actual timeline/cost varies widely by
+# project complexity, community board, and current DOB/DCP caseload. Not a
+# substitute for land-use counsel's project-specific assessment.
+ENTITLEMENT_PATHS: dict[str, dict] = {
+    "as_of_right": {
+        "label": "As-of-Right",
+        "description": "Fully compliant with current zoning — no discretionary approval needed.",
+        "timeline": "0–2 months (standard DOB plan review + permit issuance)",
+        "cost_range": "Standard DOB permit fees only (~$5K–25K depending on scope)",
+        "approval_probability": "N/A — by right, not discretionary",
+    },
+    "minor_modification": {
+        "label": "Minor Modification / Alteration Permit",
+        "description": "Alteration or minor zoning adjustment (e.g. a small variance-free waiver) within an otherwise as-of-right envelope.",
+        "timeline": "2–6 months (DOB plan review, possible minor waiver application)",
+        "cost_range": "$25K–75K (permit fees + expediter)",
+        "approval_probability": "High — routine, low discretion",
+    },
+    "bsa_variance": {
+        "label": "BSA Variance / Special Permit",
+        "description": "Board of Standards and Appeals variance (bulk, use, or area) or special permit — required when the as-of-right envelope doesn't support the intended program.",
+        "timeline": "8–14 months typical (can run 18+ months for contested applications)",
+        "cost_range": "$75K–200K+ (land-use counsel, expert witnesses/engineers, BSA filing fees)",
+        "approval_probability": "Moderate — case-by-case, community board and BSA discretion",
+    },
+    "ulurp_rezoning": {
+        "label": "ULURP Rezoning / MIH Compliance",
+        "description": "Uniform Land Use Review Procedure rezoning, typically paired with Mandatory Inclusionary Housing (MIH) affordability requirements for the FAR bonus.",
+        "timeline": "18–24+ months (7-month statutory ULURP clock + 6–12 months pre-application/environmental work)",
+        "cost_range": "$200K–500K+ (land-use counsel, environmental review (CEQR), community engagement, political risk)",
+        "approval_probability": "Variable — subject to City Council/City Planning Commission/community board approval; political risk is real",
+    },
+}
+
+
+def estimate_entitlement_path(risk_level: str, description: str = "") -> dict:
+    """
+    Map a massing scenario's risk_level (LOW/MED/HIGH, as tagged by
+    modules/massing_viz.py) plus its free-text description to the closest
+    ENTITLEMENT_PATHS entry, so scenarios can be framed as a structured
+    decision (as-of-right vs. minor mod vs. variance vs. rezoning) instead
+    of a flat risk-tier label. Keyword-matches the description first (since
+    scenarios like "...ULURP or MIH compliance..." or "...setback waivers
+    or variance..." already name their approval type); falls back to a
+    risk-level default when no keyword matches.
+
+    Returns one of ENTITLEMENT_PATHS' value dicts, plus a "path_key" field.
+    Never raises; defaults to "as_of_right" for unrecognized input.
+    """
+    desc_lower = (description or "").lower()
+    risk = (risk_level or "").upper()
+
+    if "ulurp" in desc_lower or "mih" in desc_lower or "rezoning" in desc_lower:
+        key = "ulurp_rezoning"
+    elif "variance" in desc_lower or "bsa" in desc_lower or "waiver" in desc_lower:
+        key = "bsa_variance"
+    elif risk == "HIGH":
+        key = "bsa_variance"
+    elif risk == "MED":
+        key = "minor_modification"
+    elif risk == "LOW":
+        key = "as_of_right"
+    else:
+        key = "as_of_right"
+
+    return {**ENTITLEMENT_PATHS[key], "path_key": key}

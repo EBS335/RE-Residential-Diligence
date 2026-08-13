@@ -52,10 +52,14 @@ _BOROUGH_CENTROIDS = {
 
 # ── DuckDuckGo search ─────────────────────────────────────────────────────────
 
-def _ddg_search(query: str) -> list[dict]:
+def _ddg_search(query: str) -> tuple[list[dict], bool]:
     """
-    Run a single DuckDuckGo HTML search and return list of
-    {title, snippet, url} result dicts (up to 10 results).
+    Run a single DuckDuckGo HTML search.
+
+    Returns (results, ok) — ok=False means the request itself failed
+    (network error, timeout, non-2xx), NOT that the search legitimately
+    returned zero results. Callers must treat results==[] and ok==False
+    as "unknown", not "confirmed no matches".
     """
     try:
         resp = requests.post(
@@ -67,7 +71,7 @@ def _ddg_search(query: str) -> list[dict]:
         )
         resp.raise_for_status()
     except Exception:
-        return []
+        return [], False
 
     soup = BeautifulSoup(resp.text, "lxml")
     results = []
@@ -101,7 +105,7 @@ def _ddg_search(query: str) -> list[dict]:
                 "url":     url,
             })
 
-    return results
+    return results, True
 
 
 # ── Address / development parsing ─────────────────────────────────────────────
@@ -220,7 +224,7 @@ def search_competing_devs(
     lat: float,
     lon: float,
     zip_code: str = "",
-) -> list[dict]:
+) -> tuple[list[dict], str]:
     """
     Discover competing/comparable rental developments near the subject property.
 
@@ -228,8 +232,13 @@ def search_competing_devs(
     real estate filings, and developer websites, then extracts structured
     development data and geocodes each address.
 
-    Returns up to 8 development dicts:
-        {name, address, lat, lon, units, est_rent_min, est_rent_max, source_url, snippet, geocoded}
+    Returns (devs, status):
+      devs   — up to 8 development dicts:
+               {name, address, lat, lon, units, est_rent_min, est_rent_max,
+                source_url, snippet, geocoded}
+      status — "live" | "no_results" | "error" (all underlying searches failed —
+               distinct from "no_results", which means the searches succeeded
+               but found nothing)
 
     Results should be cached by the caller (e.g. in st.session_state) to
     avoid repeated network calls.
@@ -248,8 +257,11 @@ def search_competing_devs(
         queries.append(f'{zip_code} "new construction" apartment rental NYC site:streeteasy.com OR site:zillow.com')
 
     raw_results: list[dict] = []
+    any_ok = False
     for q in queries[:4]:
-        raw_results.extend(_ddg_search(q))
+        rows, ok = _ddg_search(q)
+        any_ok = any_ok or ok
+        raw_results.extend(rows)
         time.sleep(_SLEEP)
 
     # Parse each result
@@ -267,7 +279,14 @@ def search_competing_devs(
     for dev in devs[:_MAX_DEVS]:
         geocoded.append(_geocode_dev(dev, neighborhood, borough))
 
-    return geocoded
+    if geocoded:
+        status = "live"
+    elif not any_ok:
+        status = "error"
+    else:
+        status = "no_results"
+
+    return geocoded, status
 
 
 def generate_pipeline_summary(devs: list[dict], neighborhood: str) -> str:

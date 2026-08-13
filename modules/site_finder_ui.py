@@ -1033,6 +1033,19 @@ def render_site_finder(anthropic_key: str = "") -> None:
             "narrow your search criteria for a complete match set."
         )
 
+    if status.get("coords_missing_pct") == 100.0:
+        raw_keys = status.get("raw_field_sample_if_no_coords") or []
+        with st.expander("⚠️ Results map will be empty — no usable coordinates found", expanded=True):
+            st.warning(
+                "None of these results have usable latitude/longitude, so the map below "
+                "won't show any markers. This usually means PLUTO's live field names for "
+                "coordinates have drifted from what this app expects."
+            )
+            if raw_keys:
+                st.caption(f"Raw PLUTO fields on a sample row (for diagnosis): {', '.join(raw_keys)}")
+    elif status.get("coords_missing_pct"):
+        st.caption(f"📍 {status['coords_missing_pct']:.0f}% of results have no usable coordinates and won't appear on the map.")
+
     if results is not None:
         st.markdown("---")
         _render_results_table(results)

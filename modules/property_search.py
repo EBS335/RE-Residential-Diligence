@@ -187,11 +187,28 @@ def search_properties(criteria: dict, max_rows: int = _MAX_ROWS) -> tuple[list[d
     # Drop rows with no usable BBL or address after normalization
     normalized = [r for r in normalized if r["bbl"] and r["address"]]
 
+    # Diagnostic for the "map shows no markers" failure mode: if we got
+    # real results but NONE of them carry usable coordinates, that's a
+    # systematic field-mapping problem (e.g. PLUTO's live schema no longer
+    # matches the "latitude"/"longitude" field names _normalize_row()
+    # assumes), not a data-quality gap in a handful of lots. Surface the
+    # raw keys of one sample row so this is diagnosable from the app
+    # itself rather than a silent empty map.
+    coords_missing_pct = None
+    raw_field_sample = None
+    if normalized:
+        with_coords = sum(1 for r in normalized if r.get("latitude") and r.get("longitude"))
+        coords_missing_pct = round(100.0 * (1 - with_coords / len(normalized)), 1)
+        if with_coords == 0 and rows:
+            raw_field_sample = sorted(rows[0].keys())
+
     status = {
         "total_fetched": len(normalized),
         "truncated":     truncated,
         "where_clause":  where_clause,
         "error":         error,
+        "coords_missing_pct": coords_missing_pct,
+        "raw_field_sample_if_no_coords": raw_field_sample,
     }
     return normalized, status
 
@@ -200,6 +217,18 @@ def _normalize_row(r: dict) -> dict:
     """Convert a raw PLUTO row into the common Site Finder property schema."""
     def f(key, default=0.0):
         return _num(r.get(key), default)
+
+    def f_any(keys, default=0.0):
+        """Like f(), but tries each key in order and returns the first
+        that parses to a nonzero value. Defensive against PLUTO schema
+        drift between dataset revisions (NYC Planning periodically
+        renames/adds fields) — cheap insurance, never a source of error
+        since a missing key just falls through to the next candidate."""
+        for key in keys:
+            val = _num(r.get(key), None)
+            if val:
+                return val
+        return default
 
     lot_area   = f("lotarea")
     bldg_area  = f("bldgarea")
@@ -250,6 +279,6 @@ def _normalize_row(r: dict) -> dict:
         "is_vacant":        lu_code == "11" or bldg_area <= 0,
         "historic_dist":    r.get("histdist", "") or "",
         "landmark":         r.get("landmark", "") or "",
-        "latitude":         f("latitude") or None,
-        "longitude":        f("longitude") or None,
+        "latitude":         f_any(["latitude", "lat"], None),
+        "longitude":        f_any(["longitude", "lon", "lng"], None),
     }

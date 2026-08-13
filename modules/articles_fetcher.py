@@ -38,8 +38,9 @@ _SOURCE_STYLES: dict[str, dict] = {
 }
 
 
-def _ddg_search(query: str) -> list[dict]:
-    """Search DuckDuckGo HTML and return top results as list of {title, url, snippet}."""
+def _ddg_search(query: str) -> tuple[list[dict], bool]:
+    """Search DuckDuckGo HTML. Returns (results, ok) — ok=False means the
+    request itself failed, NOT that the search legitimately found nothing."""
     try:
         resp = requests.post(
             _DDG_URL,
@@ -50,7 +51,7 @@ def _ddg_search(query: str) -> list[dict]:
         resp.raise_for_status()
         html = resp.text
     except Exception:
-        return []
+        return [], False
 
     results = []
     title_pattern   = re.compile(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
@@ -70,7 +71,7 @@ def _ddg_search(query: str) -> list[dict]:
                 real_url = unquote(uddg_match.group(1))
             results.append({"title": title_clean, "url": real_url, "snippet": snippet_clean})
 
-    return results
+    return results, True
 
 
 def _source_info(url: str) -> dict:
@@ -101,15 +102,19 @@ def fetch_nearby_articles(
     neighborhood: str,
     borough: str,
     max_results: int = 8,
-) -> list[dict]:
+) -> tuple[list[dict], str]:
     """
     Search for news articles mentioning the subject address or nearby area.
 
-    Returns a list of up to `max_results` dicts:
-      {title, url, source (dict with label/bg/fg), snippet, date_approx}
+    Returns (articles, status):
+      articles — up to `max_results` dicts:
+                 {title, url, source (dict with label/bg/fg), snippet, date_approx}
+      status   — "live" | "no_results" | "error" (all searches failed,
+                 distinct from "no_results" which means the searches
+                 succeeded but found nothing)
     """
     if not address and not neighborhood:
-        return []
+        return [], "no_results"
 
     # Extract street number + name from address
     m = re.match(r'^(\d+)\s+(.+?)(?:,|$)', address.strip())
@@ -133,11 +138,13 @@ def fetch_nearby_articles(
 
     seen_urls: set[str] = set()
     articles: list[dict] = []
+    any_ok = False
 
     for i, q in enumerate(queries):
         if i > 0:
             time.sleep(random.uniform(1.0, 2.0))
-        results = _ddg_search(q)
+        results, ok = _ddg_search(q)
+        any_ok = any_ok or ok
         for r in results:
             url = r.get("url", "")
             title = r.get("title", "")
@@ -160,4 +167,11 @@ def fetch_nearby_articles(
         if len(articles) >= max_results:
             break
 
-    return articles[:max_results]
+    if articles:
+        status = "live"
+    elif not any_ok:
+        status = "error"
+    else:
+        status = "no_results"
+
+    return articles[:max_results], status

@@ -26,7 +26,7 @@ from modules.app_logging import init_logging, get_logger, record_source_status
 from modules.analyzer import compute_summary, compute_insights
 from modules.visualizer import build_map, build_bar_chart, build_range_chart, ESRI_SATELLITE_TILES, ESRI_SATELLITE_ATTR
 from modules.zola_fetcher import fetch_zoning_info
-from modules.zoning_rules import get_zoning_rules, get_zoning_citations, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info
+from modules.zoning_rules import get_zoning_rules, get_zoning_citations, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info, estimate_entitlement_path
 from modules.cityrealty_fetcher import fetch_cityrealty_comps
 from modules.pip_fetcher import (
     fetch_property_history,
@@ -43,7 +43,7 @@ from modules.ecb_fetcher import fetch_ecb_violations
 from modules.deal_scorer import compute_deal_score
 from modules.unit_mix import (
     get_avg_sf, optimize_unit_mix, compute_revenue,
-    avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf,
+    avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf, OPEX_RATIO,
 )
 from modules.risk_matrix import MACRO_RISKS, get_micro_risks
 
@@ -1662,6 +1662,11 @@ with tab_property:
                             neighborhood=neighborhood if neighborhood != "—" else "",
                         )
                 _nd_devs, _nd_status = st.session_state[_nd_key]
+                _nd_overall = _nd_status.get("overall", "")
+                if _nd_overall == "error":
+                    st.warning("⚠️ Nearby-developments search failed across all sources — results below may be incomplete.")
+                elif _nd_overall == "blocked":
+                    st.warning("⚠️ One or more nearby-developments sources rate-limited this request.")
 
                 _nd_total_units = sum(d.get("units") or 0 for d in _nd_devs)
                 _nd_total_sf    = sum(d.get("sqft")  or 0 for d in _nd_devs)
@@ -1826,6 +1831,11 @@ with tab_property:
                 _sc_score = _score_result["score"]
                 _sc_tier  = _score_result["tier"]
                 _sc_break = _score_result["breakdown"]
+                # Stashed so the "Save to Portfolio" button further down this
+                # same render (Zoning & Property Data section) can attach the
+                # same Deal Score shown here, instead of saving a property
+                # with a blank score/tier — see _map_zinfo_to_portfolio_schema.
+                st.session_state["_ds_last_score_result"] = _score_result
 
                 _sc_clr = "#15803D" if _sc_score >= 70 else ("#B45309" if _sc_score >= 40 else "#991B1B")
                 _sc_tbg = "#DCFCE7" if _sc_score >= 70 else ("#FEF9C3" if _sc_score >= 40 else "#FEE2E2")
@@ -1866,6 +1876,7 @@ with tab_property:
             _und_key = f"_area_und_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
             if _und_key not in st.session_state:
                 with st.spinner("Fetching PLUTO lot data for area underdevelopment analysis…"):
+                    _und_err = None
                     try:
                         import math as _math
                         _und_lat_d = radius_miles / 69.0
@@ -1883,11 +1894,18 @@ with tab_property:
                             },
                             timeout=25,
                         )
-                        _und_raw = _und_resp.json() if _und_resp.ok else []
-                    except Exception:
+                        _und_resp.raise_for_status()
+                        _und_raw = _und_resp.json()
+                    except Exception as _und_exc:
                         _und_raw = []
+                        _und_err = str(_und_exc)
                 st.session_state[_und_key] = _und_raw
+                st.session_state[f"{_und_key}_error"] = _und_err
+                record_source_status("Area Underdevelopment (PLUTO)", ok=(_und_err is None), detail=_und_err or "")
             _und_raw = st.session_state.get(_und_key, [])
+            _und_fetch_err = st.session_state.get(f"{_und_key}_error")
+            if _und_fetch_err:
+                st.warning(f"⚠️ PLUTO lot fetch failed — area underdevelopment analysis unavailable: {_und_fetch_err}")
 
             # Filter to actual radius + compute metrics
             _und_lots: list[dict] = []
@@ -2081,6 +2099,10 @@ with tab_property:
                     "craigslist_comm":  (_cl_comm_st.get("overall","—") if isinstance(_cl_comm_st, dict) else str(_cl_comm_st)),
                 }
                 st.session_state[_comm_key] = {"listings": _all_comm}
+                record_source_status(
+                    "Commercial Comps", ok=True,
+                    detail="" if _all_comm else "no commercial/loopnet/crexi results in radius",
+                )
             _comm_listings = st.session_state[_comm_key]["listings"]
 
             # Sales comps (shared between Residential condo section and Property Sales tab)
@@ -2094,7 +2116,55 @@ with tab_property:
                         neighborhood=neighborhood if neighborhood != "—" else None,
                     )
                 st.session_state[_sales_key] = {"listings": _sales_listings_raw, "status": _sales_status}
+                record_source_status(
+                    "NYC Sales Comps", ok=(_sales_status not in ("error",) and not str(_sales_status).startswith("error")),
+                    detail="" if _sales_listings_raw else str(_sales_status),
+                )
             _sales_listings = st.session_state[_sales_key]["listings"]
+            _sales_status = st.session_state[_sales_key].get("status", "")
+
+            # ── Comps Reconciliation (rental vs. sales, implied cap rate / GRM) ──
+            # Combines the rental comps (`listings`, fetched earlier for this
+            # tab) with the sales comps just fetched above — the 5 comp tabs
+            # below otherwise never talk to each other, leaving this
+            # arithmetic to the analyst by hand.
+            _rc_rent_psf_vals = [
+                (l["rent"] * 12 / l["sqft"]) for l in listings
+                if l.get("rent") and l.get("sqft") and l["sqft"] > 0
+            ]
+            _rc_sale_psf_vals = [
+                l["price_psf"] for l in _sales_listings if l.get("price_psf")
+            ] or [
+                l["price"] / l["sqft"] for l in _sales_listings
+                if l.get("price") and l.get("sqft") and l["sqft"] > 0
+            ]
+            if _rc_rent_psf_vals and _rc_sale_psf_vals:
+                _rc_ann_rent_psf = sorted(_rc_rent_psf_vals)[len(_rc_rent_psf_vals) // 2]
+                _rc_sale_psf = sorted(_rc_sale_psf_vals)[len(_rc_sale_psf_vals) // 2]
+                # GRM = Sale Price / Annual Gross Rent (both already $/SF-normalized,
+                # so the SF term cancels — no /12 needed since _rc_ann_rent_psf is
+                # already an annual figure).
+                _rc_grm = _rc_sale_psf / _rc_ann_rent_psf if _rc_ann_rent_psf > 0 else None
+                _rc_noi_psf = _rc_ann_rent_psf * (1 - OPEX_RATIO) * 0.93  # 93% stabilized occupancy assumption
+                _rc_cap_rate = (_rc_noi_psf / _rc_sale_psf * 100) if _rc_sale_psf > 0 else None
+
+                with st.expander("🔗 Comps Reconciliation — Implied Cap Rate & GRM", expanded=False):
+                    st.caption(
+                        f"Synthesized from {len(_rc_rent_psf_vals)} rental comp(s) and {len(_rc_sale_psf_vals)} sales comp(s) "
+                        "fetched above — median $/SF each, not matched building-to-building. NOI assumes "
+                        f"{OPEX_RATIO:.0%} opex ratio and 93% stabilized occupancy (same assumptions as the massing "
+                        "scenarios' financials) — a rough reconciliation, not a substitute for building-specific underwriting."
+                    )
+                    _rc_c1, _rc_c2, _rc_c3, _rc_c4 = st.columns(4)
+                    _rc_c1.metric("Median Rent $/SF/yr", f"${_rc_ann_rent_psf:,.2f}")
+                    _rc_c2.metric("Median Sale $/SF", f"${_rc_sale_psf:,.2f}")
+                    _rc_c3.metric("Implied GRM", f"{_rc_grm:.1f}x" if _rc_grm else "—")
+                    _rc_c4.metric("Implied Cap Rate", f"{_rc_cap_rate:.2f}%" if _rc_cap_rate else "—")
+            elif listings or _sales_listings:
+                st.caption(
+                    "🔗 Comps reconciliation unavailable — need both rental and sales comps with SF data to compute "
+                    "implied cap rate / GRM (only one side is present for this property)."
+                )
 
             # ── Tab 1: Residential ────────────────────────────────────────────────
             with _tab_res:
@@ -2183,6 +2253,8 @@ with tab_property:
                     with st.expander(f"📋 Condo/Residential Sales ({len(_condo_sales)} found)", expanded=False):
                         st.dataframe(pd.DataFrame(_cs_rows_df), use_container_width=True,
                                      height=min(len(_cs_rows_df)*35+40, 340))
+                elif str(_sales_status).startswith("error"):
+                    st.warning(f"⚠️ NYC Rolling Sales fetch failed — condo/residential sales unavailable: {_sales_status}")
 
                 # AI Summary
                 with st.expander("🤖 AI Market Summary", expanded=False):
@@ -2518,6 +2590,13 @@ with tab_property:
                 _cr_lnk_cols[1].markdown(f"[💰 {neighborhood} Sales ↗]({_cr_sale_url})" if _cr_sale_url else "")
                 _cr_lnk_cols[2].markdown(f"[🔍 Search CityRealty ↗]({_cr_srch_url})" if _cr_srch_url else "")
 
+                record_source_status(
+                    "CityRealty Comps", ok=(_cr_st.get("status") != "error"),
+                    detail="" if _cr_st.get("status") != "error" else str(_cr_st.get("status")),
+                )
+                if _cr_st.get("status") == "error":
+                    st.warning("⚠️ CityRealty search failed — results below may be incomplete or missing.")
+
                 if _cr_comps:
                     st.markdown("**📊 Comparable Buildings Summary**")
                     # Build table format with building details and CityRealty links
@@ -2738,10 +2817,20 @@ with tab_property:
             _comps_key = f"_comps_{neighborhood.lower()}_{zip_code}"
             if _comps_key not in st.session_state:
                 with st.spinner(f"Researching competing developments in {neighborhood}…"):
-                    st.session_state[_comps_key] = search_competing_devs(
+                    _cd_devs, _cd_status = search_competing_devs(
                         neighborhood, borough, lat, lon, zip_code
                     )
-            _comp_devs = st.session_state.get(_comps_key, [])
+                st.session_state[_comps_key] = {"devs": _cd_devs, "status": _cd_status}
+                record_source_status(
+                    "Competing Developments", ok=(_cd_status != "error"),
+                    detail="" if _cd_status != "error" else "DuckDuckGo search failed",
+                )
+            _comps_data = st.session_state.get(_comps_key, {})
+            _comp_devs = _comps_data.get("devs", [])
+            _comp_devs_status = _comps_data.get("status", "")
+
+            if _comp_devs_status == "error":
+                st.warning("⚠️ Competing-development search failed — results below may be incomplete or missing.")
 
             if _comp_devs:
                 # ── Pipeline Summary ──────────────────────────────────────────
@@ -2821,10 +2910,20 @@ with tab_property:
             _articles_key = f"_articles_{address_input.strip()[:40].lower()}_{neighborhood.lower()}"
             if _articles_key not in st.session_state:
                 with st.spinner("Searching real estate news…"):
-                    st.session_state[_articles_key] = fetch_nearby_articles(
+                    _art_list, _art_status = fetch_nearby_articles(
                         address_input.strip(), neighborhood, borough
                     )
-            _articles = st.session_state.get(_articles_key, [])
+                st.session_state[_articles_key] = {"articles": _art_list, "status": _art_status}
+                record_source_status(
+                    "News & Transactions", ok=(_art_status != "error"),
+                    detail="" if _art_status != "error" else "DuckDuckGo search failed",
+                )
+            _articles_data = st.session_state.get(_articles_key, {})
+            _articles = _articles_data.get("articles", [])
+            _articles_status = _articles_data.get("status", "")
+
+            if _articles_status == "error":
+                st.warning("⚠️ News search failed — results below may be incomplete or missing.")
 
             if _articles:
                 _art_cols = st.columns(2)
@@ -2932,10 +3031,23 @@ with tab_property:
                     if _bbl_disp and _bbl_disp != "—":
                         if st.button("☆ Save to Portfolio", key="pa_save_to_portfolio"):
                             from modules.portfolio_db import save_property
-                            save_property(
-                                _map_zinfo_to_portfolio_schema(_zinfo, _zinfo_label, lat, lon),
-                                status="Watching",
-                            )
+                            _pa_save_dict = _map_zinfo_to_portfolio_schema(_zinfo, _zinfo_label, lat, lon)
+                            # Carry over the same Deal Score / tax-abatement /
+                            # rent-stabilization signals already computed
+                            # on-screen for this property, so a save from this
+                            # tab is as rich as a Site Finder save (previously
+                            # these were silently dropped — see the Portfolio
+                            # comparison-view data-parity note in the review).
+                            _pa_score = st.session_state.get("_ds_last_score_result")
+                            if _pa_score:
+                                _pa_save_dict["deal_score"] = _pa_score
+                            _pa_abate = st.session_state.get(f"_abate_{_bbl_disp}")
+                            if _pa_abate:
+                                _pa_save_dict["tax_abatement"] = _pa_abate
+                            _pa_rentstab = st.session_state.get(f"_rentstab_{_bbl_disp}")
+                            if _pa_rentstab:
+                                _pa_save_dict["rent_stab_signal"] = _pa_rentstab
+                            save_property(_pa_save_dict, status="Watching")
                             st.success("Saved to Portfolio.")
 
                     # ── ACRIS Property History ───────────────────────────────
@@ -4053,6 +4165,7 @@ with tab_property:
                             if _show_nbrs and _zinfo.get("block") and _zinfo.get("borough_code"):
                                 _nbr_cache_key = f"_nbr_{_zinfo.get('block')}_{_zinfo.get('borough_code')}"
                                 if _nbr_cache_key not in st.session_state:
+                                    _nbr_err = None
                                     try:
                                         import requests as _req
                                         _nbr_resp = _req.get(
@@ -4064,7 +4177,8 @@ with tab_property:
                                             },
                                             timeout=8,
                                         )
-                                        _nbr_raw = _nbr_resp.json() if _nbr_resp.ok else []
+                                        _nbr_resp.raise_for_status()
+                                        _nbr_raw = _nbr_resp.json()
                                         # Tag each with side relative to subject lot
                                         _subj_lot_int = int(re.sub(r"\D", "", str(_zinfo.get("lot", "0"))) or "0")
                                         for _nb in _nbr_raw:
@@ -4074,8 +4188,14 @@ with tab_property:
                                         st.session_state[_nbr_cache_key] = [
                                             nb for nb in _nbr_raw if nb.get("_side")
                                         ]
-                                    except Exception:
+                                    except Exception as _nbr_exc:
                                         st.session_state[_nbr_cache_key] = []
+                                        _nbr_err = str(_nbr_exc)
+                                    record_source_status(
+                                        "Neighbor Lots (PLUTO, massing)", ok=(_nbr_err is None), detail=_nbr_err or ""
+                                    )
+                                    if _nbr_err:
+                                        st.caption(f"⚠️ Neighbor lot fetch failed: {_nbr_err}")
                                 _nbr_lots = st.session_state.get(_nbr_cache_key, [])
 
                             # Build / retrieve massing options
@@ -4120,6 +4240,23 @@ with tab_property:
                                         f"{int(_gross_sf / _max_bldg_sf * 100)}%"
                                         if _max_bldg_sf > 0 else "—"
                                     )
+                                    # Same NOI/cap-value math each scenario's own
+                                    # "Unit Mix & Financials" expander computes
+                                    # further down — surfaced here too so
+                                    # scenarios can be ranked by economics
+                                    # without opening all of them one at a time.
+                                    _noi_val, _cap_val = None, None
+                                    if _net_sf > 0:
+                                        try:
+                                            _sum_umix = optimize_unit_mix(_net_sf, neighborhood)
+                                            _sum_rev = compute_revenue(
+                                                _sum_umix, _avg_rents,
+                                                risk_level=_o.get("risk_level", "MED"), borough=borough,
+                                            )
+                                            _noi_val = _sum_rev["noi"]
+                                            _cap_val = _sum_rev["est_cap_value"]
+                                        except Exception:
+                                            pass
                                     _sum_rows.append({
                                         "#":           _o.get("number", ""),
                                         "Scenario":    _o.get("name", "—"),
@@ -4132,9 +4269,16 @@ with tab_property:
                                         "Net SF":      _net_sf,
                                         "Est. Units":  _units,
                                         "Loss %":      f"{int(_o.get('loss_factor',0.15)*100)}%",
+                                        "Est. NOI":    _noi_val,
+                                        "Est. Cap Value": _cap_val,
                                     })
                                 _sum_df = pd.DataFrame(_sum_rows)
                                 with st.expander("📊 All Scenarios — Summary Table", expanded=True):
+                                    st.caption(
+                                        "Est. NOI / Cap Value use a single stabilized-year assumption set "
+                                        "(same math as each scenario's own Unit Mix & Financials tab) — a "
+                                        "preliminary screening comparison, not a substitute for a full pro forma."
+                                    )
                                     st.dataframe(
                                         _sum_df,
                                         use_container_width=True,
@@ -4148,8 +4292,49 @@ with tab_property:
                                             "Est. Units":  st.column_config.NumberColumn("Est. Units", format="%d"),
                                             "Stories":     st.column_config.NumberColumn("Stories",  format="%d"),
                                             "Height (ft)": st.column_config.NumberColumn("Height (ft)", format="%d"),
+                                            "Est. NOI":    st.column_config.NumberColumn("Est. NOI", format="$%d"),
+                                            "Est. Cap Value": st.column_config.NumberColumn("Est. Cap Value", format="$%d"),
                                         },
                                     )
+                                    _best_by_cap = max(
+                                        (r for r in _sum_rows if r["Est. Cap Value"]),
+                                        key=lambda r: r["Est. Cap Value"], default=None,
+                                    )
+                                    if _best_by_cap:
+                                        st.caption(f"💡 Highest estimated cap value: **{_best_by_cap['Scenario']}** (${_best_by_cap['Est. Cap Value']:,.0f})")
+
+                                # ── Entitlement Path — decision framing ──────
+                                # Groups the 10 scenarios by APPROVAL TYPE
+                                # (as-of-right / minor mod / BSA variance /
+                                # ULURP rezoning) instead of leaving them as a
+                                # flat tile list — each path's typical
+                                # timeline/cost comes from
+                                # modules/zoning_rules.ENTITLEMENT_PATHS.
+                                with st.expander("🏛️ Entitlement Path — Decision View", expanded=False):
+                                    st.caption(
+                                        "Scenarios grouped by the approval path they'd realistically require — "
+                                        "illustrative NYC rules-of-thumb, not a substitute for land-use counsel's "
+                                        "project-specific assessment."
+                                    )
+                                    _ent_groups: dict = {}
+                                    for _eo in _options:
+                                        _epath = estimate_entitlement_path(_eo.get("risk_level", ""), _eo.get("description", ""))
+                                        _ent_groups.setdefault(_epath["path_key"], {"info": _epath, "scenarios": []})
+                                        _ent_groups[_epath["path_key"]]["scenarios"].append(_eo.get("name", "—"))
+                                    _ent_order = ["as_of_right", "minor_modification", "bsa_variance", "ulurp_rezoning"]
+                                    for _ek in _ent_order:
+                                        if _ek not in _ent_groups:
+                                            continue
+                                        _eg = _ent_groups[_ek]
+                                        _einfo = _eg["info"]
+                                        st.markdown(
+                                            f"**{_einfo['label']}** — {', '.join(_eg['scenarios'])}\n\n"
+                                            f"- *Timeline:* {_einfo['timeline']}\n"
+                                            f"- *Cost range:* {_einfo['cost_range']}\n"
+                                            f"- *Approval likelihood:* {_einfo['approval_probability']}\n"
+                                            f"- {_einfo['description']}"
+                                        )
+                                        st.markdown("---")
 
                             if _options:
                                 # ── Risk badge helper ────────────────────────
@@ -4356,6 +4541,18 @@ with tab_property:
                                                 ("Floor Plate",   f"{_so.get('typical_floor_sqft',0):,} SF"),
                                                 ("Loss Factor",   f"{int(_so.get('loss_factor',0.15)*100)}%"),
                                             ]
+                                            _cmp_nrsf = _so.get("net_rentable_sqft", 0)
+                                            if _cmp_nrsf > 0:
+                                                try:
+                                                    _cmp_umix = optimize_unit_mix(_cmp_nrsf, neighborhood)
+                                                    _cmp_rev = compute_revenue(
+                                                        _cmp_umix, _avg_rents,
+                                                        risk_level=_so.get("risk_level", "MED"), borough=borough,
+                                                    )
+                                                    _cmp_data.append(("Est. NOI", f"${_cmp_rev['noi']:,.0f}"))
+                                                    _cmp_data.append(("Est. Cap Value", f"${_cmp_rev['est_cap_value']:,.0f}"))
+                                                except Exception:
+                                                    pass
                                             for _ck, _cv in _cmp_data:
                                                 st.markdown(
                                                     f"<div style='display:flex;justify-content:space-between;"
@@ -4385,6 +4582,73 @@ with tab_property:
 
             # ── Macro + Micro Risk Matrix ──────────────────────────────────────
             _section_header("⚠️", "Investment Risk Analysis")
+
+            # ── Property-Specific Risk Signals (dynamic — from live data ────
+            # already fetched earlier in this same render, not the static
+            # macro/micro tables below) ──────────────────────────────────────
+            _rk_bbl = (_zinfo or {}).get("bbl", "—")
+            _rk_score_result = st.session_state.get("_ds_last_score_result")
+            _rk_acris = st.session_state.get(f"_acris_{_rk_bbl}", {}) or {}
+            _rk_acris_sum = _rk_acris.get("summary", {}) or {}
+            _rk_pip = st.session_state.get(f"_pip_{_rk_bbl}", {}) or {}
+            _rk_pip_sum = _rk_pip.get("summary", {}) or {}
+            _rk_abate = st.session_state.get(f"_abate_{_rk_bbl}", {}) or {}
+            _rk_rentstab = st.session_state.get(f"_rentstab_{_rk_bbl}", {}) or {}
+
+            _rk_flags: list[dict] = []
+            _rk_liens = _rk_acris_sum.get("open_liens", 0) or 0
+            _rk_forecl = _rk_acris_sum.get("foreclosure_count", 0) or 0
+            if _rk_forecl > 0:
+                _rk_flags.append({"level": "high", "text": f"{_rk_forecl} foreclosure/lis pendens filing(s) on ACRIS"})
+            if _rk_liens >= 2:
+                _rk_flags.append({"level": "high", "text": f"{_rk_liens} open liens/UCC filings"})
+            elif _rk_liens == 1:
+                _rk_flags.append({"level": "med", "text": "1 open lien/UCC filing"})
+
+            _rk_open_dob = _rk_pip_sum.get("open_dob_viol", 0) or 0
+            _rk_open_cx = _rk_pip_sum.get("open_complaints", 0) or 0
+            if _rk_open_dob > 15:
+                _rk_flags.append({"level": "high", "text": f"{_rk_open_dob} open DOB violations"})
+            elif _rk_open_dob > 5:
+                _rk_flags.append({"level": "med", "text": f"{_rk_open_dob} open DOB violations"})
+            if _rk_open_cx > 10:
+                _rk_flags.append({"level": "med", "text": f"{_rk_open_cx} open DOB complaints"})
+
+            if _rk_rentstab.get("likely_stabilized"):
+                _rk_flags.append({
+                    "level": "med",
+                    "text": f"Likely rent-stabilized ({_rk_rentstab.get('confidence', 0):.0%} conf., estimated) "
+                            "— limits rent upside and may constrain conversion/demolition strategies",
+                })
+            if _rk_abate.get("currently_exempt"):
+                _rk_flags.append({
+                    "level": "low",
+                    "text": f"Currently tax-exempt (${_rk_abate.get('exempt_value', 0):,.0f}) "
+                            "— confirm exemption's expiration/phase-out schedule before underwriting stabilized taxes",
+                })
+
+            if _rk_flags:
+                st.markdown("**Property-Specific Risk Signals** *(from live data already fetched above — ACRIS, DOB/HPD, tax/rent-stab estimates)*")
+                _rk_color = {"high": "#DC2626", "med": "#B45309", "low": "#2563EB"}
+                _rk_bg    = {"high": "#FEE2E2", "med": "#FEF9C3", "low": "#DBEAFE"}
+                _rk_cols = st.columns(min(3, len(_rk_flags)))
+                for _rk_i, _rk_f in enumerate(_rk_flags):
+                    with _rk_cols[_rk_i % len(_rk_cols)]:
+                        st.markdown(
+                            f"<div style='background:{_rk_bg[_rk_f['level']]};color:{_rk_color[_rk_f['level']]};"
+                            f"padding:8px 12px;border-radius:8px;font-size:0.8rem;margin-bottom:8px'>"
+                            f"{_rk_f['text']}</div>",
+                            unsafe_allow_html=True,
+                        )
+                if _rk_score_result:
+                    st.caption(
+                        f"Deal Score already reflects these signals in its Distress component: "
+                        f"{_rk_score_result['score']}/100 ({_rk_score_result['tier']})."
+                    )
+            elif _rk_bbl != "—" and (_rk_acris or _rk_pip):
+                st.markdown("**Property-Specific Risk Signals**")
+                st.success("✅ No elevated liens, foreclosures, DOB violations, or complaints found in the data already checked above.")
+            st.markdown("---")
 
             _risk_c1, _risk_c2 = st.columns([3, 2])
 
