@@ -14,14 +14,24 @@ No / Weak / Moderate / Strong — see classify_distress() docstring.
 
 from __future__ import annotations
 import re
+import time
 
 from modules.acris_fetcher import fetch_acris
 from modules.pip_fetcher import fetch_property_history
+from modules.app_logging import record_source_status
 
 # Batch size cap — ACRIS + DOB/HPD are live network calls per property,
 # so bulk-enriching is intentionally limited to a manageable top-N slice
 # of already deal-score-ranked results, not the full result set.
 DEFAULT_BATCH_SIZE = 25
+
+# Gap between PROPERTIES (not documents) in enrich_ownership_batch()'s loop.
+# Each property can trigger 10-15+ unauthenticated NYC Open Data requests
+# (ACRIS's 4-tier fallback + party lookups, DOB/HPD's 5 endpoints) with no
+# app token — a burst of these back-to-back across 25 properties is a
+# plausible trigger for Socrata's anonymous-tier rate limiting. This pacing
+# targets that burstiness directly rather than shrinking the batch size.
+_BATCH_PACING_SECONDS = 0.4
 
 _ENTITY_MARKERS = (
     "LLC", "L L C", "LP", "L P", "LLP", "INC", "CORP", "CO ", " CO",
@@ -146,6 +156,10 @@ def enrich_ownership(prop: dict, borough_name: str = "") -> dict:
         distress              — {"level", "score", "evidence"}
         acris_url             — str
         pip_url                — str
+        acris_error            — str | None, set if the ACRIS fetch itself
+                                  failed/timed out (distinct from a
+                                  confirmed-clean "no records found" result)
+        pip_error               — str | None, same for the DOB/HPD fetch
     """
     out = dict(prop)
     bbl = prop.get("bbl", "")
@@ -175,6 +189,8 @@ def enrich_ownership(prop: dict, borough_name: str = "") -> dict:
         "distress_signal":      distress["level"],   # overrides the PLUTO-only quick pass
         "acris_url":            acris.get("acris_url", ""),
         "pip_url":              pip.get("pip_url", ""),
+        "acris_error":          acris.get("error"),
+        "pip_error":            pip.get("error"),
     })
     return out
 
@@ -207,5 +223,21 @@ def enrich_ownership_batch(
             enriched.append(fallback)
         if progress_callback:
             progress_callback(i, n)
+        if i < n:
+            time.sleep(_BATCH_PACING_SECONDS)
+
+    fail_count = sum(
+        1 for p in enriched
+        if p.get("ownership_error") or p.get("acris_error") or p.get("pip_error")
+    )
+    if n:
+        record_source_status(
+            "Ownership Batch Enrichment (ACRIS/DOB-HPD)",
+            ok=(fail_count == 0),
+            detail=(
+                "All properties enriched cleanly" if fail_count == 0
+                else f"{fail_count} of {n} propert{'y' if n == 1 else 'ies'} had an ACRIS/DOB-HPD fetch issue"
+            ),
+        )
 
     return enriched + remainder

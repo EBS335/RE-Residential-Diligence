@@ -14,13 +14,42 @@ import re
 import requests
 from typing import Optional
 
-from modules.app_logging import get_logger
+from modules.app_logging import get_logger, record_source_status
 
 log = get_logger(__name__)
 
 _SALES_URL  = "https://data.cityofnewyork.us/resource/usep-8jbt.json"
 _DOB_URL    = "https://data.cityofnewyork.us/resource/ipu4-2q9a.json"
 _TIMEOUT    = 20
+
+_SALES_SELECT_BASE = (
+    "address,sale_price,gross_sq_ft,sale_date,"
+    "building_class_category,zip_code,borough,block,lot"
+)
+# Augmented $select attempting geo columns for a real distance sort. This
+# sandbox cannot verify the live usep-8jbt schema actually has these column
+# names — _query_sales()'s HTTPError fallback below makes that safe either
+# way: a wrong guess just degrades to the base fields, same as today.
+_SALES_SELECT_GEO = _SALES_SELECT_BASE + ",latitude,longitude"
+
+
+def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r_miles = 3958.8
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    return 2 * r_miles * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _query_sales(where_clause: str, select_fields: str, limit: int = 100) -> list:
+    params = {
+        "$where": where_clause, "$select": select_fields,
+        "$order": "sale_date DESC", "$limit": str(limit),
+    }
+    resp = requests.get(_SALES_URL, params=params, timeout=_TIMEOUT)
+    resp.raise_for_status()
+    return resp.json()
 
 # Building class category prefix → asset_type
 _RESI_PREFIXES = {
@@ -61,31 +90,33 @@ def fetch_nyc_sales(
     if not zip_code and not neighborhood:
         return [], "no_filter"
 
-    where_parts = ["sale_price > '10000'"]
+    where_parts = ["sale_price > 10000"]
     if zip_code:
         where_parts.append(f"zip_code='{zip_code.strip()}'")
     elif neighborhood:
         where_parts.append(f"upper(neighborhood)='{neighborhood.strip().upper()}'")
+    where_clause = " AND ".join(where_parts)
 
-    params = {
-        "$where":  " AND ".join(where_parts),
-        "$select": (
-            "address,sale_price,gross_sq_ft,sale_date,"
-            "building_class_category,zip_code,borough,block,lot"
-        ),
-        "$order":  "sale_date DESC",
-        "$limit":  "100",
-    }
-
+    has_geo = True
     try:
-        resp = requests.get(_SALES_URL, params=params, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        rows = resp.json()
+        rows = _query_sales(where_clause, _SALES_SELECT_GEO)
+    except requests.HTTPError:
+        # Geo columns likely don't exist on the live schema under this name
+        # — degrade to the base fields rather than failing the whole fetch.
+        has_geo = False
+        try:
+            rows = _query_sales(where_clause, _SALES_SELECT_BASE)
+        except Exception as exc:
+            log.warning("fetch_nyc_sales failed: %s", exc)
+            record_source_status("NYC Rolling Sales", ok=False, detail=str(exc))
+            return [], f"error: {exc}"
     except Exception as exc:
         log.warning("fetch_nyc_sales failed: %s", exc)
+        record_source_status("NYC Rolling Sales", ok=False, detail=str(exc))
         return [], f"error: {exc}"
 
     if not isinstance(rows, list):
+        record_source_status("NYC Rolling Sales", ok=False, detail="unexpected response shape")
         return [], "error"
 
     listings: list[dict] = []
@@ -110,6 +141,16 @@ def fetch_nyc_sales(
             if r.get("borough"):
                 addr = f"{addr}, {r['borough']}"
 
+            distance = None
+            item_lat, item_lon = lat, lon
+            if has_geo:
+                try:
+                    item_lat = float(r.get("latitude"))
+                    item_lon = float(r.get("longitude"))
+                    distance = round(_haversine_miles(lat, lon, item_lat, item_lon), 2)
+                except (TypeError, ValueError):
+                    item_lat, item_lon = lat, lon
+
             listings.append({
                 "address":        addr[:80],
                 "price":          price,
@@ -123,16 +164,23 @@ def fetch_nyc_sales(
                 "date":           (r.get("sale_date") or "")[:10],
                 "source":         "NYC Rolling Sales",
                 "url":            "",
-                "lat":            lat,
-                "lon":            lon,
-                "distance_miles": None,
+                "lat":            item_lat,
+                "lon":            item_lon,
+                "distance_miles": distance,
                 "days_on_market": None,
                 "photos":         [],
             })
         except Exception:
             continue
 
-    return listings, ("live" if listings else "no_results")
+    if has_geo:
+        # Nearest-first when real distance is available; comps without a
+        # resolvable distance sort last rather than being dropped.
+        listings.sort(key=lambda item: (item["distance_miles"] is None, item["distance_miles"]))
+
+    status = "live" if listings else "no_results"
+    record_source_status("NYC Rolling Sales", ok=True, detail="" if listings else "no matching sales in window")
+    return listings, status
 
 
 def fetch_dob_permits(
@@ -171,9 +219,11 @@ def fetch_dob_permits(
         rows = resp.json()
     except Exception as exc:
         log.warning("fetch_dob_permits failed: %s", exc)
+        record_source_status("NYC DOB Permits", ok=False, detail=str(exc))
         return [], f"error: {exc}"
 
     if not isinstance(rows, list):
+        record_source_status("NYC DOB Permits", ok=False, detail="unexpected response shape")
         return [], "error"
 
     listings: list[dict] = []
@@ -217,4 +267,5 @@ def fetch_dob_permits(
         except Exception:
             continue
 
+    record_source_status("NYC DOB Permits", ok=True, detail="" if listings else "no matching permits in window")
     return listings, ("live" if listings else "no_results")

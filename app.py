@@ -24,7 +24,7 @@ from modules.data_fetcher import (
 )
 from modules.app_logging import init_logging, get_logger, record_source_status
 from modules.analyzer import compute_summary, compute_insights
-from modules.visualizer import build_map, build_bar_chart, build_range_chart
+from modules.visualizer import build_map, build_bar_chart, build_range_chart, ESRI_SATELLITE_TILES, ESRI_SATELLITE_ATTR
 from modules.zola_fetcher import fetch_zoning_info
 from modules.zoning_rules import get_zoning_rules, get_zoning_citations, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info
 from modules.cityrealty_fetcher import fetch_cityrealty_comps
@@ -918,6 +918,11 @@ def build_subject_map(
         tiles="OpenStreetMap",
         name="Street Map",
         attr="OpenStreetMap",
+    ).add_to(m)
+    folium.TileLayer(
+        tiles=ESRI_SATELLITE_TILES,
+        name="Satellite",
+        attr=ESRI_SATELLITE_ATTR,
     ).add_to(m)
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
 

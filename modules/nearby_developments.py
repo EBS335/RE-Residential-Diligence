@@ -29,6 +29,8 @@ from typing import Optional
 
 import requests
 
+from modules.app_logging import record_source_status
+
 # ── NYC DOB Permits ─────────────────────────────────────────────────────────
 
 _DOB_URL = "https://data.cityofnewyork.us/resource/ipu4-2q9a.json"
@@ -509,7 +511,18 @@ def fetch_nearby_developments(
         status["overall"] = "live"
     elif any(v == "blocked" for v in status.values()):
         status["overall"] = "blocked"
+    elif any(str(v).startswith("error") for v in status.values()):
+        # All 5 sources failing outright (network error/timeout/exception,
+        # as opposed to a literal HTTP 403/429 "blocked") must not be
+        # reported as a clean "no_results" — that masks a total outage.
+        status["overall"] = "error"
     else:
         status["overall"] = "no_results"
+
+    record_source_status(
+        "Nearby Development Pipeline",
+        ok=(status["overall"] in ("live", "no_results")),
+        detail="" if status["overall"] in ("live", "no_results") else f"overall status: {status['overall']}",
+    )
 
     return all_devs, status

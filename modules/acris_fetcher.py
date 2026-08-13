@@ -24,7 +24,7 @@ import re
 import time
 import requests
 
-from modules.app_logging import get_logger
+from modules.app_logging import get_logger, record_source_status
 
 log = get_logger(__name__)
 from typing import Optional
@@ -70,22 +70,32 @@ def _parse_bbl(bbl: str) -> Optional[tuple]:
     return borough, block_pad, lot_pad, block_int, lot_int
 
 
-def _get(url: str, params: dict) -> list:
-    """Fetch JSON list from Socrata endpoint; return [] on failure."""
+def _get(url: str, params: dict) -> tuple[list, bool]:
+    """
+    Fetch JSON list from a Socrata endpoint.
+
+    Returns (rows, ok) — ok=False means the request itself failed
+    (network error, timeout, non-2xx status), NOT that it legitimately
+    returned zero rows. Callers must treat rows==[] and ok==False as
+    "unknown" (the fetch may be incomplete), not "confirmed empty".
+    """
     try:
         params.setdefault("$limit", _MAX_DOCS)
         r = requests.get(url, params=params, timeout=_TIMEOUT)
         r.raise_for_status()
         data = r.json()
-        return data if isinstance(data, list) else []
+        return (data if isinstance(data, list) else []), True
     except Exception as exc:
         log.warning("acris_fetcher request to %s failed: %s", url, exc)
-        return []
+        return [], False
 
 
 def _fetch_parties(doc_id: str) -> list:
-    """Fetch all parties for a single document_id."""
-    rows = _get(_PARTY_URL, {"document_id": doc_id, "$limit": 10})
+    """Fetch all parties for a single document_id. Best-effort: a failed
+    party lookup degrades a document to missing buyer/lender names rather
+    than invalidating the whole ACRIS result, so its ok flag is discarded
+    here rather than propagated into fetch_acris()'s error field."""
+    rows, _ok = _get(_PARTY_URL, {"document_id": doc_id, "$limit": 10})
     parties = []
     for r in rows:
         ptype = str(r.get("party_type", ""))
@@ -104,51 +114,63 @@ def _fetch_parties(doc_id: str) -> list:
 
 
 def _query_master(borough: str, block: str, lot: str,
-                  order: str = "document_date DESC") -> list:
+                  order: str = "document_date DESC") -> tuple[list, bool]:
     """
     Query ACRIS Master via two-step Legals→Master lookup, then direct $where fallbacks.
 
     Socrata stores block/lot as zero-padded TEXT fields ("00167", "0001").
     Simple URL params (e.g. ?block=167) may coerce to integers and miss records.
     Using $where with quoted string literals forces string comparison.
+
+    Returns (rows, any_error) — any_error is True if ANY underlying
+    request along the way failed, even if a later step still found rows
+    (a caller that got real data back may ignore any_error; a caller that
+    ultimately found nothing should treat any_error as "unknown", not
+    "confirmed empty").
     """
     block_pad = str(block).zfill(5)
     lot_pad   = str(lot).zfill(4)
+    any_error = False
 
     # ── Step 1: Legals → document_ids (canonical BBL→doc mapping) ──────────
-    leg_rows = _get(_LEGALS_URL, {
+    leg_rows, ok = _get(_LEGALS_URL, {
         "$where": f"borough='{borough}' AND block='{block_pad}' AND lot='{lot_pad}'",
         "$select": "document_id",
         "$limit": 300,
     })
+    any_error = any_error or not ok
     doc_ids = list({r["document_id"] for r in leg_rows if r.get("document_id")})
     if doc_ids:
         id_clause = ",".join(f"'{d}'" for d in doc_ids[:200])
-        rows = _get(_DOC_MASTER_URL, {
+        rows, ok = _get(_DOC_MASTER_URL, {
             "$where": f"document_id in ({id_clause})",
             "$order": order,
             "$limit": _MAX_DOCS,
         })
+        any_error = any_error or not ok
         if rows:
-            return rows
+            return rows, any_error
 
     # ── Step 2: Direct $where on Master with zero-padded strings ───────────
-    rows = _get(_DOC_MASTER_URL, {
+    rows, ok = _get(_DOC_MASTER_URL, {
         "$where": f"borough='{borough}' AND block='{block_pad}' AND lot='{lot_pad}'",
         "$order": order,
         "$limit": _MAX_DOCS,
     })
+    any_error = any_error or not ok
     if rows:
-        return rows
+        return rows, any_error
 
     # ── Step 3: Unpadded fallback ───────────────────────────────────────────
     block_int = str(block).lstrip("0") or "0"
     lot_int   = str(lot).lstrip("0") or "0"
-    return _get(_DOC_MASTER_URL, {
+    rows, ok = _get(_DOC_MASTER_URL, {
         "$where": f"borough='{borough}' AND block='{block_int}' AND lot='{lot_int}'",
         "$order": order,
         "$limit": _MAX_DOCS,
     })
+    any_error = any_error or not ok
+    return rows, any_error
 
 
 def _build_doc(raw: dict, party_cache: dict) -> dict:
@@ -268,14 +290,16 @@ def _enrich_parties(raw_docs: list) -> dict:
 
 
 def _attempt(borough: str, block: str, lot: str,
-             acris_url: str, confidence: str) -> Optional[dict]:
+             acris_url: str, confidence: str) -> tuple[Optional[dict], bool]:
     """
     Try one specific (borough, block, lot) query.
-    Returns populated result dict if documents found, else None.
+    Returns (result_or_None, any_error) — result is populated if documents
+    were found, else None; any_error reflects _query_master()'s fetch
+    reliability regardless of whether documents were found.
     """
-    raw_docs = _query_master(borough, block, lot)
+    raw_docs, any_error = _query_master(borough, block, lot)
     if not raw_docs:
-        return None
+        return None, any_error
 
     party_cache = _enrich_parties(raw_docs)
     documents   = [_build_doc(r, party_cache) for r in raw_docs]
@@ -296,10 +320,19 @@ def _attempt(borough: str, block: str, lot: str,
         "confidence":   confidence,
         "match_method": f"{confidence} — BBL {borough}-{block}-{lot}",
         "error":        None,
-    }
+    }, any_error
 
 
 def fetch_acris(bbl: str) -> dict:
+    """Fetch ACRIS document history for a BBL, then record the outcome in
+    the sidebar Data Health panel. See _fetch_acris_impl() for the full
+    fallback logic and return-shape documentation."""
+    result = _fetch_acris_impl(bbl)
+    record_source_status("ACRIS", ok=(not result.get("error")), detail=result.get("error") or "")
+    return result
+
+
+def _fetch_acris_impl(bbl: str) -> dict:
     """
     Fetch ACRIS document history for a BBL with multi-level fallback.
 
@@ -353,28 +386,32 @@ def fetch_acris(bbl: str) -> dict:
         b=borough, blk=block_int, lt=lot_int
     )
     _empty["acris_url"] = acris_url_exact
+    any_error = False
 
     # ── Attempt 1: Exact BBL ────────────────────────────────────────────────
-    result = _attempt(borough, block_int, lot_int, acris_url_exact, "High")
+    result, err = _attempt(borough, block_int, lot_int, acris_url_exact, "High")
+    any_error = any_error or err
     if result:
         return result
 
     # ── Attempt 2: Condo building-level lot (7501) ──────────────────────────
     condo_lot = "7501"
     if lot_int != condo_lot:
-        result = _attempt(borough, block_int, condo_lot,
+        result, err = _attempt(borough, block_int, condo_lot,
                           _ACRIS_BBL_URL.format(b=borough, blk=block_int, lt=condo_lot),
                           "Medium")
+        any_error = any_error or err
         if result:
             result["match_method"] = f"Medium — condo building lot {borough}-{block_int}-7501"
             return result
 
     # ── Attempt 3: Block-only (ignore lot) ─────────────────────────────────
     block_url = _ACRIS_BLOCK_URL.format(b=borough, blk=block_int)
-    raw_block = _get(_DOC_MASTER_URL, {
+    raw_block, ok = _get(_DOC_MASTER_URL, {
         "$where": f"borough='{borough}' AND block='{block_pad}'",
         "$order": "document_date DESC", "$limit": _MAX_DOCS,
     })
+    any_error = any_error or not ok
     if raw_block:
         party_cache = _enrich_parties(raw_block)
         documents   = [_build_doc(r, party_cache) for r in raw_block]
@@ -404,11 +441,12 @@ def fetch_acris(bbl: str) -> dict:
 
     for delta in (1, -1, 2, -2):
         near_lot = str(max(1, base_lot + delta))
-        result = _attempt(
+        result, err = _attempt(
             borough, block_int, near_lot,
             _ACRIS_BBL_URL.format(b=borough, blk=block_int, lt=near_lot),
             "Low",
         )
+        any_error = any_error or err
         if result:
             result["match_method"] = (
                 f"Low — nearby lot {borough}-{block_int}-{near_lot} "
@@ -416,4 +454,11 @@ def fetch_acris(bbl: str) -> dict:
             )
             return result
 
+    if any_error:
+        return {
+            **_empty,
+            "error": "One or more NYC Open Data (ACRIS) requests failed or timed out "
+                     "— this result may be incomplete, not a confirmed clean record.",
+            "match_method": "No documents found after all fallbacks (with fetch errors)",
+        }
     return {**_empty, "error": None, "match_method": "No documents found after all fallbacks"}

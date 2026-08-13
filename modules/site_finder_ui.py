@@ -19,6 +19,8 @@ import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 
+from modules.visualizer import ESRI_SATELLITE_TILES, ESRI_SATELLITE_ATTR
+
 from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE
 from modules.site_sourcing import enrich_property, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
 from modules.deal_scorer import compute_bulk_deal_scores
@@ -247,7 +249,18 @@ def _render_results_map(properties: list[dict]) -> None:
     center_lon = sum(p["longitude"] for p in located) / len(located)
 
     m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="CartoDB positron")
-    cluster = MarkerCluster().add_to(m)
+    folium.TileLayer(
+        tiles=ESRI_SATELLITE_TILES, attr=ESRI_SATELLITE_ATTR,
+        name="Satellite", overlay=False, control=True,
+    ).add_to(m)
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
+    # Wider pixel radius than visualizer.py's tight rental-comps map (40px)
+    # since Site Finder results can legitimately include adjacent-lot
+    # assemblage candidates worth grouping at a city-wide zoom; a higher
+    # disableClusteringAtZoom (17 vs 16) defers full per-pin declustering
+    # until the user has genuinely zoomed to a near-parcel view, avoiding a
+    # cloud of overlapping individual pins on a 50-result borough-wide set.
+    cluster = MarkerCluster(options={"maxClusterRadius": 50, "disableClusteringAtZoom": 17}).add_to(m)
 
     for p in located:
         ds = p.get("deal_score", {})
@@ -336,7 +349,22 @@ def _render_results_table(properties: list[dict]) -> None:
             row["Owner Type"] = p.get("owner_type", "—")
             sale = p.get("last_sale_price")
             row["Last Sale"] = f"${sale:,.0f}" if sale else "—"
-        row["Distress"] = p.get("distress_signal", "No Signal")
+        if p.get("owner_type"):
+            # Truthiness, not key-presence: PLUTO's own `ownertype` field is
+            # always present (usually blank) on every property, so a key
+            # check would incorrectly read as "already enriched" for every
+            # unenriched row too. ACRIS enrichment always sets a non-empty
+            # classified value (detect_owner_type() never returns "").
+            # Enriched — distinguish "checked cleanly" from "checked, but
+            # the underlying ACRIS/DOB-HPD fetch had an issue" so a real
+            # error doesn't look identical to a genuinely clean record.
+            _err = p.get("acris_error") or p.get("pip_error")
+            row["Distress"] = (
+                f"⚠️ {p.get('distress_signal', 'No Signal')} (check error)" if _err
+                else p.get("distress_signal", "No Signal")
+            )
+        else:
+            row["Distress"] = f"{p.get('distress_signal', 'No Signal')} (not yet checked)"
         row["Deal Score"] = ds["score"]
         row["Tier"] = ds["tier"]
         rows.append(row)
@@ -477,6 +505,9 @@ def _render_property_detail(prop: dict) -> None:
     with st.expander("👤 Ownership, ACRIS & Distress Signal", expanded=bool(prop.get("owner_type"))):
         if prop.get("owner_type"):
             # Already enriched via ownership_research (bulk button or per-property fetch below)
+            _fetch_err = prop.get("acris_error") or prop.get("pip_error")
+            if _fetch_err:
+                st.warning(f"⚠️ One or more data sources failed during enrichment — signal below may be incomplete: {_fetch_err}")
             o1, o2, o3 = st.columns(3)
             sale_price = prop.get("last_sale_price")
             o1.metric("Last Sale", f"${sale_price:,.0f}" if sale_price else "—", prop.get("last_sale_date") or "")
@@ -513,7 +544,12 @@ def _render_property_detail(prop: dict) -> None:
                     st.session_state[_acris_key] = fetch_acris(prop["bbl"])
             acris = st.session_state.get(_acris_key, {})
             summ = acris.get("summary", {}) if acris else {}
-            if summ:
+            acris_err = acris.get("error")
+            if acris_err:
+                st.warning(f"⚠️ ACRIS fetch had an issue — data may be incomplete: {acris_err}")
+            elif summ.get("total_docs", 0) == 0:
+                st.info("✅ Checked — no ACRIS transaction history found for this BBL.")
+            else:
                 a1, a2, a3 = st.columns(3)
                 sale_price = summ.get("latest_sale_price")
                 a1.metric("Last Sale", f"${sale_price:,.0f}" if sale_price else "—", summ.get("latest_sale_date", "—"))
@@ -522,8 +558,6 @@ def _render_property_detail(prop: dict) -> None:
                 a3.metric("Open Liens", str(summ.get("open_liens", 0)))
                 if acris.get("acris_url"):
                     st.caption(f"[Full ACRIS history ↗]({acris['acris_url']})")
-            else:
-                st.info("No ACRIS transaction history found for this BBL.")
 
     with st.expander("📐 Assessment (PLUTO)", expanded=False):
         st.markdown(
@@ -535,6 +569,12 @@ def _render_property_detail(prop: dict) -> None:
             st.markdown(f"**Assessed Land Basis:** ${basis_psf:,.0f} / lot SF")
 
     with st.expander("📈 Market Comps & Competitive Pipeline", expanded=False):
+        st.caption(
+            "📰 Pipeline press coverage draws from each outlet's current RSS feed "
+            "(Google News, The Real Deal, Commercial Observer, Bisnow) — typically the "
+            "last few weeks to a few months of posts, not a full historical archive. "
+            "NYC DOB permit filings (36-month window) are the more reliable historical signal."
+        )
         if st.button("Fetch market comps & nearby pipeline", key=f"{_SF_PREFIX}fetch_market_{prop['bbl']}"):
             with st.spinner("Fetching NYC Rolling Sales comps & nearby development pipeline…"):
                 mkt = enrich_market_data(prop)
@@ -543,31 +583,52 @@ def _render_property_detail(prop: dict) -> None:
 
         mc = prop.get("market_comps")
         pipe = prop.get("pipeline")
-        if mc:
-            st.markdown("**Nearby Sales Comps (NYC Rolling Sales, by ZIP)**")
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Median $/SF", f"${mc['median_price_psf']:,.0f}" if mc.get("median_price_psf") else "—")
-            mc2.metric("Median Price", f"${mc['median_price']:,.0f}" if mc.get("median_price") else "—")
-            mc3.metric("Comp Count", mc.get("count", 0))
-            if mc.get("comps"):
-                comp_rows = [{
-                    "Address": c.get("address", ""), "Price": c.get("price"),
-                    "SF": c.get("sqft"), "$/SF": c.get("price_psf"), "Date": c.get("date"),
-                } for c in mc["comps"][:15]]
-                st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
-        if pipe:
+
+        if mc is not None:
+            st.markdown("**Nearby Sales Comps (NYC Rolling Sales, same ZIP, sorted by distance where available)**")
+            mc_status = mc.get("status", "")
+            if mc_status == "no_zip_code":
+                st.warning("⚠️ No ZIP code on record for this property — can't pull sales comps.")
+            elif mc_status.startswith("error"):
+                st.error(f"⚠️ NYC Rolling Sales fetch failed: {mc_status.split(':', 1)[-1].strip()}")
+            elif mc_status == "no_results":
+                st.info("✅ Checked — no matching sales found in this ZIP.")
+            else:  # "live"
+                mc1, mc2, mc3 = st.columns(3)
+                mc1.metric("Median $/SF", f"${mc['median_price_psf']:,.0f}" if mc.get("median_price_psf") else "—")
+                mc2.metric("Median Price", f"${mc['median_price']:,.0f}" if mc.get("median_price") else "—")
+                mc3.metric("Comp Count", mc.get("count", 0))
+                if mc.get("comps"):
+                    comp_rows = [{
+                        "Address": c.get("address", ""), "Price": c.get("price"),
+                        "SF": c.get("sqft"), "$/SF": c.get("price_psf"), "Date": c.get("date"),
+                    } for c in mc["comps"][:15]]
+                    st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+
+        if pipe is not None:
             st.markdown("**Nearby Competitive Pipeline (0.5 mi)**")
-            p1, p2 = st.columns(2)
-            p1.metric("Nearby Projects", pipe.get("count", 0))
-            p2.metric("Total Units in Pipeline", pipe.get("total_units", 0))
-            if pipe.get("developments"):
-                dev_rows = [{
-                    "Address": d.get("address", ""), "Type": d.get("asset_type", ""),
-                    "Units": d.get("units", ""), "Status": d.get("status", ""),
-                    "Source": d.get("source", ""),
-                } for d in pipe["developments"][:15]]
-                st.dataframe(pd.DataFrame(dev_rows), use_container_width=True, hide_index=True)
-        if not mc and not pipe:
+            pipe_overall = pipe.get("status", {}).get("overall", "")
+            if pipe_overall == "no_coordinates":
+                st.warning("⚠️ No lat/lon on record — can't search nearby pipeline.")
+            elif pipe_overall == "blocked":
+                st.warning("⚠️ One or more pipeline sources rate-limited this request. Try again shortly.")
+            elif pipe_overall == "error":
+                st.error("⚠️ Pipeline sources failed to respond — results may be incomplete.")
+            elif pipe_overall == "no_results":
+                st.info("✅ Checked — no nearby DOB filings or press coverage found.")
+            else:  # "live"
+                p1, p2 = st.columns(2)
+                p1.metric("Nearby Projects", pipe.get("count", 0))
+                p2.metric("Total Units in Pipeline", pipe.get("total_units", 0))
+                if pipe.get("developments"):
+                    dev_rows = [{
+                        "Address": d.get("address", ""), "Type": d.get("asset_type", ""),
+                        "Units": d.get("units", ""), "Status": d.get("status", ""),
+                        "Source": d.get("source", ""),
+                    } for d in pipe["developments"][:15]]
+                    st.dataframe(pd.DataFrame(dev_rows), use_container_width=True, hide_index=True)
+
+        if mc is None and pipe is None:
             st.caption("Not yet fetched — click above to pull live market comps and nearby pipeline for this property.")
 
     _render_underwriting_section(prop)

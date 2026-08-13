@@ -20,6 +20,17 @@ UNIT_COLOURS = {
 
 UNIT_ORDER = ["Studio", "1 Bed", "2 Bed", "3 Bed", "4+ Bed"]
 
+# Free, keyless satellite imagery — shared across every map that offers a
+# satellite/regular toggle, so the provider URL/attribution lives in one
+# place rather than being duplicated verbatim at each call site. The
+# surrounding folium.TileLayer()/LayerControl() calls are still written out
+# inline at each map-building call site (app.py, visualizer.py,
+# site_finder_ui.py) rather than wrapped in a helper — those sites'
+# marker/layer logic diverges too much for a generic wrapper to be worth it,
+# consistent with this codebase's existing per-call-site map construction.
+ESRI_SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+ESRI_SATELLITE_ATTR = "Esri"
+
 
 # ---------------------------------------------------------------------------
 # Interactive map
@@ -63,6 +74,11 @@ def build_map(
     ).add_to(m)
 
     if not listings:
+        folium.TileLayer(
+            tiles=ESRI_SATELLITE_TILES, attr=ESRI_SATELLITE_ATTR,
+            name="Satellite", overlay=False, control=True,
+        ).add_to(m)
+        folium.LayerControl(position="topright", collapsed=True).add_to(m)
         return m
 
     cluster = MarkerCluster(
@@ -165,6 +181,12 @@ def build_map(
       </div>
     </div>
     """))
+
+    folium.TileLayer(
+        tiles=ESRI_SATELLITE_TILES, attr=ESRI_SATELLITE_ATTR,
+        name="Satellite", overlay=False, control=True,
+    ).add_to(m)
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
 
     return m
 

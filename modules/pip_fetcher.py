@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 import requests
 
-from modules.app_logging import get_logger
+from modules.app_logging import get_logger, record_source_status
 
 log = get_logger(__name__)
 
@@ -52,17 +52,28 @@ def _bbl_parts(bbl10: str) -> tuple[str, str, str]:
     return bbl10[0], bbl10[1:6], bbl10[6:]
 
 
-def _get(url: str, params: dict) -> list[dict]:
-    """GET a Socrata endpoint, returning list of records or []."""
+def _get(url: str, params: dict) -> tuple[list[dict], bool]:
+    """
+    GET a Socrata endpoint.
+
+    Returns (rows, ok) — ok=False means the request itself failed
+    (network error, timeout, non-200 status), NOT that it legitimately
+    returned zero rows. Callers must treat rows==[] and ok==False as
+    "unknown" (the fetch may be incomplete), not "confirmed empty".
+    """
     try:
         r = requests.get(url, params=params, headers=_HEADERS, timeout=_TIMEOUT)
         if r.status_code == 200:
-            return r.json() if isinstance(r.json(), list) else []
-    except Exception as exc:
+            data = r.json()
+            return (data if isinstance(data, list) else []), True
         # Individual sub-request failures (one of 6 DOB/HPD endpoints) are
-        # frequent/expected — debug level, not warning, to avoid log spam.
-        log.debug("pip_fetcher request to %s failed: %s", url, exc)
-    return []
+        # frequent/expected — info level (not warning) to avoid over-alarming,
+        # but still visible in the Data Health "Recent log lines" panel.
+        log.info("pip_fetcher request to %s returned status %s", url, r.status_code)
+        return [], False
+    except Exception as exc:
+        log.info("pip_fetcher request to %s failed: %s", url, exc)
+        return [], False
 
 
 # DOB job-type codes → human labels
@@ -162,9 +173,9 @@ def _extract_liens_from_acris(acris_dict: dict) -> list[dict]:
     return liens
 
 
-def _fetch_dob_permits(block5: str, lot4: str, borough_name: str) -> list[dict]:
+def _fetch_dob_permits(block5: str, lot4: str, borough_name: str) -> tuple[list[dict], bool]:
     """Fetch DOB Permit Issuances for block/lot."""
-    rows = _get(_DOB_PERMITS, {
+    rows, ok = _get(_DOB_PERMITS, {
         "$where": f"block='{block5}' AND lot='{lot4}' AND borough='{borough_name.upper()}'",
         "$order": "issuance_date DESC",
         "$limit": _MAX,
@@ -183,12 +194,12 @@ def _fetch_dob_permits(block5: str, lot4: str, borough_name: str) -> list[dict]:
             "owner":         r.get("owner_s_business_name", "") or r.get("owner_s_last_name", ""),
             "permittee":     r.get("permittee_s_business_name", "") or r.get("permittee_s_last_name", ""),
         })
-    return permits
+    return permits, ok
 
 
-def _fetch_dob_jobs(block5: str, lot4: str, borough_code: str) -> list[dict]:
+def _fetch_dob_jobs(block5: str, lot4: str, borough_code: str) -> tuple[list[dict], bool]:
     """Fetch DOB Job Application Filings for block/lot."""
-    rows = _get(_DOB_JOBS, {
+    rows, ok = _get(_DOB_JOBS, {
         "$where": f"block='{block5}' AND lot='{lot4}' AND borough='{borough_code}'",
         "$order": "pre__filing_date DESC",
         "$limit": _MAX,
@@ -207,12 +218,12 @@ def _fetch_dob_jobs(block5: str, lot4: str, borough_code: str) -> list[dict]:
             "proposed_sqft": r.get("proposed_zoning_sqft", ""),
             "owner":         r.get("owner_s_business_name", "") or r.get("owner_s_last_name", ""),
         })
-    return jobs
+    return jobs, ok
 
 
-def _fetch_dob_complaints(block5: str, lot4: str, boro_code: str) -> list[dict]:
+def _fetch_dob_complaints(block5: str, lot4: str, boro_code: str) -> tuple[list[dict], bool]:
     """Fetch DOB Complaints for block/lot."""
-    rows = _get(_DOB_COMPLAINTS, {
+    rows, ok = _get(_DOB_COMPLAINTS, {
         "$where": f"block='{block5}' AND lot='{lot4}' AND boro='{boro_code}'",
         "$order": "date_entered DESC",
         "$limit": 100,
@@ -228,12 +239,12 @@ def _fetch_dob_complaints(block5: str, lot4: str, boro_code: str) -> list[dict]:
             "unit":             r.get("unit", ""),
             "disposition":      r.get("disposition_description", "") or r.get("status", ""),
         })
-    return complaints
+    return complaints, ok
 
 
-def _fetch_dob_violations(block5: str, lot4: str, boro_code: str) -> list[dict]:
+def _fetch_dob_violations(block5: str, lot4: str, boro_code: str) -> tuple[list[dict], bool]:
     """Fetch DOB Violations for block/lot."""
-    rows = _get(_DOB_VIOLATIONS, {
+    rows, ok = _get(_DOB_VIOLATIONS, {
         "$where": f"block='{block5}' AND lot='{lot4}' AND boro='{boro_code}'",
         "$order": "issue_date DESC",
         "$limit": 100,
@@ -249,17 +260,17 @@ def _fetch_dob_violations(block5: str, lot4: str, boro_code: str) -> list[dict]:
             "status":           "Closed" if r.get("disposition_date") else "Open",
             "ecb_number":       r.get("ecb_number", ""),
         })
-    return violations
+    return violations, ok
 
 
-def _fetch_hpd_building(block5: str, lot4: str, boro_name: str) -> dict:
+def _fetch_hpd_building(block5: str, lot4: str, boro_name: str) -> tuple[dict, bool]:
     """Fetch HPD Building registration record."""
-    rows = _get(_HPD_BUILDINGS, {
+    rows, ok = _get(_HPD_BUILDINGS, {
         "$where": f"block='{block5}' AND lot='{lot4}' AND boroid='{boro_name.title()}'",
         "$limit": 5,
     })
     if not rows:
-        return {}
+        return {}, ok
     r = rows[0]
     return {
         "building_id":       r.get("buildingid", ""),
@@ -272,7 +283,7 @@ def _fetch_hpd_building(block5: str, lot4: str, boro_name: str) -> dict:
         "address":           f"{r.get('housenumber','')} {r.get('streetname','')}".strip(),
         "zip":               r.get("zip", ""),
         "status":            r.get("registrationcontacttype", ""),
-    }
+    }, ok
 
 
 def fetch_property_history(
@@ -312,11 +323,11 @@ def fetch_property_history(
     pip_url = f"{_PIP_BASE}/parcels/detail/{bbl10}"
 
     try:
-        permits       = _fetch_dob_permits(block5, lot4, boro_name_title)
-        jobs          = _fetch_dob_jobs(block5, lot4, boro_code)
-        complaints    = _fetch_dob_complaints(block5, lot4, boro_code)
-        dob_viol      = _fetch_dob_violations(block5, lot4, boro_code)
-        hpd_bld       = _fetch_hpd_building(block5, lot4, boro_name_title)
+        permits,    ok_permits    = _fetch_dob_permits(block5, lot4, boro_name_title)
+        jobs,       ok_jobs       = _fetch_dob_jobs(block5, lot4, boro_code)
+        complaints, ok_complaints = _fetch_dob_complaints(block5, lot4, boro_code)
+        dob_viol,   ok_viol       = _fetch_dob_violations(block5, lot4, boro_code)
+        hpd_bld,    ok_hpd        = _fetch_hpd_building(block5, lot4, boro_name_title)
 
         open_complaints = sum(1 for c in complaints if c.get("status", "").upper() not in ("CLOSED", "RESOLVE", "RESOLVED", "INACTIVE"))
         open_dob_viol   = sum(1 for v in dob_viol if v.get("status") == "Open")
@@ -324,7 +335,13 @@ def fetch_property_history(
         alteration_jobs = sum(1 for j in jobs if "Alteration" in j.get("job_type", ""))
         active_permits  = sum(1 for p in permits if p.get("permit_status", "").upper() in ("ISSUED", "RENEWED"))
 
-        return {
+        any_error = not all([ok_permits, ok_jobs, ok_complaints, ok_viol, ok_hpd])
+        error = (
+            "One or more DOB/HPD sub-requests failed or timed out — "
+            "results may be incomplete, not a confirmed clean record."
+        ) if any_error else None
+
+        result = {
             "pip_url":        pip_url,
             "permits":        permits,
             "jobs":           jobs,
@@ -343,11 +360,11 @@ def fetch_property_history(
                 "open_dob_viol":      open_dob_viol,
                 "dwelling_units":     hpd_bld.get("dwelling_units", ""),
             },
-            "error": None,
+            "error": error,
         }
     except Exception as exc:
         log.warning("fetch_property_history failed for BBL %s: %s", bbl10, exc)
-        return {
+        result = {
             "pip_url":        pip_url,
             "permits":        [],
             "jobs":           [],
@@ -357,3 +374,6 @@ def fetch_property_history(
             "summary":        {},
             "error":          str(exc),
         }
+
+    record_source_status("DOB/HPD Property History", ok=(not result.get("error")), detail=result.get("error") or "")
+    return result
