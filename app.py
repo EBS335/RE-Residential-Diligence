@@ -4222,6 +4222,43 @@ with tab_property:
                             # Compute avg rents from comps data for revenue projections
                             _avg_rents = avg_rents_from_listings(listings)
 
+                            # ── Underwriting Engine wiring ────────────────────────
+                            # Reuses the same multi-year pro forma / IRR engine
+                            # already proven in the Site Finder tab
+                            # (modules/underwriting_engine.py) instead of only
+                            # the single-year NOI/cap-value snapshot above.
+                            # Builds an acquisition-cost basis once (reusing
+                            # estimate_acquisition_cost + the same zinfo
+                            # normalization the Portfolio-save button uses),
+                            # then runs a full construction->stabilization->
+                            # exit cash flow per massing scenario.
+                            _uw_acq = None
+                            try:
+                                from modules.site_finder_valuation import estimate_acquisition_cost as _uw_est_acq
+                                from modules.underwriting_engine import build_cash_flows as _uw_build_cf, simple_sponsor_returns as _uw_simple_returns
+                                from modules.site_finder_valuation import _HARD_COST_PSF_GROUND_UP as _UW_HC_GU, _HARD_COST_PSF_CONVERSION as _UW_HC_CONV
+
+                                _uw_bbl = (_zinfo or {}).get("bbl", "—")
+                                _uw_acris_sum = st.session_state.get(f"_acris_{_uw_bbl}", {}).get("summary", {}) or {}
+                                _uw_sale_psf_vals = [l["price_psf"] for l in _sales_listings if l.get("price_psf")]
+                                _uw_mc = None
+                                if _uw_sale_psf_vals:
+                                    _uw_mc = {
+                                        "median_price_psf": sorted(_uw_sale_psf_vals)[len(_uw_sale_psf_vals) // 2],
+                                        "count": len(_uw_sale_psf_vals),
+                                    }
+                                _uw_prop_base = _map_zinfo_to_portfolio_schema(_zinfo, _zinfo_label, lat, lon)
+                                _uw_prop_base.update({
+                                    "last_sale_price": _uw_acris_sum.get("latest_sale_price"),
+                                    "last_sale_date":  _uw_acris_sum.get("latest_sale_date"),
+                                    "market_comps":    _uw_mc,
+                                    "is_vacant":       "vacant" in str((_zinfo or {}).get("land_use", "")).lower(),
+                                    "landuse_code":    "",  # not exposed by zola_fetcher — falls back to the default assessment ratio
+                                })
+                                _uw_acq = _uw_est_acq(_uw_prop_base)
+                            except Exception:
+                                _uw_acq = None
+
                             if _options:
                                 # ── Summary Metrics Table ─────────────────────
                                 _max_far_val = _effective_far if _effective_far > 0 else max(_res_far_v, _comm_far_v, _base_far_v)
@@ -4257,6 +4294,41 @@ with tab_property:
                                             _cap_val = _sum_rev["est_cap_value"]
                                         except Exception:
                                             pass
+
+                                    # Multi-year IRR / equity multiple via the
+                                    # same Underwriting Engine used in Site
+                                    # Finder — a real construction->
+                                    # stabilization->exit pro forma, not just
+                                    # the Year-1 NOI/cap-value snapshot above.
+                                    _irr_val, _em_val = None, None
+                                    if _uw_acq is not None and _gross_sf > 0:
+                                        try:
+                                            _hard_psf = _UW_HC_CONV if _o.get("is_conversion") else _UW_HC_GU
+                                            _uw_scn = {
+                                                "scenario_id": f"massing_{_o.get('number','')}",
+                                                "label": _o.get("name", "—"),
+                                                "use_type": "rental",
+                                                "development_type": "conversion" if _o.get("is_conversion") else "ground_up",
+                                                "lot_sf": _la_v,
+                                                "gross_buildable_sf": _gross_sf,
+                                                "residential_gross_sf": _gross_sf,
+                                                "net_buildable_sf": _net_sf,
+                                                "retail_sf": 0.0,
+                                                "net_retail_sf": 0.0,
+                                                "hard_cost_psf": _hard_psf,
+                                                "hard_cost_basis": "conversion/renovation" if _o.get("is_conversion") else "ground-up new construction",
+                                                "assumptions_note": [],
+                                            }
+                                            _uw_cf = _uw_build_cf(
+                                                _uw_scn, _uw_acq, avg_rents=_avg_rents,
+                                                risk_level=_o.get("risk_level", "MED"), borough=borough,
+                                            )
+                                            _uw_returns = _uw_simple_returns(_uw_cf["annual_cash_flows"])
+                                            _irr_val = _uw_returns["irr"]
+                                            _em_val = _uw_returns["equity_multiple"]
+                                        except Exception:
+                                            pass
+
                                     _sum_rows.append({
                                         "#":           _o.get("number", ""),
                                         "Scenario":    _o.get("name", "—"),
@@ -4268,6 +4340,8 @@ with tab_property:
                                         "FAR Used":    _far_used_pct,
                                         "Net SF":      _net_sf,
                                         "Est. Units":  _units,
+                                        "Levered IRR": _irr_val,
+                                        "Equity Multiple": _em_val,
                                         "Loss %":      f"{int(_o.get('loss_factor',0.15)*100)}%",
                                         "Est. NOI":    _noi_val,
                                         "Est. Cap Value": _cap_val,
@@ -4275,9 +4349,12 @@ with tab_property:
                                 _sum_df = pd.DataFrame(_sum_rows)
                                 with st.expander("📊 All Scenarios — Summary Table", expanded=True):
                                     st.caption(
-                                        "Est. NOI / Cap Value use a single stabilized-year assumption set "
-                                        "(same math as each scenario's own Unit Mix & Financials tab) — a "
-                                        "preliminary screening comparison, not a substitute for a full pro forma."
+                                        "Est. NOI / Cap Value use a single stabilized-year assumption set. "
+                                        "Levered IRR / Equity Multiple run the full Underwriting Engine "
+                                        "(construction → stabilization → exit, with financing) using default "
+                                        "assumptions and a Simple Sponsor equity structure"
+                                        + (" — unavailable (no acquisition basis found)." if _uw_acq is None else ".")
+                                        + " Both are preliminary screening comparisons, not a substitute for a full pro forma."
                                     )
                                     st.dataframe(
                                         _sum_df,
@@ -4292,6 +4369,8 @@ with tab_property:
                                             "Est. Units":  st.column_config.NumberColumn("Est. Units", format="%d"),
                                             "Stories":     st.column_config.NumberColumn("Stories",  format="%d"),
                                             "Height (ft)": st.column_config.NumberColumn("Height (ft)", format="%d"),
+                                            "Levered IRR": st.column_config.NumberColumn("Levered IRR", format="percent"),
+                                            "Equity Multiple": st.column_config.NumberColumn("Equity Multiple", format="%.2fx"),
                                             "Est. NOI":    st.column_config.NumberColumn("Est. NOI", format="$%d"),
                                             "Est. Cap Value": st.column_config.NumberColumn("Est. Cap Value", format="$%d"),
                                         },
@@ -4300,8 +4379,14 @@ with tab_property:
                                         (r for r in _sum_rows if r["Est. Cap Value"]),
                                         key=lambda r: r["Est. Cap Value"], default=None,
                                     )
+                                    _best_by_irr = max(
+                                        (r for r in _sum_rows if r["Levered IRR"] is not None),
+                                        key=lambda r: r["Levered IRR"], default=None,
+                                    )
                                     if _best_by_cap:
                                         st.caption(f"💡 Highest estimated cap value: **{_best_by_cap['Scenario']}** (${_best_by_cap['Est. Cap Value']:,.0f})")
+                                    if _best_by_irr:
+                                        st.caption(f"💡 Highest levered IRR: **{_best_by_irr['Scenario']}** ({_best_by_irr['Levered IRR']:.1%})")
 
                                 # ── Entitlement Path — decision framing ──────
                                 # Groups the 10 scenarios by APPROVAL TYPE
@@ -4579,6 +4664,76 @@ with tab_property:
                             f"Zoning rules for **{_primary_zone}** are not in our reference table. "
                             f"[View full zoning details on ZOLA]({_zola_url})"
                         )
+
+            # ── Export This Property (PDF / PowerPoint / Excel) ─────────────────
+            # Reuses modules/report_exporter.py's builders (proven in Site
+            # Finder) via the same zinfo->normalized-schema adapter the
+            # Portfolio save button uses — previously this tab had zero
+            # export capability, no way to turn a diligence session into a
+            # shareable memo.
+            _exp_bbl = (_zinfo or {}).get("bbl", "—")
+            if _exp_bbl and _exp_bbl != "—":
+                with st.expander("⬇️ Export This Property", expanded=False):
+                    from modules.report_exporter import build_pdf_report, build_pptx_report, build_excel_workbook
+
+                    _exp_prop = _map_zinfo_to_portfolio_schema(_zinfo, _zinfo_label, lat, lon)
+                    _exp_score = st.session_state.get("_ds_last_score_result")
+                    if _exp_score:
+                        _exp_prop["deal_score"] = _exp_score
+                    _exp_abate = st.session_state.get(f"_abate_{_exp_bbl}")
+                    if _exp_abate:
+                        _exp_prop["tax_abatement"] = _exp_abate
+                    _exp_rentstab = st.session_state.get(f"_rentstab_{_exp_bbl}")
+                    if _exp_rentstab:
+                        _exp_prop["rent_stab_signal"] = _exp_rentstab
+                    _exp_prop.setdefault("strategies", [])
+
+                    if not _exp_score and not _exp_abate:
+                        st.caption(
+                            "Tip: Deal Score / Tax Abatement / Rent Stabilization sections above haven't "
+                            "run yet for this property — scroll up to compute them before exporting for a "
+                            "richer report."
+                        )
+
+                    _exp1, _exp2, _exp3 = st.columns(3)
+                    with _exp1:
+                        if st.button("📄 Build PDF report", key="pa_pdf_btn", use_container_width=True):
+                            try:
+                                st.session_state["_pa_pdf_bytes"] = build_pdf_report(_exp_prop, None)
+                            except ImportError as exc:
+                                st.error(str(exc))
+                        if st.session_state.get("_pa_pdf_bytes"):
+                            st.download_button(
+                                "Download PDF", data=st.session_state["_pa_pdf_bytes"],
+                                file_name=f"{_exp_bbl}_report.pdf", mime="application/pdf",
+                                use_container_width=True,
+                            )
+                    with _exp2:
+                        if st.button("📽️ Build PowerPoint pitch", key="pa_pptx_btn", use_container_width=True):
+                            try:
+                                st.session_state["_pa_pptx_bytes"] = build_pptx_report(_exp_prop, None)
+                            except ImportError as exc:
+                                st.error(str(exc))
+                        if st.session_state.get("_pa_pptx_bytes"):
+                            st.download_button(
+                                "Download PowerPoint", data=st.session_state["_pa_pptx_bytes"],
+                                file_name=f"{_exp_bbl}_pitch.pptx",
+                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                use_container_width=True,
+                            )
+                    with _exp3:
+                        if st.button("📊 Build Excel workbook", key="pa_xlsx_btn", use_container_width=True):
+                            try:
+                                st.session_state["_pa_xlsx_bytes"] = build_excel_workbook([_exp_prop])
+                            except ImportError as exc:
+                                st.error(str(exc))
+                        if st.session_state.get("_pa_xlsx_bytes"):
+                            st.download_button(
+                                "Download Excel workbook", data=st.session_state["_pa_xlsx_bytes"],
+                                file_name=f"{_exp_bbl}_report.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                            )
 
             # ── Macro + Micro Risk Matrix ──────────────────────────────────────
             _section_header("⚠️", "Investment Risk Analysis")
