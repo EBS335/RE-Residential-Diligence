@@ -428,3 +428,61 @@ def avg_rents_from_listings(listings: list[dict]) -> dict[str, float]:
         if ut and rent and rent > 0:
             buckets.setdefault(ut, []).append(rent)
     return {ut: sum(rents) / len(rents) for ut, rents in buckets.items()}
+
+
+def reconcile_comps(
+    rent_psf_annual_values: list[float],
+    sale_psf_values: list[float],
+    occupancy: float = 0.93,
+) -> dict | None:
+    """
+    Combine already-fetched rental and sales comps into an implied cap
+    rate and gross rent multiplier (GRM) — a Property Analysis tab
+    "Comps Reconciliation" panel otherwise has to compute by hand from two
+    unconnected comp tabs.
+
+    Uses MEDIAN $/SF from each side (not building-to-building matching,
+    since rental and sales comps are typically different specific
+    properties) and OPEX_RATIO for the NOI approximation, consistent with
+    compute_revenue()'s assumptions elsewhere in this module.
+
+    Args:
+        rent_psf_annual_values: list of ANNUAL rent $/SF (e.g. monthly
+            rent * 12 / sqft per rental comp).
+        sale_psf_values: list of sale $/SF per sales comp.
+        occupancy: stabilized occupancy assumption for the NOI approximation.
+
+    Returns None if either list is empty (nothing to reconcile). Otherwise:
+        {
+          "ann_rent_psf": float,      # median annual rent $/SF
+          "sale_psf": float,          # median sale $/SF
+          "grm": float,               # sale_psf / ann_rent_psf
+          "noi_psf": float,           # ann_rent_psf * (1-OPEX_RATIO) * occupancy
+          "cap_rate_pct": float,      # noi_psf / sale_psf * 100
+          "rent_comp_count": int,
+          "sale_comp_count": int,
+        }
+    """
+    if not rent_psf_annual_values or not sale_psf_values:
+        return None
+
+    def _median(vals: list[float]) -> float:
+        s = sorted(vals)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+    ann_rent_psf = _median(rent_psf_annual_values)
+    sale_psf = _median(sale_psf_values)
+    grm = (sale_psf / ann_rent_psf) if ann_rent_psf > 0 else None
+    noi_psf = ann_rent_psf * (1 - OPEX_RATIO) * occupancy
+    cap_rate_pct = (noi_psf / sale_psf * 100.0) if sale_psf > 0 else None
+
+    return {
+        "ann_rent_psf": ann_rent_psf,
+        "sale_psf": sale_psf,
+        "grm": grm,
+        "noi_psf": noi_psf,
+        "cap_rate_pct": cap_rate_pct,
+        "rent_comp_count": len(rent_psf_annual_values),
+        "sale_comp_count": len(sale_psf_values),
+    }

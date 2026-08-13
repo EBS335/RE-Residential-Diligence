@@ -44,6 +44,7 @@ from modules.deal_scorer import compute_deal_score
 from modules.unit_mix import (
     get_avg_sf, optimize_unit_mix, compute_revenue,
     avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf, OPEX_RATIO,
+    reconcile_comps,
 )
 from modules.risk_matrix import MACRO_RISKS, get_micro_risks
 
@@ -2138,28 +2139,21 @@ with tab_property:
                 l["price"] / l["sqft"] for l in _sales_listings
                 if l.get("price") and l.get("sqft") and l["sqft"] > 0
             ]
-            if _rc_rent_psf_vals and _rc_sale_psf_vals:
-                _rc_ann_rent_psf = sorted(_rc_rent_psf_vals)[len(_rc_rent_psf_vals) // 2]
-                _rc_sale_psf = sorted(_rc_sale_psf_vals)[len(_rc_sale_psf_vals) // 2]
-                # GRM = Sale Price / Annual Gross Rent (both already $/SF-normalized,
-                # so the SF term cancels — no /12 needed since _rc_ann_rent_psf is
-                # already an annual figure).
-                _rc_grm = _rc_sale_psf / _rc_ann_rent_psf if _rc_ann_rent_psf > 0 else None
-                _rc_noi_psf = _rc_ann_rent_psf * (1 - OPEX_RATIO) * 0.93  # 93% stabilized occupancy assumption
-                _rc_cap_rate = (_rc_noi_psf / _rc_sale_psf * 100) if _rc_sale_psf > 0 else None
-
+            _rc_result = reconcile_comps(_rc_rent_psf_vals, _rc_sale_psf_vals)
+            if _rc_result:
                 with st.expander("🔗 Comps Reconciliation — Implied Cap Rate & GRM", expanded=False):
                     st.caption(
-                        f"Synthesized from {len(_rc_rent_psf_vals)} rental comp(s) and {len(_rc_sale_psf_vals)} sales comp(s) "
-                        "fetched above — median $/SF each, not matched building-to-building. NOI assumes "
+                        f"Synthesized from {_rc_result['rent_comp_count']} rental comp(s) and "
+                        f"{_rc_result['sale_comp_count']} sales comp(s) fetched above — median $/SF each, "
+                        "not matched building-to-building. NOI assumes "
                         f"{OPEX_RATIO:.0%} opex ratio and 93% stabilized occupancy (same assumptions as the massing "
                         "scenarios' financials) — a rough reconciliation, not a substitute for building-specific underwriting."
                     )
                     _rc_c1, _rc_c2, _rc_c3, _rc_c4 = st.columns(4)
-                    _rc_c1.metric("Median Rent $/SF/yr", f"${_rc_ann_rent_psf:,.2f}")
-                    _rc_c2.metric("Median Sale $/SF", f"${_rc_sale_psf:,.2f}")
-                    _rc_c3.metric("Implied GRM", f"{_rc_grm:.1f}x" if _rc_grm else "—")
-                    _rc_c4.metric("Implied Cap Rate", f"{_rc_cap_rate:.2f}%" if _rc_cap_rate else "—")
+                    _rc_c1.metric("Median Rent $/SF/yr", f"${_rc_result['ann_rent_psf']:,.2f}")
+                    _rc_c2.metric("Median Sale $/SF", f"${_rc_result['sale_psf']:,.2f}")
+                    _rc_c3.metric("Implied GRM", f"{_rc_result['grm']:.1f}x" if _rc_result['grm'] else "—")
+                    _rc_c4.metric("Implied Cap Rate", f"{_rc_result['cap_rate_pct']:.2f}%" if _rc_result['cap_rate_pct'] else "—")
             elif listings or _sales_listings:
                 st.caption(
                     "🔗 Comps reconciliation unavailable — need both rental and sales comps with SF data to compute "
@@ -3542,6 +3536,56 @@ with tab_property:
                                 f"Median HH Income: {'${:,}'.format(_inc) if _inc else '—'}"
                             )
 
+                    # ── Environmental & Flood Zone ────────────────────────────
+                    st.markdown("##### 🌊 Environmental & Flood Zone")
+                    st.caption(
+                        "Flood zone is a live FEMA lookup. Spill incidents are a coarse "
+                        "county-wide filter (not a precise-radius match around this property) — "
+                        "always confirm via the official DEC search tool linked below."
+                    )
+                    _flood_key = f"_flood_{lat:.5f}_{lon:.5f}"
+                    if _flood_key not in st.session_state:
+                        from modules.environmental_fetcher import fetch_flood_zone, fetch_dec_spill_incidents
+                        st.session_state[_flood_key] = fetch_flood_zone(lat, lon)
+                    _flood = st.session_state.get(_flood_key, {})
+                    record_source_status(
+                        "FEMA Flood Zone", ok=(not _flood.get("error")), detail=_flood.get("error") or ""
+                    )
+
+                    _dec_key = f"_dec_spills_{borough}"
+                    if _dec_key not in st.session_state:
+                        from modules.environmental_fetcher import fetch_dec_spill_incidents as _fetch_dec
+                        st.session_state[_dec_key] = _fetch_dec(borough)
+                    _dec = st.session_state.get(_dec_key, {})
+                    record_source_status(
+                        "NYS DEC Spill Incidents", ok=(not _dec.get("error")), detail=_dec.get("error") or ""
+                    )
+
+                    _env1, _env2 = st.columns(2)
+                    with _env1:
+                        if _flood.get("error"):
+                            st.caption(f"Flood zone: {_flood['error']}")
+                        else:
+                            _sfha = _flood.get("in_special_flood_hazard_area")
+                            _flood_icon = "🔴" if _sfha else ("🟡" if _sfha is False and _flood.get("flood_zone") == "X500" else "🟢" if _sfha is False else "⚪")
+                            st.markdown(
+                                f"**{_flood_icon} FEMA Flood Zone** — {_flood.get('flood_zone') or 'Not mapped'}  \n"
+                                f"<span style='font-size:0.78rem;color:#374151'>{_flood.get('zone_description','')}</span>",
+                                unsafe_allow_html=True,
+                            )
+                            if _sfha:
+                                st.caption("⚠️ Special Flood Hazard Area — flood insurance likely required for federally-backed financing; factor into construction/insurance underwriting.")
+                    with _env2:
+                        if _dec.get("error"):
+                            st.caption(f"DEC spill incidents: {_dec['error']}")
+                        else:
+                            st.markdown(
+                                f"**🛢️ DEC Spill Incidents ({_dec.get('county','—')} County)** — {_dec.get('count', 0)} record(s) "
+                                f"<span style='font-size:0.72rem;color:#6B7280'>(county-wide, not property-specific)</span>",
+                                unsafe_allow_html=True,
+                            )
+                            st.caption(f"[Search official DEC spills database for this address ↗]({_dec.get('search_tool_url', '')})")
+
                     # ── Adjacent Lot Aggregation ──────────────────────────────
                     _subj_bbl = _zinfo.get("bbl", "")
                     with st.expander("🏘️ Add Adjacent Lots", expanded=False):
@@ -4749,8 +4793,17 @@ with tab_property:
             _rk_pip_sum = _rk_pip.get("summary", {}) or {}
             _rk_abate = st.session_state.get(f"_abate_{_rk_bbl}", {}) or {}
             _rk_rentstab = st.session_state.get(f"_rentstab_{_rk_bbl}", {}) or {}
+            _rk_flood = st.session_state.get(f"_flood_{lat:.5f}_{lon:.5f}", {}) or {}
 
             _rk_flags: list[dict] = []
+            if _rk_flood.get("in_special_flood_hazard_area"):
+                _rk_flags.append({
+                    "level": "high",
+                    "text": f"FEMA Special Flood Hazard Area (Zone {_rk_flood.get('flood_zone','—')}) "
+                            "— flood insurance likely required; factor into construction/insurance costs",
+                })
+            elif _rk_flood.get("flood_zone") == "X500":
+                _rk_flags.append({"level": "med", "text": "500-year floodplain (FEMA Zone X500, 0.2% annual chance)"})
             _rk_liens = _rk_acris_sum.get("open_liens", 0) or 0
             _rk_forecl = _rk_acris_sum.get("foreclosure_count", 0) or 0
             if _rk_forecl > 0:
