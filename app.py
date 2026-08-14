@@ -14,15 +14,6 @@ from streamlit_folium import st_folium
 from dotenv import load_dotenv
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.io as pio
-
-# Trading-desk dark theme: applies to every chart built app-wide (this module
-# and modules/*.py) for the life of the process — set once, before any
-# figures are constructed, rather than threading `template=` through every
-# call site. Individual chart builders that still hardcode a light
-# plot_bgcolor/paper_bgcolor (see modules/visualizer.py, modules/massing_viz.py)
-# override this default per-trace where needed.
-pio.templates.default = "plotly_dark"
 
 from modules.data_fetcher import (
     fetch_all_listings,
@@ -125,28 +116,33 @@ st.set_page_config(
 # ── Styling ───────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap');
+
 :root {
-    --bg-page:      #0A0E16;
-    --bg-card:      #121826;
-    --bg-card-alt:  #161E2E;
-    --bg-raised:    #1B2436;
-    --border:       #26304A;
-    --border-soft:  #1E2740;
-    --text-primary: #EDEFF5;
-    --text-body:    #C7CDDB;
-    --text-muted:   #8590A8;
-    --text-faint:   #5C6680;
-    --accent:       #22D3EE;
-    --accent-strong:#67E8F9;
-    --accent-amber: #F0B429;
-    --success-fg:   #4ADE80;
-    --success-bg:   #0B2E1D;
-    --warn-fg:      #FBBF24;
-    --warn-bg:      #3A2B06;
-    --danger-fg:    #F87171;
-    --danger-bg:    #3A1414;
-    --info-fg:      #60A5FA;
-    --info-bg:      #12233F;
+    --bg-page:      #F7F4EC;
+    --bg-card:      #FFFFFF;
+    --bg-card-alt:  #FCFAF3;
+    --bg-raised:    #F1EDE0;
+    --border:       #DCD5C2;
+    --border-soft:  #E8E3D4;
+    --text-primary: #1A1D2E;
+    --text-body:    #3D4152;
+    --text-muted:   #6B7280;
+    --text-faint:   #9CA3AF;
+    --accent:       #A6842C;
+    --accent-strong:#8B6914;
+    --accent-amber: #A6842C;
+    --success-fg:   #1F6B3A;
+    --success-bg:   #E6F0E5;
+    --warn-fg:      #8B6914;
+    --warn-bg:      #F5EBD3;
+    --danger-fg:    #7A2E2E;
+    --danger-bg:    #F3E1DE;
+    --info-fg:      #2A3E63;
+    --info-bg:      #E4E8F1;
+    --chrome-dark:  #12131C;
+    --chrome-dark2: #1A1D2E;
+    --serif: 'Source Serif 4', Georgia, 'Times New Roman', serif;
 }
 
 /* ── Global ── */
@@ -158,6 +154,7 @@ html, body, [data-testid="stAppViewContainer"] {
 [data-testid="stMetricValue"] {
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.3px;
+    color: var(--text-primary);
 }
 [data-testid="stMetricLabel"] {
     color: var(--text-muted) !important;
@@ -168,29 +165,27 @@ html, body, [data-testid="stAppViewContainer"] {
 
 /* ── Header banner ── */
 .app-header {
-    background: linear-gradient(135deg, #05070C 0%, #0D1626 45%, #12253F 100%);
-    border: 1px solid var(--border);
-    border-radius: 14px;
+    background: linear-gradient(135deg, var(--chrome-dark) 0%, var(--chrome-dark2) 55%, #232840 100%);
+    border: 1px solid #2A2E42;
+    border-bottom: 3px solid var(--accent);
+    border-radius: 6px;
     padding: 32px 36px 28px;
     margin-bottom: 28px;
-    color: var(--text-primary);
-    box-shadow: 0 0 0 1px rgba(34,211,238,0.05), 0 12px 32px rgba(0,0,0,0.45);
+    color: #F5F1E6;
+    box-shadow: 0 12px 28px rgba(26,29,46,0.16);
 }
 .app-header h1 {
     margin: 0 0 6px;
-    font-size: 1.9rem;
-    font-weight: 800;
-    letter-spacing: -0.5px;
-    background: linear-gradient(90deg, #161E2E 0%, #A5F3FC 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
+    font-size: 2.05rem;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    font-family: var(--serif);
+    color: #FAF8F2;
 }
 .app-header p {
     margin: 0;
     font-size: 0.92rem;
-    color: var(--text-muted);
-    opacity: 1;
+    color: #C9C2AE;
     max-width: 560px;
     line-height: 1.5;
 }
@@ -208,10 +203,11 @@ html, body, [data-testid="stAppViewContainer"] {
 /* ── Info card (geocoding result) ── */
 .geo-card {
     background: var(--bg-card);
-    border-radius: 12px;
+    border-radius: 10px;
     border: 1px solid var(--border);
     padding: 20px 24px;
     margin-top: 20px;
+    box-shadow: 0 1px 3px rgba(26,29,46,0.06), 0 1px 2px rgba(26,29,46,0.04);
 }
 .geo-card-title {
     font-size: 0.72rem;
@@ -230,9 +226,9 @@ html, body, [data-testid="stAppViewContainer"] {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: rgba(34,211,238,0.10);
+    background: rgba(166,132,44,0.09);
     color: var(--accent-strong);
-    border: 1px solid rgba(34,211,238,0.22);
+    border: 1px solid rgba(166,132,44,0.24);
     border-radius: 20px;
     padding: 6px 14px;
     font-size: 0.83rem;
@@ -276,10 +272,11 @@ html, body, [data-testid="stAppViewContainer"] {
     font-size: 0.84rem;
     color: var(--text-body);
     line-height: 1.7;
+    box-shadow: 0 1px 3px rgba(26,29,46,0.05);
 }
 .filter-tag {
     display: inline-block;
-    background: rgba(34,211,238,0.10);
+    background: rgba(166,132,44,0.09);
     color: var(--accent-strong);
     border-radius: 6px;
     padding: 1px 8px;
@@ -290,25 +287,26 @@ html, body, [data-testid="stAppViewContainer"] {
 
 /* ── Sidebar tweaks ── */
 [data-testid="stSidebar"] > div:first-child {
-    background: #05070C;
+    background: var(--chrome-dark);
     padding-top: 24px;
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--accent);
 }
 [data-testid="stSidebar"] label,
 [data-testid="stSidebar"] .stMarkdown,
 [data-testid="stSidebar"] p,
 [data-testid="stSidebar"] span {
-    color: var(--text-body) !important;
+    color: #C9C2AE !important;
 }
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3 {
-    color: var(--text-primary) !important;
+    color: #FAF8F2 !important;
+    font-family: var(--serif);
 }
 
 /* ── Next-step callout ── */
 .next-step {
     background: var(--warn-bg);
-    border: 1px solid rgba(251,191,36,0.28);
+    border: 1px solid rgba(139,105,20,0.25);
     border-radius: 10px;
     padding: 14px 18px;
     margin-top: 20px;
@@ -333,6 +331,7 @@ html, body, [data-testid="stAppViewContainer"] {
     border-radius: 10px;
     overflow: hidden;
     margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(26,29,46,0.05);
 }
 .photo-card img {
     width: 100%;
@@ -374,10 +373,11 @@ html, body, [data-testid="stAppViewContainer"] {
     color: inherit;
     transition: box-shadow 0.15s, transform 0.15s, border-color 0.15s;
     display: block;
+    box-shadow: 0 1px 3px rgba(26,29,46,0.05);
 }
 .gallery-card:hover {
-    box-shadow: 0 4px 20px rgba(34,211,238,0.12);
-    border-color: rgba(34,211,238,0.35);
+    box-shadow: 0 6px 18px rgba(166,132,44,0.16);
+    border-color: rgba(166,132,44,0.35);
     transform: translateY(-2px);
 }
 .gallery-card img {
@@ -395,7 +395,7 @@ html, body, [data-testid="stAppViewContainer"] {
 .gallery-card .gc-caption b { color: var(--text-primary); font-size: 0.82rem; }
 .gallery-card .gc-badge {
     display: inline-block;
-    background: rgba(34,211,238,0.10);
+    background: rgba(166,132,44,0.09);
     color: var(--accent-strong);
     border-radius: 4px;
     padding: 1px 6px;
@@ -416,6 +416,7 @@ html, body, [data-testid="stAppViewContainer"] {
     border-radius: 12px;
     padding: 12px;
     margin-bottom: 10px;
+    box-shadow: 0 1px 3px rgba(26,29,46,0.05);
 }
 
 /* ── Risk matrix table ── */
@@ -459,6 +460,7 @@ html, body, [data-testid="stAppViewContainer"] {
     border-radius: 10px;
     padding: 16px 20px;
     margin-bottom: 10px;
+    box-shadow: 0 1px 3px rgba(26,29,46,0.05);
 }
 .source-name { font-weight: 700; color: var(--text-primary); font-size: 0.9rem; }
 .source-desc { color: var(--text-muted); font-size: 0.80rem; margin-top: 3px; line-height: 1.4; }
@@ -467,7 +469,7 @@ html, body, [data-testid="stAppViewContainer"] {
 
 /* ── Neighborhood context banner ── */
 .hood-banner {
-    background: linear-gradient(90deg, rgba(34,211,238,0.08) 0%, rgba(74,222,128,0.06) 100%);
+    background: linear-gradient(90deg, rgba(166,132,44,0.08) 0%, rgba(31,107,58,0.05) 100%);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 14px 18px;
@@ -482,7 +484,7 @@ html, body, [data-testid="stAppViewContainer"] {
 .hood-stat-lbl { font-size: 0.70rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
 /* ── Scraping status panel ────────────────────────────────────────────── */
 .scrape-status-panel { background:var(--bg-card); border:1px solid var(--border); border-radius:10px;
-    padding:14px 18px; margin-top:10px; margin-bottom:6px; }
+    padding:14px 18px; margin-top:10px; margin-bottom:6px; box-shadow: 0 1px 3px rgba(26,29,46,0.05); }
 .scrape-status-panel table { width:100%; border-collapse:collapse; font-size:0.82rem; }
 .scrape-status-panel th { background:var(--bg-raised); color:var(--text-muted); font-weight:700;
     padding:6px 10px; text-align:left; border-bottom:1px solid var(--border);
@@ -500,10 +502,11 @@ html, body, [data-testid="stAppViewContainer"] {
     margin: 32px 0 24px;
 }
 .section-title {
-    font-size: 1.15rem;
-    font-weight: 800;
+    font-family: var(--serif);
+    font-size: 1.2rem;
+    font-weight: 700;
     color: var(--text-primary);
-    letter-spacing: -0.3px;
+    letter-spacing: -0.2px;
     margin-bottom: 4px;
 }
 .section-subtitle {
@@ -519,6 +522,7 @@ html, body, [data-testid="stAppViewContainer"] {
     line-height: 1;
     margin-bottom: 4px;
     font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
 }
 .deal-tier-badge {
     display: inline-block;
@@ -533,7 +537,7 @@ html, body, [data-testid="stAppViewContainer"] {
 .distress-high   { background:var(--danger-bg); color:var(--danger-fg); border-radius:20px; padding:3px 12px; font-size:0.82rem; font-weight:700; }
 .opportunity-flag {
     background: var(--success-bg);
-    border: 1px solid rgba(74,222,128,0.35);
+    border: 1px solid rgba(31,107,58,0.25);
     border-radius: 10px;
     padding: 12px 16px;
     color: var(--success-fg);
@@ -986,11 +990,11 @@ def build_subject_map(
     folium.Circle(
         location=[lat, lon],
         radius=radius_miles * 1609.34,   # miles → metres
-        color="#67E8F9",
+        color="#8B6914",
         weight=2,
         dash_array="6 4",
         fill=True,
-        fill_color="#67E8F9",
+        fill_color="#8B6914",
         fill_opacity=0.06,
         tooltip=f"Search radius: {radius_miles:.2f} mi",
     ).add_to(m)
@@ -999,27 +1003,27 @@ def build_subject_map(
     folium.CircleMarker(
         location=[lat, lon],
         radius=5,
-        color="#67E8F9",
+        color="#8B6914",
         fill=True,
-        fill_color="#67E8F9",
+        fill_color="#8B6914",
         fill_opacity=0.9,
         weight=2,
     ).add_to(m)
 
     # ── Subject property pin ──────────────────────────────────────────────────
-    hood_line = f"<br/><span style='color:#8590A8'>{neighborhood}</span>" if neighborhood and neighborhood != "—" else ""
+    hood_line = f"<br/><span style='color:#6B7280'>{neighborhood}</span>" if neighborhood and neighborhood != "—" else ""
     borough_line = f" · {borough}" if borough and borough != "—" else ""
 
     popup_html = f"""
     <div style="font-family:sans-serif;min-width:200px;padding:4px">
-      <b style="font-size:1rem;color:#0D1B2A">📍 Subject Property</b>
+      <b style="font-size:1rem;color:#1A1D2E">📍 Subject Property</b>
       {hood_line}{borough_line}
-      <hr style="margin:8px 0;border-color:#26304A"/>
-      <span style="font-size:0.82rem;color:#C7CDDB">{label}</span><br/>
-      <span style="font-size:0.75rem;color:#5C6680;font-family:monospace">
+      <hr style="margin:8px 0;border-color:#DCD5C2"/>
+      <span style="font-size:0.82rem;color:#3D4152">{label}</span><br/>
+      <span style="font-size:0.75rem;color:#9CA3AF;font-family:monospace">
         {lat:.6f}, {lon:.6f}
       </span><br/>
-      <span style="font-size:0.75rem;color:#67E8F9;font-weight:600">
+      <span style="font-size:0.75rem;color:#8B6914;font-weight:600">
         Radius: {radius_miles:.2f} mi
       </span>
     </div>
@@ -1111,7 +1115,7 @@ with st.sidebar:
                 _icon = "🟢" if _info["ok"] else "🔴"
                 st.markdown(
                     f"{_icon} **{_src_name}** — {_info['detail'] or 'OK'}  \n"
-                    f"<span style='font-size:0.7rem;color:#5C6680'>{_info['ts']}</span>",
+                    f"<span style='font-size:0.7rem;color:#9CA3AF'>{_info['ts']}</span>",
                     unsafe_allow_html=True,
                 )
         from modules.app_logging import get_recent_logs
@@ -1244,10 +1248,10 @@ with tab_property:
 
         demand_tag = ""
         if is_high_demand:
-            demand_tag = ' &nbsp;<span style="background:#3A1414;color:#F87171;border-radius:20px;padding:3px 10px;font-size:0.75rem;font-weight:700;">🔥 High-Demand</span>'
+            demand_tag = ' &nbsp;<span style="background:#F3E1DE;color:#7A2E2E;border-radius:20px;padding:3px 10px;font-size:0.75rem;font-weight:700;">🔥 High-Demand</span>'
         transit_tag = ""
         if is_transit:
-            transit_tag = ' &nbsp;<span style="background:#12233F;color:#60A5FA;border-radius:20px;padding:3px 10px;font-size:0.75rem;font-weight:700;">🚇 Transit Hub</span>'
+            transit_tag = ' &nbsp;<span style="background:#E4E8F1;color:#2A3E63;border-radius:20px;padding:3px 10px;font-size:0.75rem;font-weight:700;">🚇 Transit Hub</span>'
 
         # ── Info card ─────────────────────────────────────────────────────────────
         _hn = geo.get("house_number", "").strip()
@@ -1257,7 +1261,7 @@ with tab_property:
         <div class="geo-card">
           <div class="geo-card-title">📍 Geocoding Result &nbsp; {badge}{demand_tag}{transit_tag}</div>
           <div class="geo-address">{_addr_std}</div>
-          <div style="font-size:0.82rem;color:#8590A8;margin:2px 0 8px">{neighborhood} &nbsp;·&nbsp; {borough}</div>
+          <div style="font-size:0.82rem;color:#6B7280;margin:2px 0 8px">{neighborhood} &nbsp;·&nbsp; {borough}</div>
           <div class="geo-row">
             <div class="geo-chip">
               🏙️ &nbsp;<span class="geo-chip-label">Borough</span>&nbsp; {borough}
@@ -1280,7 +1284,7 @@ with tab_property:
         # ── Interactive map ───────────────────────────────────────────────────────
         st.markdown(
             "<div style='margin-top:20px;font-size:0.72rem;font-weight:700;"
-            "letter-spacing:0.08em;text-transform:uppercase;color:#8590A8;"
+            "letter-spacing:0.08em;text-transform:uppercase;color:#6B7280;"
             "margin-bottom:8px'>🗺️ Subject Property Map</div>",
             unsafe_allow_html=True,
         )
@@ -1355,7 +1359,7 @@ with tab_property:
             <div class="hood-stat-lbl">Borough Median 1-Bed</div>
           </div>
           <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            {"".join(f'<span style="background:#12233F;color:#60A5FA;border-radius:20px;padding:4px 12px;font-size:0.74rem;font-weight:700">{f}</span>' for f in hood_flags)}
+            {"".join(f'<span style="background:#E4E8F1;color:#2A3E63;border-radius:20px;padding:4px 12px;font-size:0.74rem;font-weight:700">{f}</span>' for f in hood_flags)}
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1423,19 +1427,19 @@ with tab_property:
         def _build_scrape_status_html() -> str:
             _chip_style = (
                 "display:inline-block;padding:2px 8px;margin:2px 3px;"
-                "background:#1E2740;border:1px solid #26304A;border-radius:12px;"
-                "font-size:0.65rem;color:#C7CDDB;white-space:nowrap"
+                "background:#E8E3D4;border:1px solid #DCD5C2;border-radius:12px;"
+                "font-size:0.65rem;color:#3D4152;white-space:nowrap"
             )
             _res_chips = "".join(f'<span style="{_chip_style}">{c}</span>' for c in _scrape_chips_res)
             _comm_chips = "".join(f'<span style="{_chip_style}">{c}</span>' for c in _scrape_chips_comm)
             return (
-                '<div style="background:#161E2E;border:1px solid #26304A;border-radius:8px;'
+                '<div style="background:#FCFAF3;border:1px solid #DCD5C2;border-radius:8px;'
                 'padding:8px 12px;margin:8px 0">'
                 '<span style="font-size:0.60rem;font-weight:700;text-transform:uppercase;'
-                'color:#5C6680;letter-spacing:0.08em;margin-right:6px">🔍 Scraping Status</span>'
-                f'<span style="{_chip_style};background:#12233F;color:#60A5FA;border-color:#1E3A5F">'
+                'color:#9CA3AF;letter-spacing:0.08em;margin-right:6px">🔍 Scraping Status</span>'
+                f'<span style="{_chip_style};background:#E4E8F1;color:#2A3E63;border-color:#BFDBFE">'
                 f'Residential</span>{_res_chips}'
-                f'&nbsp;<span style="{_chip_style};background:#0B2E1D;color:#4ADE80;border-color:#0B2E1D">'
+                f'&nbsp;<span style="{_chip_style};background:#E6F0E5;color:#1F6B3A;border-color:#E6F0E5">'
                 f'Commercial</span>{_comm_chips}'
                 '</div>'
             )
@@ -1540,8 +1544,8 @@ with tab_property:
                     _p_html = "<table style='width:100%;font-size:0.80rem;border-collapse:collapse'>"
                     for _pk, _pv in _p_all:
                         _p_html += (
-                            f"<tr><td style='color:#8590A8;padding:3px 8px 3px 0;white-space:nowrap'>{_pk}</td>"
-                            f"<td style='font-weight:600;padding:3px 0;color:#EDEFF5'>{_pv}</td></tr>"
+                            f"<tr><td style='color:#6B7280;padding:3px 8px 3px 0;white-space:nowrap'>{_pk}</td>"
+                            f"<td style='font-weight:600;padding:3px 0;color:#1A1D2E'>{_pv}</td></tr>"
                         )
                     st.markdown(_p_html + "</table>", unsafe_allow_html=True)
                     st.caption("NYC PLUTO · NYC Planning GeoSearch")
@@ -1563,30 +1567,30 @@ with tab_property:
 
                 st.markdown(f"""
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0">
-      <div style="flex:1;min-width:80px;background:#161E2E;border:1px solid #26304A;border-radius:8px;padding:10px 8px">
-        <div style="font-size:0.64rem;color:#8590A8;font-weight:700;text-transform:uppercase">Lot Size</div>
-        <div style="font-size:1.15rem;font-weight:700;color:#EDEFF5">{int(_ub_lot_area):,}</div>
-        <div style="font-size:0.68rem;color:#8590A8">SF</div>
+      <div style="flex:1;min-width:80px;background:#FCFAF3;border:1px solid #DCD5C2;border-radius:8px;padding:10px 8px">
+        <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Lot Size</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#1A1D2E">{int(_ub_lot_area):,}</div>
+        <div style="font-size:0.68rem;color:#6B7280">SF</div>
       </div>
-      <div style="flex:1;min-width:80px;background:#161E2E;border:1px solid #26304A;border-radius:8px;padding:10px 8px">
-        <div style="font-size:0.64rem;color:#8590A8;font-weight:700;text-transform:uppercase">Max FAR</div>
-        <div style="font-size:1.15rem;font-weight:700;color:#EDEFF5">{_ub_max_far:.2f}</div>
-        <div style="font-size:0.68rem;color:#8590A8">({_ub_max_sf:,} SF)</div>
+      <div style="flex:1;min-width:80px;background:#FCFAF3;border:1px solid #DCD5C2;border-radius:8px;padding:10px 8px">
+        <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Max FAR</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#1A1D2E">{_ub_max_far:.2f}</div>
+        <div style="font-size:0.68rem;color:#6B7280">({_ub_max_sf:,} SF)</div>
       </div>
-      <div style="flex:1;min-width:80px;background:#161E2E;border:1px solid #26304A;border-radius:8px;padding:10px 8px">
-        <div style="font-size:0.64rem;color:#8590A8;font-weight:700;text-transform:uppercase">Built FAR</div>
-        <div style="font-size:1.15rem;font-weight:700;color:#EDEFF5">{_ub_built_far:.2f}</div>
-        <div style="font-size:0.68rem;color:#8590A8">({_ub_built_sf:,} SF)</div>
+      <div style="flex:1;min-width:80px;background:#FCFAF3;border:1px solid #DCD5C2;border-radius:8px;padding:10px 8px">
+        <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Built FAR</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#1A1D2E">{_ub_built_far:.2f}</div>
+        <div style="font-size:0.68rem;color:#6B7280">({_ub_built_sf:,} SF)</div>
       </div>
-      <div style="flex:1;min-width:80px;background:#161E2E;border:1px solid #26304A;border-radius:8px;padding:10px 8px">
-        <div style="font-size:0.64rem;color:#8590A8;font-weight:700;text-transform:uppercase">Unused FAR %</div>
+      <div style="flex:1;min-width:80px;background:#FCFAF3;border:1px solid #DCD5C2;border-radius:8px;padding:10px 8px">
+        <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Unused FAR %</div>
         <div style="font-size:1.15rem;font-weight:700;color:#{'15803D' if _ub_unused_pct > 20 else '111827'}">{_ub_unused_pct:.0f}%</div>
-        <div style="font-size:0.68rem;color:#8590A8">({_ub_add_sf:,} SF)</div>
+        <div style="font-size:0.68rem;color:#6B7280">({_ub_add_sf:,} SF)</div>
       </div>
       <div style="flex:1;min-width:80px;background:#{'DCFCE7' if _ub_unused_pct > 20 else 'F9FAFB'};border:1px solid #{'BBF7D0' if _ub_unused_pct > 20 else 'E5E7EB'};border-radius:8px;padding:10px 8px">
-        <div style="font-size:0.64rem;color:#8590A8;font-weight:700;text-transform:uppercase">Add&apos;l Buildable</div>
-        <div style="font-size:1.15rem;font-weight:700;color:#EDEFF5">{_ub_add_sf:,}</div>
-        <div style="font-size:0.68rem;color:#8590A8">SF</div>
+        <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Add&apos;l Buildable</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#1A1D2E">{_ub_add_sf:,}</div>
+        <div style="font-size:0.68rem;color:#6B7280">SF</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1825,7 +1829,7 @@ with tab_property:
                         tiles="CartoDB positron",
                     )
                     folium.CircleMarker(
-                        [lat, lon], radius=10, color="#F87171",
+                        [lat, lon], radius=10, color="#7A2E2E",
                         fill=True, fill_opacity=0.85,
                         tooltip="Subject Property",
                     ).add_to(_as_fmap)
@@ -1833,7 +1837,7 @@ with tab_property:
                         _adj_lat = float(_adj.get("latitude") or lat)
                         _adj_lon = float(_adj.get("longitude") or lon)
                         folium.CircleMarker(
-                            [_adj_lat, _adj_lon], radius=7, color="#60A5FA",
+                            [_adj_lat, _adj_lon], radius=7, color="#2A3E63",
                             fill=True, fill_opacity=0.65,
                             tooltip=_adj.get("address", "Adjacent Lot"),
                         ).add_to(_as_fmap)
@@ -1893,16 +1897,16 @@ with tab_property:
                 # with a blank score/tier — see _map_zinfo_to_portfolio_schema.
                 st.session_state["_ds_last_score_result"] = _score_result
 
-                _sc_clr = "#4ADE80" if _sc_score >= 70 else ("#FBBF24" if _sc_score >= 40 else "#F87171")
-                _sc_tbg = "#0B2E1D" if _sc_score >= 70 else ("#3A2B06" if _sc_score >= 40 else "#3A1414")
-                _sc_tfg = "#4ADE80" if _sc_score >= 70 else ("#FBBF24" if _sc_score >= 40 else "#F87171")
+                _sc_clr = "#1F6B3A" if _sc_score >= 70 else ("#8B6914" if _sc_score >= 40 else "#7A2E2E")
+                _sc_tbg = "#E6F0E5" if _sc_score >= 70 else ("#F5EBD3" if _sc_score >= 40 else "#F3E1DE")
+                _sc_tfg = "#1F6B3A" if _sc_score >= 70 else ("#8B6914" if _sc_score >= 40 else "#7A2E2E")
 
                 _sc_col1, _sc_col2 = st.columns([1, 2])
                 with _sc_col1:
                     st.markdown(
                         f'<div style="text-align:center;padding:18px 10px 12px">'
                         f'<div class="deal-score-num" style="color:{_sc_clr}">{_sc_score}</div>'
-                        f'<div style="font-size:0.70rem;color:#8590A8;margin-bottom:8px">out of 100</div>'
+                        f'<div style="font-size:0.70rem;color:#6B7280;margin-bottom:8px">out of 100</div>'
                         f'<span class="deal-tier-badge" style="background:{_sc_tbg};color:{_sc_tfg}">'
                         f'{_sc_tier}</span></div>',
                         unsafe_allow_html=True,
@@ -1915,8 +1919,8 @@ with tab_property:
                             f"<div style='margin-bottom:8px'>"
                             f"<div style='display:flex;justify-content:space-between;font-size:0.78rem'>"
                             f"<span style='font-weight:600'>{_cn}</span>"
-                            f"<span style='color:#8590A8'>{_cd['score']}/{_cd['max']}</span></div>"
-                            f"<div style='background:#1E2740;border-radius:4px;height:6px;margin-top:3px'>"
+                            f"<span style='color:#6B7280'>{_cd['score']}/{_cd['max']}</span></div>"
+                            f"<div style='background:#E8E3D4;border-radius:4px;height:6px;margin-top:3px'>"
                             f"<div style='background:{_sc_clr};width:{_bar_pct*100:.0f}%;"
                             f"height:6px;border-radius:4px'></div></div>"
                             f"</div>",
@@ -2024,11 +2028,11 @@ with tab_property:
             _um4.metric("Avg Unused FAR (ub)",   f"{_und_avg_far:.0f}%")
 
             def _und_color(pct: float) -> str:
-                if pct >= 80: return "#4ADE80"
-                if pct >= 60: return "#4ADE80"
-                if pct >= 40: return "#4ADE80"
-                if pct >= 20: return "#4ADE80"
-                return "#5C6680"
+                if pct >= 80: return "#1F6B3A"
+                if pct >= 60: return "#1F6B3A"
+                if pct >= 40: return "#1F6B3A"
+                if pct >= 20: return "#1F6B3A"
+                return "#9CA3AF"
 
             if _und_lots:
                 _und_show_all = st.checkbox("Show all lots (including near-buildout)", value=False)
@@ -2288,7 +2292,7 @@ with tab_property:
                         _cs_fig = go.Figure(go.Bar(
                             x=list(_cs_by_type.keys()),
                             y=[int(sum(v)/len(v)) for v in _cs_by_type.values()],
-                            marker_color="#67E8F9",
+                            marker_color="#8B6914",
                         ))
                         _cs_fig.update_layout(
                             title="Avg Sale Price by Building Class",
@@ -2333,7 +2337,7 @@ with tab_property:
                     _url = _rl.get("url") or ""
                     _link = (
                         f'<a href="{_url}" target="_blank" '
-                        f'style="color:#67E8F9;text-decoration:none;font-weight:600">View →</a>'
+                        f'style="color:#8B6914;text-decoration:none;font-weight:600">View →</a>'
                         if _url else "—"
                     )
                     _res_display.append({
@@ -2381,7 +2385,7 @@ with tab_property:
                         _co_fig = go.Figure(go.Bar(
                             x=list(_co_by_type.keys()),
                             y=[int(sum(v)/len(v)) for v in _co_by_type.values()],
-                            marker_color="#67E8F9",
+                            marker_color="#8B6914",
                         ))
                         _co_fig.update_layout(
                             title="Avg Rent/mo by Use Type",
@@ -2461,7 +2465,7 @@ with tab_property:
                         _rt_fig = go.Figure(go.Bar(
                             x=list(_rt_by_src.keys()),
                             y=[int(sum(v)/len(v)) for v in _rt_by_src.values()],
-                            marker_color="#4ADE80",
+                            marker_color="#1F6B3A",
                         ))
                         _rt_fig.update_layout(
                             title="Avg Retail Rent/mo by Source",
@@ -2539,7 +2543,7 @@ with tab_property:
                         _sp_fig = go.Figure(go.Bar(
                             x=list(_sp_by_type.keys()),
                             y=[int(sum(v)/len(v)) for v in _sp_by_type.values()],
-                            marker_color="#67E8F9",
+                            marker_color="#8B6914",
                         ))
                         _sp_fig.update_layout(
                             title="Avg Sale Price by Asset Type",
@@ -2561,7 +2565,7 @@ with tab_property:
                         _sp_psf_fig = go.Figure(go.Bar(
                             x=list(_sp_psf_by_type.keys()),
                             y=[round(sum(v)/len(v),2) for v in _sp_psf_by_type.values()],
-                            marker_color="#4ADE80",
+                            marker_color="#1F6B3A",
                         ))
                         _sp_psf_fig.update_layout(
                             title="Avg $/SF by Asset Type",
@@ -2738,7 +2742,7 @@ with tab_property:
                         f'onerror="this.style.display=\'none\'">'
                         f'<div class="gc-caption">'
                         f'<b>${rent:,.0f}/mo</b> · {utype}{sqft_s}<br>'
-                        f'<span style="color:#8590A8">{addr}</span><br>'
+                        f'<span style="color:#6B7280">{addr}</span><br>'
                         f'<span class="gc-badge">{src}</span>'
                         f'</div></a>'
                     )
@@ -2752,10 +2756,10 @@ with tab_property:
                 _row2_html = "".join(_gallery_card(l) for l in _row2)
 
                 st.markdown(
-                    f"<div style='margin-bottom:4px;font-size:0.72rem;color:#8590A8;font-weight:600'>"
+                    f"<div style='margin-bottom:4px;font-size:0.72rem;color:#6B7280;font-weight:600'>"
                     f"MOST AFFORDABLE</div>"
                     f"<div class='gallery-scroll-row'>{_row1_html}</div>"
-                    f"<div style='margin-bottom:4px;margin-top:6px;font-size:0.72rem;color:#8590A8;font-weight:600'>"
+                    f"<div style='margin-bottom:4px;margin-top:6px;font-size:0.72rem;color:#6B7280;font-weight:600'>"
                     f"PREMIUM LISTINGS</div>"
                     f"<div class='gallery-scroll-row'>{_row2_html}</div>",
                     unsafe_allow_html=True,
@@ -2795,8 +2799,8 @@ with tab_property:
                                 _vstr = f"${_val:,}/mo" if _val else "—"
                                 st.markdown(
                                     f"<div style='display:flex;justify-content:space-between;font-size:0.83rem;"
-                                    f"padding:2px 0;border-bottom:1px solid #1E2740'>"
-                                    f"<span style='color:#8590A8'>{_label}</span>"
+                                    f"padding:2px 0;border-bottom:1px solid #E8E3D4'>"
+                                    f"<span style='color:#6B7280'>{_label}</span>"
                                     f"<b>{_vstr}</b></div>",
                                     unsafe_allow_html=True,
                                 )
@@ -2804,37 +2808,37 @@ with tab_property:
                                 st.caption(f"Condo: ${_res_d['condo_psf']:,}/SF")
                         else:
                             if _hb_res:
-                                st.markdown(f"<div style='font-size:0.84rem;color:#C7CDDB;padding:4px 0'>{_hb_res[:200]}</div>", unsafe_allow_html=True)
+                                st.markdown(f"<div style='font-size:0.84rem;color:#3D4152;padding:4px 0'>{_hb_res[:200]}</div>", unsafe_allow_html=True)
                     with _hc2:
                         st.markdown("**🏪 Retail Rents**")
                         if _ret_d.get("asking_rent_psf"):
                             st.markdown(
-                                f"<div style='font-size:1.1rem;font-weight:700;color:#EDEFF5'>"
-                                f"${_ret_d['asking_rent_psf']:,} <span style='font-size:0.75rem;font-weight:400;color:#8590A8'>/SF/yr asking</span></div>",
+                                f"<div style='font-size:1.1rem;font-weight:700;color:#1A1D2E'>"
+                                f"${_ret_d['asking_rent_psf']:,} <span style='font-size:0.75rem;font-weight:400;color:#6B7280'>/SF/yr asking</span></div>",
                                 unsafe_allow_html=True,
                             )
                         if _ret_d.get("vacancy_pct"):
                             st.caption(f"Vacancy: {_ret_d['vacancy_pct']:.1f}%")
                         if _ret_d.get("tenant_types"):
                             st.markdown(
-                                " ".join(f"<span style='background:#1E2740;color:#818CF8;border-radius:12px;padding:2px 8px;font-size:0.72rem;margin:2px'>{t}</span>" for t in _ret_d["tenant_types"]),
+                                " ".join(f"<span style='background:#E8E3D4;color:#4C5FA6;border-radius:12px;padding:2px 8px;font-size:0.72rem;margin:2px'>{t}</span>" for t in _ret_d["tenant_types"]),
                                 unsafe_allow_html=True,
                             )
                         if not _ret_d.get("asking_rent_psf") and _hb_com:
-                            st.markdown(f"<div style='font-size:0.84rem;color:#C7CDDB;padding:4px 0'>{_hb_com[:200]}</div>", unsafe_allow_html=True)
+                            st.markdown(f"<div style='font-size:0.84rem;color:#3D4152;padding:4px 0'>{_hb_com[:200]}</div>", unsafe_allow_html=True)
                     with _hc3:
                         st.markdown("**🏢 Commercial / Office**")
                         if _com_d.get("asking_rent_psf"):
                             st.markdown(
-                                f"<div style='font-size:1.1rem;font-weight:700;color:#EDEFF5'>"
-                                f"${_com_d['asking_rent_psf']:,} <span style='font-size:0.75rem;font-weight:400;color:#8590A8'>/SF/yr asking</span></div>",
+                                f"<div style='font-size:1.1rem;font-weight:700;color:#1A1D2E'>"
+                                f"${_com_d['asking_rent_psf']:,} <span style='font-size:0.75rem;font-weight:400;color:#6B7280'>/SF/yr asking</span></div>",
                                 unsafe_allow_html=True,
                             )
                         if _com_d.get("vacancy_pct"):
                             st.caption(f"Vacancy: {_com_d['vacancy_pct']:.1f}%")
                         if _com_d.get("tenant_types"):
                             st.markdown(
-                                " ".join(f"<span style='background:#12233F;color:#67E8F9;border-radius:12px;padding:2px 8px;font-size:0.72rem;margin:2px'>{t}</span>" for t in _com_d["tenant_types"]),
+                                " ".join(f"<span style='background:#E4E8F1;color:#8B6914;border-radius:12px;padding:2px 8px;font-size:0.72rem;margin:2px'>{t}</span>" for t in _com_d["tenant_types"]),
                                 unsafe_allow_html=True,
                             )
 
@@ -2992,22 +2996,22 @@ with tab_property:
                 _art_cols = st.columns(2)
                 for _ai, _art in enumerate(_articles[:8]):
                     _src = _art.get("source", {})
-                    _bg  = _src.get("bg", "#8590A8")
-                    _fg  = _src.get("fg", "#121826")
+                    _bg  = _src.get("bg", "#6B7280")
+                    _fg  = _src.get("fg", "#FFFFFF")
                     _lbl = _src.get("label", "Web")
                     _dt  = _art.get("date_approx", "")
                     with _art_cols[_ai % 2]:
                         st.markdown(
-                            f"<div style='background:#121826;border:1px solid #26304A;"
+                            f"<div style='background:#FFFFFF;border:1px solid #DCD5C2;"
                             f"border-radius:10px;padding:10px 14px;margin-bottom:8px'>"
                             f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>"
                             f"<span style='background:{_bg};color:{_fg};border-radius:10px;padding:2px 8px;font-size:0.68rem;font-weight:700'>{_lbl}</span>"
-                            f"<span style='font-size:0.68rem;color:#5C6680'>{_dt}</span>"
+                            f"<span style='font-size:0.68rem;color:#9CA3AF'>{_dt}</span>"
                             f"</div>"
-                            f"<div style='font-size:0.82rem;font-weight:600;color:#EDEFF5;margin-bottom:4px'>"
-                            f"<a href='{_art['url']}' target='_blank' style='color:#EDEFF5;text-decoration:none'>"
+                            f"<div style='font-size:0.82rem;font-weight:600;color:#1A1D2E;margin-bottom:4px'>"
+                            f"<a href='{_art['url']}' target='_blank' style='color:#1A1D2E;text-decoration:none'>"
                             f"{_art['title'][:80]}{'…' if len(_art['title']) > 80 else ''}</a></div>"
-                            f"<div style='font-size:0.75rem;color:#8590A8;line-height:1.4'>{_art.get('snippet','')[:150]}</div>"
+                            f"<div style='font-size:0.75rem;color:#6B7280;line-height:1.4'>{_art.get('snippet','')[:150]}</div>"
                             f"</div>",
                             unsafe_allow_html=True,
                         )
@@ -3075,18 +3079,18 @@ with tab_property:
                     _matched  = _zinfo.get("matched_label", "")
                     _zola_link = (
                         f'&nbsp;&nbsp;<a href="{_zola_url}" target="_blank" '
-                        f'style="color:#67E8F9;font-weight:600">View on ZOLA →</a>'
+                        f'style="color:#8B6914;font-weight:600">View on ZOLA →</a>'
                         if _zola_url else ""
                     )
                     st.markdown(
                         f"<div style='margin-bottom:12px;padding:8px 12px;"
-                        f"background:#1E2740;border-radius:8px;border-left:3px solid #67E8F9'>"
+                        f"background:#E8E3D4;border-radius:8px;border-left:3px solid #8B6914'>"
                         f"<b>BBL:</b> {_bbl_disp} &nbsp;·&nbsp; "
                         f"Borough {_zinfo.get('borough_code','—')} &nbsp;·&nbsp; "
                         f"Block {_zinfo.get('block','—')} &nbsp;·&nbsp; "
                         f"Lot {_zinfo.get('lot','—')}"
                         f"{_zola_link}"
-                        f"<br><span style='color:#8590A8;font-size:0.82rem'>{_matched}</span>"
+                        f"<br><span style='color:#6B7280;font-size:0.82rem'>{_matched}</span>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -3132,25 +3136,25 @@ with tab_property:
                         # Confidence badge
                         _acris_conf = _acris.get("confidence", "None")
                         _acris_method = _acris.get("match_method", "")
-                        _conf_color = {"High": "#4ADE80", "Medium": "#FBBF24", "Low": "#F87171", "None": "#8590A8"}.get(_acris_conf, "#8590A8")
+                        _conf_color = {"High": "#1F6B3A", "Medium": "#8B6914", "Low": "#7A2E2E", "None": "#6B7280"}.get(_acris_conf, "#6B7280")
                         st.markdown(
                             f"<span style='background:{_conf_color};color:white;padding:2px 8px;"
                             f"border-radius:10px;font-size:0.68rem;font-weight:700'>"
                             f"Match Confidence: {_acris_conf}</span> "
-                            f"<span style='font-size:0.68rem;color:#8590A8'>{_acris_method}</span>",
+                            f"<span style='font-size:0.68rem;color:#6B7280'>{_acris_method}</span>",
                             unsafe_allow_html=True,
                         )
                         _ac1, _ac2, _ac3, _ac4 = st.columns(4)
                         def _acris_card(col, icon, label, value, sub=""):
                             with col:
                                 st.markdown(
-                                    f"<div style='background:#121826;border:1px solid #26304A;"
+                                    f"<div style='background:#FFFFFF;border:1px solid #DCD5C2;"
                                     f"border-radius:10px;padding:10px 14px;margin-bottom:8px'>"
-                                    f"<div style='font-size:0.68rem;color:#8590A8;font-weight:700;"
+                                    f"<div style='font-size:0.68rem;color:#6B7280;font-weight:700;"
                                     f"text-transform:uppercase;letter-spacing:0.06em'>{icon} {label}</div>"
-                                    f"<div style='font-size:1.05rem;font-weight:700;color:#EDEFF5;"
+                                    f"<div style='font-size:1.05rem;font-weight:700;color:#1A1D2E;"
                                     f"margin:2px 0'>{value}</div>"
-                                    f"<div style='font-size:0.72rem;color:#5C6680'>{sub}</div>"
+                                    f"<div style='font-size:0.72rem;color:#9CA3AF'>{sub}</div>"
                                     f"</div>",
                                     unsafe_allow_html=True,
                                 )
@@ -3245,7 +3249,7 @@ with tab_property:
                         if _sales:
                             st.markdown(
                                 "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                                "text-transform:uppercase;color:#8590A8;margin-bottom:8px'>"
+                                "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
                                 "💰 Sales History (ACRIS)</div>",
                                 unsafe_allow_html=True,
                             )
@@ -3274,7 +3278,7 @@ with tab_property:
                         if _mortgages:
                             st.markdown(
                                 "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                                "text-transform:uppercase;color:#8590A8;margin-bottom:8px'>"
+                                "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
                                 "🏦 Mortgages (ACRIS)</div>",
                                 unsafe_allow_html=True,
                             )
@@ -3303,7 +3307,7 @@ with tab_property:
                         if _liens:
                             st.markdown(
                                 "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                                "text-transform:uppercase;color:#8590A8;margin-bottom:8px'>"
+                                "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
                                 "⚖️ Liens & UCC (ACRIS)</div>",
                                 unsafe_allow_html=True,
                             )
@@ -3330,7 +3334,7 @@ with tab_property:
                     st.markdown("---")
                     st.markdown(
                         "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                        "text-transform:uppercase;color:#8590A8;margin-bottom:8px'>"
+                        "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
                         "🏛️ Full Property History — DOB, HPD & ECB Records</div>",
                         unsafe_allow_html=True,
                     )
@@ -3370,7 +3374,7 @@ with tab_property:
                     if _assess_land or _assess_total:
                         st.markdown(
                             "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                            "text-transform:uppercase;color:#8590A8;margin-bottom:8px'>"
+                            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
                             "💵 Assessed Values (NYC PLUTO)</div>",
                             unsafe_allow_html=True,
                         )
@@ -3378,11 +3382,11 @@ with tab_property:
                         with _av1:
                             _land_val = f"${_assess_land:,.0f}" if _assess_land else "—"
                             st.markdown(
-                                f"<div style='background:#121826;border:1px solid #26304A;"
+                                f"<div style='background:#FFFFFF;border:1px solid #DCD5C2;"
                                 f"border-radius:8px;padding:12px 14px'>"
-                                f"<div style='font-size:0.65rem;color:#8590A8;font-weight:700'>"
+                                f"<div style='font-size:0.65rem;color:#6B7280;font-weight:700'>"
                                 f"LAND VALUE</div>"
-                                f"<div style='font-size:1.2rem;font-weight:700;color:#EDEFF5'>"
+                                f"<div style='font-size:1.2rem;font-weight:700;color:#1A1D2E'>"
                                 f"{_land_val}"
                                 f"</div></div>",
                                 unsafe_allow_html=True,
@@ -3390,11 +3394,11 @@ with tab_property:
                         with _av2:
                             _total_val = f"${_assess_total:,.0f}" if _assess_total else "—"
                             st.markdown(
-                                f"<div style='background:#121826;border:1px solid #26304A;"
+                                f"<div style='background:#FFFFFF;border:1px solid #DCD5C2;"
                                 f"border-radius:8px;padding:12px 14px'>"
-                                f"<div style='font-size:0.65rem;color:#8590A8;font-weight:700'>"
+                                f"<div style='font-size:0.65rem;color:#6B7280;font-weight:700'>"
                                 f"TOTAL VALUE</div>"
-                                f"<div style='font-size:1.2rem;font-weight:700;color:#EDEFF5'>"
+                                f"<div style='font-size:1.2rem;font-weight:700;color:#1A1D2E'>"
                                 f"{_total_val}"
                                 f"</div></div>",
                                 unsafe_allow_html=True,
@@ -3405,12 +3409,12 @@ with tab_property:
                         def _pip_card(col, icon, label, val, sub=""):
                             with col:
                                 st.markdown(
-                                    f"<div style='background:#121826;border:1px solid #26304A;"
+                                    f"<div style='background:#FFFFFF;border:1px solid #DCD5C2;"
                                     f"border-radius:8px;padding:8px 10px;text-align:center'>"
-                                    f"<div style='font-size:0.62rem;color:#8590A8;font-weight:700;"
+                                    f"<div style='font-size:0.62rem;color:#6B7280;font-weight:700;"
                                     f"text-transform:uppercase;letter-spacing:0.05em'>{icon} {label}</div>"
-                                    f"<div style='font-size:1.1rem;font-weight:700;color:#EDEFF5;margin:2px 0'>{val}</div>"
-                                    f"<div style='font-size:0.65rem;color:#5C6680'>{sub}</div>"
+                                    f"<div style='font-size:1.1rem;font-weight:700;color:#1A1D2E;margin:2px 0'>{val}</div>"
+                                    f"<div style='font-size:0.65rem;color:#9CA3AF'>{sub}</div>"
                                     f"</div>",
                                     unsafe_allow_html=True,
                                 )
@@ -3566,7 +3570,7 @@ with tab_property:
                                 else ("✅ Currently exempt" if _exempt else "No current exemption on record")
                             )
                             st.markdown(f"**Tax Exemption Status** — {_exempt_lbl}  \n"
-                                        f"<span style='font-size:0.72rem;color:#8590A8'>Verified from PLUTO</span>",
+                                        f"<span style='font-size:0.72rem;color:#6B7280'>Verified from PLUTO</span>",
                                         unsafe_allow_html=True)
                             _progs = [p for p in _abate.get("estimated_programs", []) if p.get("eligible_estimate")]
                             if _progs:
@@ -3579,7 +3583,7 @@ with tab_property:
                             _rs_lbl = "⚠️ Likely Rent Stabilized" if _rentstab.get("likely_stabilized") else "Unlikely rent stabilized"
                             st.markdown(
                                 f"**Rent Stabilization** — {_rs_lbl} "
-                                f"<span style='font-size:0.72rem;color:#8590A8'>(estimated, {_rentstab.get('confidence', 0):.0%} conf. — not verified)</span>  \n"
+                                f"<span style='font-size:0.72rem;color:#6B7280'>(estimated, {_rentstab.get('confidence', 0):.0%} conf. — not verified)</span>  \n"
                                 f"<a href='{_rentstab.get('dhcr_lookup_url', '')}' target='_blank' "
                                 f"style='font-size:0.75rem'>Confirm via DHCR building list →</a>",
                                 unsafe_allow_html=True,
@@ -3639,7 +3643,7 @@ with tab_property:
                             _flood_icon = "🔴" if _sfha else ("🟡" if _sfha is False and _flood.get("flood_zone") == "X500" else "🟢" if _sfha is False else "⚪")
                             st.markdown(
                                 f"**{_flood_icon} FEMA Flood Zone** — {_flood.get('flood_zone') or 'Not mapped'}  \n"
-                                f"<span style='font-size:0.78rem;color:#C7CDDB'>{_flood.get('zone_description','')}</span>",
+                                f"<span style='font-size:0.78rem;color:#3D4152'>{_flood.get('zone_description','')}</span>",
                                 unsafe_allow_html=True,
                             )
                             if _sfha:
@@ -3650,7 +3654,7 @@ with tab_property:
                         else:
                             st.markdown(
                                 f"**🛢️ DEC Spill Incidents ({_dec.get('county','—')} County)** — {_dec.get('count', 0)} record(s) "
-                                f"<span style='font-size:0.72rem;color:#8590A8'>(county-wide, not property-specific)</span>",
+                                f"<span style='font-size:0.72rem;color:#6B7280'>(county-wide, not property-specific)</span>",
                                 unsafe_allow_html=True,
                             )
                             st.caption(f"[Search official DEC spills database for this address ↗]({_dec.get('search_tool_url', '')})")
@@ -3700,7 +3704,7 @@ with tab_property:
                                     _status  = "✅ Adjacent (same block)" if _adj_ok else "⚠️ Different block — won't be merged"
                                     st.markdown(
                                         f"<div style='font-size:0.78rem;padding:4px 8px;"
-                                        f"background:#161E2E;border-radius:6px;border:1px solid #26304A;margin-bottom:4px'>"
+                                        f"background:#FCFAF3;border-radius:6px;border:1px solid #DCD5C2;margin-bottom:4px'>"
                                         f"BBL: <b>{_adj_bbl}</b> &nbsp;·&nbsp; "
                                         f"{_adj_lf} ft × {_adj_ld} ft = {_adj_la} SF &nbsp;·&nbsp; {_status}"
                                         f"</div>",
@@ -3740,10 +3744,10 @@ with tab_property:
 
                     def _zrow(label, val, width="160px"):
                         v = str(val) if val and str(val) != "—" else None
-                        body = f"<b>{v}</b>" if v else "<span style='color:#5C6680'>—</span>"
+                        body = f"<b>{v}</b>" if v else "<span style='color:#9CA3AF'>—</span>"
                         return (
                             f"<div style='display:flex;gap:8px;margin-bottom:5px'>"
-                            f"<span style='color:#8590A8;min-width:{width}'>{label}</span>"
+                            f"<span style='color:#6B7280;min-width:{width}'>{label}</span>"
                             f"{body}</div>"
                         )
 
@@ -3753,7 +3757,7 @@ with tab_property:
                     if _zrules:
                         st.markdown(
                             "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                            "text-transform:uppercase;color:#8590A8;margin-bottom:8px'>"
+                            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
                             "📋 Key Zoning Requirements & Approval Triggers</div>",
                             unsafe_allow_html=True,
                         )
@@ -3821,7 +3825,7 @@ with tab_property:
                             _z2 = _zinfo.get("zoning_dist2", "")
                             _bullets.append(f"**Split Zone:** Lot straddles {_primary_zone} and {_z2 or 'a secondary zone'} — most restrictive standards apply per NYC ZR.")
                         _bullets.append("**Approval Path:** As-of-right developments file only DOB permit. Bonus FAR, special permits, or variances require ULURP (typically 12–18 months)")
-                        _bullets_html = "".join(f"<li style='margin-bottom:5px;font-size:0.82rem;color:#C7CDDB'>{b}</li>" for b in _bullets)
+                        _bullets_html = "".join(f"<li style='margin-bottom:5px;font-size:0.82rem;color:#3D4152'>{b}</li>" for b in _bullets)
                         st.markdown(
                             f"<ul style='padding-left:18px;margin:0'>{_bullets_html}</ul>",
                             unsafe_allow_html=True,
@@ -3935,7 +3939,7 @@ with tab_property:
                         st.markdown("---")
                         st.markdown(
                             "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                            "text-transform:uppercase;color:#8590A8;margin-bottom:8px'>"
+                            "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
                             "📐 Zoning Development Envelope</div>",
                             unsafe_allow_html=True,
                         )
@@ -3959,14 +3963,14 @@ with tab_property:
                         def _erow(lbl, val, width="165px", link=None):
                             v = str(val) if val not in (None, 0, "0", "") else None
                             if v and link:
-                                body = f"<b><a href='{link}' target='_blank' style='color:#67E8F9;text-decoration:none'>{v} ↗</a></b>"
+                                body = f"<b><a href='{link}' target='_blank' style='color:#8B6914;text-decoration:none'>{v} ↗</a></b>"
                             elif v:
                                 body = f"<b>{v}</b>"
                             else:
-                                body = "<span style='color:#5C6680'>—</span>"
+                                body = "<span style='color:#9CA3AF'>—</span>"
                             return (
                                 f"<div style='display:flex;gap:8px;margin-bottom:5px'>"
-                                f"<span style='color:#8590A8;min-width:{width}'>{lbl}</span>"
+                                f"<span style='color:#6B7280;min-width:{width}'>{lbl}</span>"
                                 f"{body}</div>"
                             )
 
@@ -3992,8 +3996,8 @@ with tab_property:
                                 _zrules_2 = get_zoning_rules(_zone_2)
                                 if _zrules_2:
                                     _far_html += (
-                                        f"<div style='margin-top:8px;border-top:1px solid #26304A;padding-top:8px'>"
-                                        f"<b style='color:#8590A8;font-size:0.85em'>Secondary Zone ({_zone_2})</b>"
+                                        f"<div style='margin-top:8px;border-top:1px solid #DCD5C2;padding-top:8px'>"
+                                        f"<b style='color:#6B7280;font-size:0.85em'>Secondary Zone ({_zone_2})</b>"
                                         f"</div>" +
                                         _erow("Base FAR",         _zrules_2.get("base_far"),
                                               link=get_zoning_citations(_zone_2).get("far_url")) +
@@ -4069,13 +4073,13 @@ with tab_property:
                         # ── ZR Citation footer ────────────────────────────────────
                         if _zcite.get("article_url"):
                             st.markdown(
-                                f"<div style='margin-top:8px;font-size:0.72rem;color:#8590A8'>"
+                                f"<div style='margin-top:8px;font-size:0.72rem;color:#6B7280'>"
                                 f"📚 <b>NYC Zoning Resolution:</b> "
-                                f"<a href='{_zcite['article_url']}' target='_blank' style='color:#67E8F9'>Bulk Regulations</a> · "
-                                f"<a href='{_zcite.get('use_url',_zcite['article_url'])}' target='_blank' style='color:#67E8F9'>Use Regulations</a> · "
-                                f"<a href='{_zcite.get('parking_url',_zcite['article_url'])}' target='_blank' style='color:#67E8F9'>Parking Regulations</a> · "
-                                f"<a href='{_zcite.get('zr_main_url','https://zr.planning.nyc.gov')}' target='_blank' style='color:#67E8F9'>Full ZR Browser</a> · "
-                                f"<a href='{_zcite.get('zola_url','https://zola.planning.nyc.gov')}' target='_blank' style='color:#67E8F9'>ZOLA Map</a>"
+                                f"<a href='{_zcite['article_url']}' target='_blank' style='color:#8B6914'>Bulk Regulations</a> · "
+                                f"<a href='{_zcite.get('use_url',_zcite['article_url'])}' target='_blank' style='color:#8B6914'>Use Regulations</a> · "
+                                f"<a href='{_zcite.get('parking_url',_zcite['article_url'])}' target='_blank' style='color:#8B6914'>Parking Regulations</a> · "
+                                f"<a href='{_zcite.get('zr_main_url','https://zr.planning.nyc.gov')}' target='_blank' style='color:#8B6914'>Full ZR Browser</a> · "
+                                f"<a href='{_zcite.get('zola_url','https://zola.planning.nyc.gov')}' target='_blank' style='color:#8B6914'>ZOLA Map</a>"
                                 f"</div>",
                                 unsafe_allow_html=True,
                             )
@@ -4147,11 +4151,11 @@ with tab_property:
                             _ex_lmod = _zinfo.get("year_last_mod", "—") or "—"
                             if _ex_yr != "—":
                                 st.markdown(
-                                    f"<div style='background:#0B2E1D;border:1px solid #0B2E1D;"
+                                    f"<div style='background:#E6F0E5;border:1px solid #E6F0E5;"
                                     f"border-radius:8px;padding:10px 14px;margin-bottom:12px'>"
-                                    f"<span style='font-size:0.72rem;font-weight:700;color:#4ADE80;"
+                                    f"<span style='font-size:0.72rem;font-weight:700;color:#1F6B3A;"
                                     f"text-transform:uppercase;letter-spacing:0.06em'>📦 Existing Structure</span>"
-                                    f"<div style='margin-top:4px;font-size:0.84rem;color:#C7CDDB'>"
+                                    f"<div style='margin-top:4px;font-size:0.84rem;color:#3D4152'>"
                                     f"<b>Class {_ex_cls}</b> &nbsp;·&nbsp; Built <b>{_ex_yr}</b>"
                                     f" (last mod. {_ex_lmod}) &nbsp;·&nbsp; "
                                     f"<b>{_ex_flrs}</b> floors &nbsp;·&nbsp; "
@@ -4227,7 +4231,7 @@ with tab_property:
                                 # FAR type selector
                                 st.markdown(
                                     "<div style='margin-top:10px;font-size:0.75rem;font-weight:600;"
-                                    "color:#C7CDDB'>📐 FAR Type for Scenario Calculations</div>",
+                                    "color:#3D4152'>📐 FAR Type for Scenario Calculations</div>",
                                     unsafe_allow_html=True,
                                 )
                                 _saved_far_sel = st.session_state.get("_far_sel_val", "Auto (Max)")
@@ -4568,7 +4572,7 @@ with tab_property:
                                     _tile_net     = opt.get("net_rentable_sqft", 0)
                                     _tile_max_sf  = int(_la_v * _max_far_val) if _max_far_val > 0 else 0
                                     st.markdown(
-                                        f"<div style='background:#121826;border:1px solid #26304A;"
+                                        f"<div style='background:#FFFFFF;border:1px solid #DCD5C2;"
                                         f"border-radius:12px;padding:8px 10px 4px'>"
                                         f"{_risk_badge(rl)}"
                                         f"<div style='font-weight:700;font-size:0.72rem;margin:5px 0 1px'>"
@@ -4587,23 +4591,23 @@ with tab_property:
                                     st.markdown(
                                         f"<div style='display:grid;grid-template-columns:repeat(4,1fr);"
                                         f"gap:3px;margin:6px 0'>"
-                                        f"<div style='text-align:center;padding:5px 2px;background:#1E2740;border-radius:6px'>"
-                                        f"<div style='font-size:0.55rem;color:#8590A8;font-weight:700;text-transform:uppercase;"
+                                        f"<div style='text-align:center;padding:5px 2px;background:#E8E3D4;border-radius:6px'>"
+                                        f"<div style='font-size:0.55rem;color:#6B7280;font-weight:700;text-transform:uppercase;"
                                         f"letter-spacing:0.04em;line-height:1.2'>Gross SF</div>"
-                                        f"<div style='font-size:0.82rem;font-weight:700;color:#EDEFF5;line-height:1.3'>{_tile_gross:,}</div></div>"
-                                        f"<div style='text-align:center;padding:5px 2px;background:#12233F;border-radius:6px' "
+                                        f"<div style='font-size:0.82rem;font-weight:700;color:#1A1D2E;line-height:1.3'>{_tile_gross:,}</div></div>"
+                                        f"<div style='text-align:center;padding:5px 2px;background:#E4E8F1;border-radius:6px' "
                                         f"title='Lot area × {_far_type_label} ({_max_far_val})'>"
-                                        f"<div style='font-size:0.55rem;color:#60A5FA;font-weight:700;text-transform:uppercase;"
+                                        f"<div style='font-size:0.55rem;color:#2A3E63;font-weight:700;text-transform:uppercase;"
                                         f"letter-spacing:0.04em;line-height:1.2'>Max Bldg SF</div>"
-                                        f"<div style='font-size:0.82rem;font-weight:700;color:#60A5FA;line-height:1.3'>{_tile_max_sf_str}</div></div>"
-                                        f"<div style='text-align:center;padding:5px 2px;background:#0B2E1D;border-radius:6px'>"
-                                        f"<div style='font-size:0.55rem;color:#4ADE80;font-weight:700;text-transform:uppercase;"
+                                        f"<div style='font-size:0.82rem;font-weight:700;color:#2A3E63;line-height:1.3'>{_tile_max_sf_str}</div></div>"
+                                        f"<div style='text-align:center;padding:5px 2px;background:#E6F0E5;border-radius:6px'>"
+                                        f"<div style='font-size:0.55rem;color:#1F6B3A;font-weight:700;text-transform:uppercase;"
                                         f"letter-spacing:0.04em;line-height:1.2'>Net Rentable</div>"
-                                        f"<div style='font-size:0.82rem;font-weight:700;color:#4ADE80;line-height:1.3'>{_tile_net:,}</div></div>"
-                                        f"<div style='text-align:center;padding:5px 2px;background:#2A1B3D;border-radius:6px'>"
-                                        f"<div style='font-size:0.55rem;color:#C084FC;font-weight:700;text-transform:uppercase;"
+                                        f"<div style='font-size:0.82rem;font-weight:700;color:#1F6B3A;line-height:1.3'>{_tile_net:,}</div></div>"
+                                        f"<div style='text-align:center;padding:5px 2px;background:#EDE7F3;border-radius:6px'>"
+                                        f"<div style='font-size:0.55rem;color:#6B4E8E;font-weight:700;text-transform:uppercase;"
                                         f"letter-spacing:0.04em;line-height:1.2'>Ht / Floors</div>"
-                                        f"<div style='font-size:0.82rem;font-weight:700;color:#C084FC;line-height:1.3'>{_tile_ht_str}</div></div>"
+                                        f"<div style='font-size:0.82rem;font-weight:700;color:#6B4E8E;line-height:1.3'>{_tile_ht_str}</div></div>"
                                         f"</div>",
                                         unsafe_allow_html=True,
                                     )
@@ -4611,9 +4615,9 @@ with tab_property:
                                     # Strategy + description (collapsible)
                                     with st.expander("📋 Strategy & Description", expanded=False):
                                         st.markdown(
-                                            f"<div style='font-size:0.84rem;line-height:1.5;color:#C7CDDB'>"
+                                            f"<div style='font-size:0.84rem;line-height:1.5;color:#3D4152'>"
                                             f"<b>Strategy:</b> {opt.get('strategy','')}</div>"
-                                            f"<div style='font-size:0.82rem;line-height:1.5;color:#C7CDDB;"
+                                            f"<div style='font-size:0.82rem;line-height:1.5;color:#3D4152;"
                                             f"margin-top:6px'>{opt.get('description','')}</div>",
                                             unsafe_allow_html=True,
                                         )
@@ -4693,9 +4697,9 @@ with tab_property:
 
                                 # ── Display tiles by risk tier ───────────────
                                 for _tier, _tier_label, _tier_color in [
-                                    ("LOW",  "🟢 Low Risk Scenarios",    "#0B2E1D"),
-                                    ("MED",  "🟡 Medium Risk Scenarios", "#3A2B06"),
-                                    ("HIGH", "🔴 High Risk Scenarios",   "#3A1414"),
+                                    ("LOW",  "🟢 Low Risk Scenarios",    "#E6F0E5"),
+                                    ("MED",  "🟡 Medium Risk Scenarios", "#F5EBD3"),
+                                    ("HIGH", "🔴 High Risk Scenarios",   "#F3E1DE"),
                                 ]:
                                     _tier_opts = [o for o in _options if o.get("risk_level") == _tier]
                                     if not _tier_opts:
@@ -4772,14 +4776,14 @@ with tab_property:
                                             for _ck, _cv in _cmp_data:
                                                 st.markdown(
                                                     f"<div style='display:flex;justify-content:space-between;"
-                                                    f"border-bottom:1px solid #1E2740;padding:4px 0;"
+                                                    f"border-bottom:1px solid #E8E3D4;padding:4px 0;"
                                                     f"font-size:0.79rem'>"
-                                                    f"<span style='color:#8590A8'>{_ck}</span>"
+                                                    f"<span style='color:#6B7280'>{_ck}</span>"
                                                     f"<b>{_cv}</b></div>",
                                                     unsafe_allow_html=True,
                                                 )
                                             st.markdown(
-                                                f"<div style='margin-top:8px;font-size:0.73rem;color:#C7CDDB'>"
+                                                f"<div style='margin-top:8px;font-size:0.73rem;color:#3D4152'>"
                                                 f"{_so.get('strategy','')}</div>",
                                                 unsafe_allow_html=True,
                                             )
@@ -5099,8 +5103,8 @@ with tab_property:
 
             if _rk_flags:
                 st.markdown("**Property-Specific Risk Signals** *(from live data already fetched above — ACRIS, DOB/HPD, tax/rent-stab estimates)*")
-                _rk_color = {"high": "#F87171", "med": "#FBBF24", "low": "#60A5FA"}
-                _rk_bg    = {"high": "#3A1414", "med": "#3A2B06", "low": "#12233F"}
+                _rk_color = {"high": "#7A2E2E", "med": "#8B6914", "low": "#2A3E63"}
+                _rk_bg    = {"high": "#F3E1DE", "med": "#F5EBD3", "low": "#E4E8F1"}
                 _rk_cols = st.columns(min(3, len(_rk_flags)))
                 for _rk_i, _rk_f in enumerate(_rk_flags):
                     with _rk_cols[_rk_i % len(_rk_cols)]:
@@ -5136,8 +5140,8 @@ with tab_property:
                     f"<td><b>{r['category']}</b></td>"
                     f"<td class='{_prob_class(r['probability'])}'>{r['probability']}</td>"
                     f"<td class='{_prob_class(r['impact'])}'>{r['impact']}</td>"
-                    f"<td style='color:#C7CDDB;word-wrap:break-word'>{r['description']}</td>"
-                    f"<td style='color:#8590A8;font-size:0.75rem;word-wrap:break-word'>{r['mitigation']}</td>"
+                    f"<td style='color:#3D4152;word-wrap:break-word'>{r['description']}</td>"
+                    f"<td style='color:#6B7280;font-size:0.75rem;word-wrap:break-word'>{r['mitigation']}</td>"
                     f"</tr>"
                     for r in MACRO_RISKS
                 )
@@ -5156,15 +5160,15 @@ with tab_property:
                     _pc = _prob_class(_mr.get("probability", ""))
                     _ic = _prob_class(_mr.get("impact", ""))
                     st.markdown(
-                        f"<div style='padding:10px;border:1px solid #26304A;border-radius:8px;margin-bottom:8px;background:#121826'>"
+                        f"<div style='padding:10px;border:1px solid #DCD5C2;border-radius:8px;margin-bottom:8px;background:#FFFFFF'>"
                         f"<div style='display:flex;gap:8px;align-items:center;margin-bottom:4px'>"
                         f"<b style='font-size:0.83rem'>{_mr['category']}</b>"
                         f"&nbsp;<span class='{_pc}' style='padding:1px 7px;border-radius:10px;font-size:0.68rem;font-weight:700'>"
                         f"Prob: {_mr.get('probability','—')}</span>"
                         f"&nbsp;<span class='{_ic}' style='padding:1px 7px;border-radius:10px;font-size:0.68rem;font-weight:700'>"
                         f"Impact: {_mr.get('impact','—')}</span></div>"
-                        f"<div style='font-size:0.78rem;color:#C7CDDB;margin-bottom:4px'>{_mr['description']}</div>"
-                        f"<div style='font-size:0.74rem;color:#8590A8'><i>Mitigation:</i> {_mr['mitigation']}</div>"
+                        f"<div style='font-size:0.78rem;color:#3D4152;margin-bottom:4px'>{_mr['description']}</div>"
+                        f"<div style='font-size:0.74rem;color:#6B7280'><i>Mitigation:</i> {_mr['mitigation']}</div>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -5272,7 +5276,7 @@ with tab_property:
                 st.markdown("---")
                 st.markdown(
                     "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-                    "text-transform:uppercase;color:#8590A8;margin-bottom:8px'>"
+                    "text-transform:uppercase;color:#6B7280;margin-bottom:8px'>"
                     "🗂️ All Applicable Zoning Designations</div>",
                     unsafe_allow_html=True,
                 )
@@ -5311,7 +5315,7 @@ with tab_property:
         st.markdown("---")
         st.markdown(
             "<div style='font-size:0.72rem;font-weight:700;letter-spacing:0.08em;"
-            "text-transform:uppercase;color:#8590A8;margin-bottom:12px'>📌 Data Sources</div>",
+            "text-transform:uppercase;color:#6B7280;margin-bottom:12px'>📌 Data Sources</div>",
             unsafe_allow_html=True,
         )
         sources_config = [
@@ -5420,7 +5424,7 @@ with tab_property:
                 """, unsafe_allow_html=True)
 
         st.markdown(
-            "<div style='font-size:0.70rem;color:#5C6680;margin-top:4px'>"
+            "<div style='font-size:0.70rem;color:#9CA3AF;margin-top:4px'>"
             "All listings are deduplicated across sources and IQR-filtered to remove outliers. "
             "Data is for informational purposes only — not a substitute for professional market analysis."
             "</div>",
@@ -5433,9 +5437,9 @@ with tab_property:
     # ── Idle state ────────────────────────────────────────────────────────────────
     else:
         st.markdown("""
-        <div style="text-align:center;padding:56px 24px;color:#5C6680">
+        <div style="text-align:center;padding:56px 24px;color:#9CA3AF">
           <div style="font-size:3.5rem;margin-bottom:12px">🏙️</div>
-          <h3 style="color:#C7CDDB;margin:0 0 8px">Enter a NYC address to begin</h3>
+          <h3 style="color:#3D4152;margin:0 0 8px">Enter a NYC address to begin</h3>
           <p style="margin:0;max-width:460px;margin-inline:auto;line-height:1.6">
             Type any NYC street address in the form above, choose a search radius,
             and optionally filter by unit type or rental tier — then click
@@ -5454,8 +5458,8 @@ with tab_portfolio:
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown("""
-<hr style="margin-top:48px;border-color:#26304A"/>
-<div style="text-align:center;color:#5C6680;font-size:0.75rem;padding:12px 0">
+<hr style="margin-top:48px;border-color:#DCD5C2"/>
+<div style="text-align:center;color:#9CA3AF;font-size:0.75rem;padding:12px 0">
   Real Estate Development &amp; Investment Analytics · NYC Planning, PLUTO, ACRIS &amp; Market Data ·
   For internal real estate diligence use only · Not financial advice
 </div>

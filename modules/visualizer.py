@@ -204,7 +204,7 @@ def build_bar_chart(summary_df: pd.DataFrame) -> go.Figure:
         name="Avg Rent",
         x=summary_df["Unit Type"],
         y=summary_df["_avg"],
-        marker_color="#22D3EE",
+        marker_color="#1A1D2E",
         text=[f"${v:,.0f}" for v in summary_df["_avg"]],
         textposition="outside",
         textfont_size=12,
@@ -221,12 +221,12 @@ def build_bar_chart(summary_df: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         barmode="group",
         title=dict(text="Avg vs Median Rent by Unit Type", font_size=14),
-        yaxis=dict(title="Monthly Rent ($)", tickformat="$,.0f", showgrid=True, gridcolor="#26304A"),
+        yaxis=dict(title="Monthly Rent ($)", tickformat="$,.0f", showgrid=True, gridcolor="#E8E3D4"),
         xaxis_title="Unit Type",
         legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
-        plot_bgcolor="#121826",
-        paper_bgcolor="#121826",
-        font=dict(family="Inter, sans-serif", size=12, color="#C7CDDB"),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        font=dict(family="Inter, sans-serif", size=12, color="#3D4152"),
         margin=dict(t=55, b=35, l=55, r=20),
         height=380,
     )
@@ -272,12 +272,12 @@ def build_range_chart(summary_df: pd.DataFrame) -> go.Figure:
 
     fig.update_layout(
         title=dict(text="Rent Range by Unit Type  (bar = min–max, dot = avg)", font_size=14),
-        yaxis=dict(title="Monthly Rent ($)", tickformat="$,.0f", showgrid=True, gridcolor="#26304A"),
+        yaxis=dict(title="Monthly Rent ($)", tickformat="$,.0f", showgrid=True, gridcolor="#E8E3D4"),
         xaxis_title="Unit Type",
         showlegend=False,
-        plot_bgcolor="#121826",
-        paper_bgcolor="#121826",
-        font=dict(family="Inter, sans-serif", size=12, color="#C7CDDB"),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        font=dict(family="Inter, sans-serif", size=12, color="#3D4152"),
         margin=dict(t=55, b=35, l=55, r=20),
         height=380,
     )
@@ -310,11 +310,11 @@ def build_box_chart(listings: list) -> go.Figure:
 
     fig.update_layout(
         title=dict(text="Rent Distribution by Unit Type", font_size=14),
-        yaxis=dict(title="Monthly Rent ($)", tickformat="$,.0f", showgrid=True, gridcolor="#26304A"),
+        yaxis=dict(title="Monthly Rent ($)", tickformat="$,.0f", showgrid=True, gridcolor="#E8E3D4"),
         showlegend=False,
-        plot_bgcolor="#121826",
-        paper_bgcolor="#121826",
-        font=dict(family="Inter, sans-serif", size=12, color="#C7CDDB"),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        font=dict(family="Inter, sans-serif", size=12, color="#3D4152"),
         margin=dict(t=55, b=35, l=55, r=20),
         height=380,
     )
@@ -351,11 +351,11 @@ def build_scatter_chart(listings: list) -> go.Figure:
         marker=dict(size=9, opacity=0.82, line=dict(width=1, color="white"))
     )
     fig.update_layout(
-        plot_bgcolor="#121826",
-        paper_bgcolor="#121826",
-        font=dict(family="Inter, sans-serif", size=12, color="#C7CDDB"),
-        yaxis=dict(tickformat="$,.0f", showgrid=True, gridcolor="#26304A"),
-        xaxis=dict(showgrid=True, gridcolor="#26304A"),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        font=dict(family="Inter, sans-serif", size=12, color="#3D4152"),
+        yaxis=dict(tickformat="$,.0f", showgrid=True, gridcolor="#E8E3D4"),
+        xaxis=dict(showgrid=True, gridcolor="#E8E3D4"),
         legend_title="Unit Type",
         margin=dict(t=55, b=35, l=55, r=20),
     )
