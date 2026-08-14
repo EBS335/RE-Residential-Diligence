@@ -1,9 +1,18 @@
 """
 Competing / Comparable Development Research.
 
-Uses DuckDuckGo HTML search (free, no API key) + NYC GeoSearch to discover
-recent or under-construction competing rental developments in the same
-neighborhood, geocode them, and surface them in the app.
+RSS-first (free, no API key): pulls The Real Deal, Commercial Observer,
+Bisnow, Crain's NY (best-effort), and PincusCo (best-effort, public
+teaser only) via modules/rss_fetcher.py — the same robust pattern proven
+in modules/nearby_developments.py — then runs each item through the
+existing text-extraction pipeline (_parse_dev) to pull out an address,
+unit count, and rent range, exactly as it already did for DuckDuckGo
+search-result text. DuckDuckGo HTML search is kept only as a last-resort
+fallback when the RSS sources collectively return nothing, since it can
+still surface outlets without a usable RSS feed (Yimby, Curbed, 6sqft,
+StreetEasy/Zillow listings) that the trade-press feeds won't cover.
+
+Uses NYC GeoSearch to geocode each discovered development.
 
 All results are cached in Streamlit session_state; only one search per
 session per neighborhood to avoid rate-limiting.
@@ -17,6 +26,8 @@ import html as _html
 import requests
 from bs4 import BeautifulSoup
 
+from modules.rss_fetcher import fetch_rss_content, parse_rss_items, cutoff_date, location_relevant
+
 # Reuse existing geocoder from the project
 try:
     from modules.zola_fetcher import geosearch_bbl
@@ -28,6 +39,17 @@ _DDG_URL  = "https://html.duckduckgo.com/html/"
 _TIMEOUT  = 12
 _MAX_DEVS = 8
 _SLEEP    = 1.5   # seconds between queries
+
+# RSS sources — same feed set as modules/articles_fetcher.py. Crain's and
+# PincusCo are best-effort guesses at the conventional feed URL (see that
+# module's docstring for the confirmed-vs-unverified breakdown).
+_RSS_SOURCES = [
+    "https://therealdeal.com/feed/",
+    "https://commercialobserver.com/feed/",
+    "https://www.bisnow.com/new-york/rss.xml",
+    "https://www.crainsnewyork.com/section/real-estate/feed",
+    "https://www.pincusco.com/feed/",
+]
 
 _HEADERS = {
     "User-Agent": (
@@ -218,6 +240,34 @@ def _dedupe(devs: list[dict]) -> list[dict]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _rss_results(neighborhood: str) -> tuple[list[dict], bool]:
+    """
+    Pull candidate {title, snippet, url} rows from the RSS source set,
+    filtered by neighborhood relevance. Shaped identically to
+    _ddg_search()'s output so both feed the same _parse_dev() pipeline.
+
+    Returns (rows, any_ok) — any_ok=False means every feed request itself
+    failed (network/blocked), not that the feeds legitimately had nothing
+    development-pipeline-relevant to say about this neighborhood.
+    """
+    cutoff = cutoff_date(18)
+    rows: list[dict] = []
+    any_ok = False
+    for feed_url in _RSS_SOURCES:
+        content, status = fetch_rss_content(feed_url)
+        if status != "ok":
+            continue
+        any_ok = True
+        for item in parse_rss_items(content):
+            if item["pub_date"] and item["pub_date"] < cutoff:
+                continue
+            combined = f"{item['title']} {item['description']}"
+            if not location_relevant(combined, neighborhood):
+                continue
+            rows.append({"title": item["title"], "snippet": item["description"], "url": item["url"]})
+    return rows, any_ok
+
+
 def search_competing_devs(
     neighborhood: str,
     borough: str,
@@ -228,9 +278,14 @@ def search_competing_devs(
     """
     Discover competing/comparable rental developments near the subject property.
 
-    Uses DuckDuckGo HTML search (no API key required) to find news articles,
-    real estate filings, and developer websites, then extracts structured
-    development data and geocodes each address.
+    RSS-first: pulls real-estate trade press feeds (The Real Deal,
+    Commercial Observer, Bisnow, Crain's NY, PincusCo — see module
+    docstring for confirmed-vs-best-effort feeds), filtered by
+    neighborhood relevance, then extracts structured development data
+    from each item's title/description exactly as it previously did from
+    DuckDuckGo search-result text. Falls back to a DuckDuckGo HTML search
+    only if the RSS pass finds nothing, to preserve coverage of listing
+    sites and outlets without a usable feed.
 
     Returns (devs, status):
       devs   — up to 8 development dicts:
@@ -243,26 +298,30 @@ def search_competing_devs(
     Results should be cached by the caller (e.g. in st.session_state) to
     avoid repeated network calls.
     """
-    queries = [
-        f'"{neighborhood}" NYC new apartment development rental 2024 2025',
-        f'"{neighborhood}" {borough} residential building construction "units" "stories"',
-        (
-            f'"{neighborhood}" NYC "new development" OR "under construction" OR "delivered" '
-            f'site:therealdeal.com OR site:yimbynewyork.com OR site:commercialobserver.com '
-            f'OR site:curbed.com OR site:6sqft.com OR site:nypost.com'
-        ),
-        f'"{neighborhood}" {borough} rental development 2023 2024 2025 apartments "new building"',
-    ]
-    if zip_code:
-        queries.append(f'{zip_code} "new construction" apartment rental NYC site:streeteasy.com OR site:zillow.com')
+    raw_results, any_ok = _rss_results(neighborhood)
 
-    raw_results: list[dict] = []
-    any_ok = False
-    for q in queries[:4]:
-        rows, ok = _ddg_search(q)
-        any_ok = any_ok or ok
-        raw_results.extend(rows)
-        time.sleep(_SLEEP)
+    if not raw_results:
+        # RSS pass found nothing relevant — fall back to DDG to preserve
+        # coverage of listing sites (StreetEasy/Zillow) and outlets
+        # without a usable RSS feed (Yimby, Curbed, 6sqft, NY Post).
+        queries = [
+            f'"{neighborhood}" NYC new apartment development rental 2024 2025',
+            f'"{neighborhood}" {borough} residential building construction "units" "stories"',
+            (
+                f'"{neighborhood}" NYC "new development" OR "under construction" OR "delivered" '
+                f'site:therealdeal.com OR site:yimbynewyork.com OR site:commercialobserver.com '
+                f'OR site:curbed.com OR site:6sqft.com OR site:nypost.com'
+            ),
+            f'"{neighborhood}" {borough} rental development 2023 2024 2025 apartments "new building"',
+        ]
+        if zip_code:
+            queries.append(f'{zip_code} "new construction" apartment rental NYC site:streeteasy.com OR site:zillow.com')
+
+        for q in queries[:4]:
+            rows, ok = _ddg_search(q)
+            any_ok = any_ok or ok
+            raw_results.extend(rows)
+            time.sleep(_SLEEP)
 
     # Parse each result
     devs: list[dict] = []

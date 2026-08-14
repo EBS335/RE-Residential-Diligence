@@ -30,6 +30,10 @@ from typing import Optional
 import requests
 
 from modules.app_logging import record_source_status
+from modules.rss_fetcher import (
+    fetch_rss_content, parse_rss_items, location_relevant,
+    cutoff_date as _cutoff_date,
+)
 
 # ── NYC DOB Permits ─────────────────────────────────────────────────────────
 
@@ -69,11 +73,6 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def _cutoff_date(months: int = 36) -> str:
-    """ISO date string N months ago."""
-    return (datetime.utcnow() - timedelta(days=months * 30)).strftime("%Y-%m-%d")
 
 
 def _fetch_dob(lat: float, lon: float, radius_miles: float) -> tuple[list, str]:
@@ -202,59 +201,38 @@ def _extract_from_text(text: str) -> dict:
             "status": status, "asset_type": asset_type}
 
 
-# ── RSS feed parser (shared) ──────────────────────────────────────────────────
-
-_PUB_FMT = ["%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"]
-
-
-def _parse_pub_date(raw: str) -> str:
-    for fmt in _PUB_FMT:
-        try:
-            return datetime.strptime(raw.strip(), fmt).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return raw[:10] if raw else ""
-
+# ── RSS feed parser ────────────────────────────────────────────────────────────
+# Item-splitting/HTML-stripping is delegated to modules.rss_fetcher.
+# parse_rss_items() (shared with articles_fetcher.py and comps_research.py);
+# this function keeps only the development-pipeline-specific filtering
+# (recency cutoff, location relevance, dev-keyword relevance) and record
+# shape.
 
 def _parse_rss(content: str, source_name: str,
                loc_filter: str, cutoff: str,
                lat: float, lon: float,
                dev_keywords: list) -> tuple[list, str]:
     """
-    Generic RSS XML parser. Filters by loc_filter keyword and dev_keywords.
+    Filter a feed's parsed items by recency/location/dev-keyword relevance
+    and map them into the development-pipeline record shape.
     Returns (items, status).
     """
-    try:
-        items_raw = re.findall(r"<item>(.*?)</item>", content, re.S)
-    except Exception:
-        return [], "error"
+    items = parse_rss_items(content)
 
     out: list[dict] = []
-    for raw in items_raw[:50]:
+    for item in items:
         try:
-            title_m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.S)
-            link_m  = re.search(r"<link>(.*?)</link>",         raw, re.S)
-            pub_m   = re.search(r"<pubDate>(.*?)</pubDate>",   raw, re.S)
-            desc_m  = re.search(r"<description>(.*?)</description>", raw, re.S)
+            title, url, pub_date, desc = item["title"], item["url"], item["pub_date"], item["description"]
 
-            title   = re.sub(r"<[^>]+>|&lt;[^&]+&gt;|&\w+;", "",
-                             title_m.group(1) if title_m else "").strip()
-            url     = link_m.group(1).strip() if link_m else ""
-            pub_raw = pub_m.group(1).strip()  if pub_m  else ""
-            desc    = re.sub(r"<[^>]+>|\[.*?\]|&\w+;", "",
-                             desc_m.group(1) if desc_m else "").strip()
-
-            pub_date = _parse_pub_date(pub_raw)
             if pub_date and pub_date < cutoff:
                 continue
 
             combined = f"{title} {desc}"
 
-            # Location filter — must mention the neighborhood/address
-            if loc_filter and loc_filter.lower() not in combined.lower():
-                # Also accept generic NYC development coverage
-                if "new york" not in combined.lower() and "nyc" not in combined.lower():
-                    continue
+            # Location filter — must mention the neighborhood/address (or
+            # at least generically cover NYC development).
+            if not location_relevant(combined, loc_filter):
+                continue
 
             # Must be development-related
             if dev_keywords and not any(k in combined.lower() for k in dev_keywords):
@@ -318,16 +296,9 @@ def _fetch_google_news(
 
     for query in queries[:2]:
         params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
-        try:
-            resp = requests.get(_GNEWS_URL, params=params, timeout=_TIMEOUT,
-                                headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code in (403, 429):
-                status = "blocked"
-                continue
-            resp.raise_for_status()
-            content = resp.content.decode("utf-8", errors="ignore")
-        except Exception as exc:
-            status = f"error: {exc}"
+        content, fetch_status = fetch_rss_content(_GNEWS_URL, params=params)
+        if fetch_status != "ok":
+            status = fetch_status
             continue
 
         items, s = _parse_rss(content, "Google News", loc, cutoff, lat, lon, _DEV_KW)
@@ -352,15 +323,9 @@ def _fetch_trd(
     loc = neighborhood or (address.split(",")[0].strip() if address else "")
     cutoff = _cutoff_date(36)
 
-    try:
-        resp = requests.get(_TRD_RSS, timeout=_TIMEOUT,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code in (403, 429):
-            return [], "blocked"
-        resp.raise_for_status()
-        content = resp.content.decode("utf-8", errors="ignore")
-    except Exception as exc:
-        return [], f"error: {exc}"
+    content, status = fetch_rss_content(_TRD_RSS)
+    if status != "ok":
+        return [], status
 
     return _parse_rss(content, "The Real Deal", loc, cutoff, lat, lon, _DEV_KW)
 
@@ -378,15 +343,9 @@ def _fetch_commercial_observer(
     loc = neighborhood or (address.split(",")[0].strip() if address else "")
     cutoff = _cutoff_date(36)
 
-    try:
-        resp = requests.get(_CO_RSS, timeout=_TIMEOUT,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code in (403, 429):
-            return [], "blocked"
-        resp.raise_for_status()
-        content = resp.content.decode("utf-8", errors="ignore")
-    except Exception as exc:
-        return [], f"error: {exc}"
+    content, status = fetch_rss_content(_CO_RSS)
+    if status != "ok":
+        return [], status
 
     return _parse_rss(content, "Commercial Observer", loc, cutoff, lat, lon, _DEV_KW)
 
@@ -404,15 +363,9 @@ def _fetch_bisnow(
     loc = neighborhood or (address.split(",")[0].strip() if address else "")
     cutoff = _cutoff_date(36)
 
-    try:
-        resp = requests.get(_BISNOW_RSS, timeout=_TIMEOUT,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code in (403, 429):
-            return [], "blocked"
-        resp.raise_for_status()
-        content = resp.content.decode("utf-8", errors="ignore")
-    except Exception as exc:
-        return [], f"error: {exc}"
+    content, status = fetch_rss_content(_BISNOW_RSS)
+    if status != "ok":
+        return [], status
 
     return _parse_rss(content, "Bisnow", loc, cutoff, lat, lon, _DEV_KW)
 

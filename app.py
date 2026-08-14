@@ -2860,7 +2860,16 @@ with tab_property:
             _section_header("🏗️", "Competing & Comparable Developments")
             st.caption(
                 f"Recent or under-construction residential developments in {neighborhood}, "
-                "sourced from public news and real estate databases."
+                "sourced from real estate trade press RSS feeds (The Real Deal, Commercial "
+                "Observer, Bisnow, Crain's NY, PincusCo — the last two best-effort, see below) "
+                "with a web-search fallback."
+            )
+            st.caption(
+                "ℹ️ Crain's New York Business and PincusCo don't have a confirmed public RSS "
+                "feed — those two sources may contribute nothing even when the others find "
+                "results. PincusCo's full news feed is a paid subscription; only a public "
+                "teaser feed (if one exists) is attempted here, consistent with this app's "
+                "free/keyless-only design."
             )
 
             _comps_key = f"_comps_{neighborhood.lower()}_{zip_code}"
@@ -2872,7 +2881,7 @@ with tab_property:
                 st.session_state[_comps_key] = {"devs": _cd_devs, "status": _cd_status}
                 record_source_status(
                     "Competing Developments", ok=(_cd_status != "error"),
-                    detail="" if _cd_status != "error" else "DuckDuckGo search failed",
+                    detail="" if _cd_status != "error" else "RSS + web search fallback all failed",
                 )
             _comps_data = st.session_state.get(_comps_key, {})
             _comp_devs = _comps_data.get("devs", [])
@@ -2956,6 +2965,11 @@ with tab_property:
 
             # ── Recent News & Transactions ─────────────────────────────────────
             _section_header("📰", "Recent News & Transactions")
+            st.caption(
+                "Sourced from The Real Deal, Commercial Observer, Bisnow, Google News, Crain's NY "
+                "and PincusCo RSS feeds (last two best-effort — see the Competing Developments "
+                "note above), with a web-search fallback if the feeds find nothing."
+            )
             _articles_key = f"_articles_{address_input.strip()[:40].lower()}_{neighborhood.lower()}"
             if _articles_key not in st.session_state:
                 with st.spinner("Searching real estate news…"):
@@ -2965,7 +2979,7 @@ with tab_property:
                 st.session_state[_articles_key] = {"articles": _art_list, "status": _art_status}
                 record_source_status(
                     "News & Transactions", ok=(_art_status != "error"),
-                    detail="" if _art_status != "error" else "DuckDuckGo search failed",
+                    detail="" if _art_status != "error" else "RSS + web search fallback all failed",
                 )
             _articles_data = st.session_state.get(_articles_key, {})
             _articles = _articles_data.get("articles", [])
