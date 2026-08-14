@@ -2984,7 +2984,7 @@ with tab_property:
                     _dt  = _art.get("date_approx", "")
                     with _art_cols[_ai % 2]:
                         st.markdown(
-                            f"<div style='background:white;border:1px solid #26304A;"
+                            f"<div style='background:#121826;border:1px solid #26304A;"
                             f"border-radius:10px;padding:10px 14px;margin-bottom:8px'>"
                             f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>"
                             f"<span style='background:{_bg};color:{_fg};border-radius:10px;padding:2px 8px;font-size:0.68rem;font-weight:700'>{_lbl}</span>"
@@ -3130,7 +3130,7 @@ with tab_property:
                         def _acris_card(col, icon, label, value, sub=""):
                             with col:
                                 st.markdown(
-                                    f"<div style='background:white;border:1px solid #26304A;"
+                                    f"<div style='background:#121826;border:1px solid #26304A;"
                                     f"border-radius:10px;padding:10px 14px;margin-bottom:8px'>"
                                     f"<div style='font-size:0.68rem;color:#8590A8;font-weight:700;"
                                     f"text-transform:uppercase;letter-spacing:0.06em'>{icon} {label}</div>"
@@ -3364,7 +3364,7 @@ with tab_property:
                         with _av1:
                             _land_val = f"${_assess_land:,.0f}" if _assess_land else "—"
                             st.markdown(
-                                f"<div style='background:white;border:1px solid #26304A;"
+                                f"<div style='background:#121826;border:1px solid #26304A;"
                                 f"border-radius:8px;padding:12px 14px'>"
                                 f"<div style='font-size:0.65rem;color:#8590A8;font-weight:700'>"
                                 f"LAND VALUE</div>"
@@ -3376,7 +3376,7 @@ with tab_property:
                         with _av2:
                             _total_val = f"${_assess_total:,.0f}" if _assess_total else "—"
                             st.markdown(
-                                f"<div style='background:white;border:1px solid #26304A;"
+                                f"<div style='background:#121826;border:1px solid #26304A;"
                                 f"border-radius:8px;padding:12px 14px'>"
                                 f"<div style='font-size:0.65rem;color:#8590A8;font-weight:700'>"
                                 f"TOTAL VALUE</div>"
@@ -3391,7 +3391,7 @@ with tab_property:
                         def _pip_card(col, icon, label, val, sub=""):
                             with col:
                                 st.markdown(
-                                    f"<div style='background:white;border:1px solid #26304A;"
+                                    f"<div style='background:#121826;border:1px solid #26304A;"
                                     f"border-radius:8px;padding:8px 10px;text-align:center'>"
                                     f"<div style='font-size:0.62rem;color:#8590A8;font-weight:700;"
                                     f"text-transform:uppercase;letter-spacing:0.05em'>{icon} {label}</div>"
@@ -4334,7 +4334,17 @@ with tab_property:
                             _uw_acq = None
                             try:
                                 from modules.site_finder_valuation import estimate_acquisition_cost as _uw_est_acq
-                                from modules.underwriting_engine import build_cash_flows as _uw_build_cf, simple_sponsor_returns as _uw_simple_returns
+                                from modules.underwriting_engine import (
+                                    build_cash_flows as _uw_build_cf, simple_sponsor_returns as _uw_simple_returns,
+                                    lp_gp_waterfall as _uw_waterfall, run_sensitivity as _uw_run_sensitivity,
+                                    DEFAULT_HOLD_YEARS_POST_STAB as _UW_D_HOLD, DEFAULT_RENT_GROWTH_PCT as _UW_D_RENTG,
+                                    DEFAULT_EXPENSE_GROWTH_PCT as _UW_D_EXPG, DEFAULT_EXIT_CAP_SPREAD_BPS as _UW_D_EXITSPREAD,
+                                    DEFAULT_CONSTRUCTION_LTC as _UW_D_LTC, DEFAULT_CONSTRUCTION_RATE as _UW_D_CRATE,
+                                    DEFAULT_PERM_LTV as _UW_D_LTV, DEFAULT_PERM_DSCR_MIN as _UW_D_DSCR,
+                                    DEFAULT_PERM_RATE as _UW_D_PRATE, DEFAULT_PERM_AMORT_YEARS as _UW_D_AMORT,
+                                    DEFAULT_PREFERRED_RETURN_PCT as _UW_D_PREF, DEFAULT_PROMOTE_TIERS as _UW_D_TIERS,
+                                    DEFAULT_GP_CO_INVEST_PCT as _UW_D_GPCO,
+                                )
                                 from modules.site_finder_valuation import _HARD_COST_PSF_GROUND_UP as _UW_HC_GU, _HARD_COST_PSF_CONVERSION as _UW_HC_CONV
 
                                 _uw_bbl = (_zinfo or {}).get("bbl", "—")
@@ -4357,6 +4367,29 @@ with tab_property:
                                 _uw_acq = _uw_est_acq(_uw_prop_base)
                             except Exception:
                                 _uw_acq = None
+
+                            def _build_uw_scenario_dict(_o: dict) -> dict:
+                                """Shared massing-option -> underwriting_engine scenario
+                                dict adapter, reused by both the quick summary-table IRR
+                                column and the full pro forma deep-dive panel below."""
+                                _net_sf   = _o.get("net_rentable_sqft", 0)
+                                _gross_sf = _o.get("total_sqft", 0)
+                                _hard_psf = _UW_HC_CONV if _o.get("is_conversion") else _UW_HC_GU
+                                return {
+                                    "scenario_id": f"massing_{_o.get('number','')}",
+                                    "label": _o.get("name", "—"),
+                                    "use_type": "rental",
+                                    "development_type": "conversion" if _o.get("is_conversion") else "ground_up",
+                                    "lot_sf": _la_v,
+                                    "gross_buildable_sf": _gross_sf,
+                                    "residential_gross_sf": _gross_sf,
+                                    "net_buildable_sf": _net_sf,
+                                    "retail_sf": 0.0,
+                                    "net_retail_sf": 0.0,
+                                    "hard_cost_psf": _hard_psf,
+                                    "hard_cost_basis": "conversion/renovation" if _o.get("is_conversion") else "ground-up new construction",
+                                    "assumptions_note": [],
+                                }
 
                             if _options:
                                 # ── Summary Metrics Table ─────────────────────
@@ -4402,22 +4435,7 @@ with tab_property:
                                     _irr_val, _em_val = None, None
                                     if _uw_acq is not None and _gross_sf > 0:
                                         try:
-                                            _hard_psf = _UW_HC_CONV if _o.get("is_conversion") else _UW_HC_GU
-                                            _uw_scn = {
-                                                "scenario_id": f"massing_{_o.get('number','')}",
-                                                "label": _o.get("name", "—"),
-                                                "use_type": "rental",
-                                                "development_type": "conversion" if _o.get("is_conversion") else "ground_up",
-                                                "lot_sf": _la_v,
-                                                "gross_buildable_sf": _gross_sf,
-                                                "residential_gross_sf": _gross_sf,
-                                                "net_buildable_sf": _net_sf,
-                                                "retail_sf": 0.0,
-                                                "net_retail_sf": 0.0,
-                                                "hard_cost_psf": _hard_psf,
-                                                "hard_cost_basis": "conversion/renovation" if _o.get("is_conversion") else "ground-up new construction",
-                                                "assumptions_note": [],
-                                            }
+                                            _uw_scn = _build_uw_scenario_dict(_o)
                                             _uw_cf = _uw_build_cf(
                                                 _uw_scn, _uw_acq, avg_rents=_avg_rents,
                                                 risk_level=_o.get("risk_level", "MED"), borough=borough,
@@ -4536,7 +4554,7 @@ with tab_property:
                                     _tile_net     = opt.get("net_rentable_sqft", 0)
                                     _tile_max_sf  = int(_la_v * _max_far_val) if _max_far_val > 0 else 0
                                     st.markdown(
-                                        f"<div style='background:white;border:1px solid #26304A;"
+                                        f"<div style='background:#121826;border:1px solid #26304A;"
                                         f"border-radius:12px;padding:8px 10px 4px'>"
                                         f"{_risk_badge(rl)}"
                                         f"<div style='font-weight:700;font-size:0.72rem;margin:5px 0 1px'>"
@@ -4753,6 +4771,173 @@ with tab_property:
                                             )
                                 elif _selected_names:
                                     st.caption("Select at least 2 scenarios to enable comparison.")
+
+                                # ── Underwriting Pro Forma — Deep Dive ───────
+                                # Full editable pro forma for one selected
+                                # scenario (financing/hold assumptions,
+                                # equity structure, sensitivity/stress test) —
+                                # reuses the exact modules.underwriting_engine
+                                # machinery and UI pattern already proven in
+                                # Site Finder's _render_underwriting_section(),
+                                # rather than re-implementing it, so results
+                                # are directly comparable across both tabs.
+                                st.markdown("---")
+                                st.markdown(
+                                    "<div class='section-label'>📊 Underwriting Pro Forma — Deep Dive</div>",
+                                    unsafe_allow_html=True,
+                                )
+                                st.caption(
+                                    "Full construction → stabilization → exit pro forma for one scenario at a "
+                                    "time, with editable financing/hold assumptions, an equity-structure toggle, "
+                                    "and a sensitivity/stress test. Not a lender-grade or GP-facing underwriting "
+                                    "package; assumptions are editable rules of thumb."
+                                )
+                                if _uw_acq is None:
+                                    st.info("No acquisition-cost basis available for this property — underwriting pro forma unavailable.")
+                                else:
+                                    from modules.site_finder_ui import _pct_input as _uwd_pct_input, _flatten_underwriting_for_export as _uwd_flatten
+
+                                    _uwd_key_base = f"pa_uw_{_bbl_disp}_{_far_sel_key}"
+                                    _uwd_default_name = _best_by_irr["Scenario"] if _best_by_irr else _all_names[0]
+                                    _uwd_chosen_name = st.selectbox(
+                                        "Scenario to underwrite", options=_all_names,
+                                        index=_all_names.index(_uwd_default_name) if _uwd_default_name in _all_names else 0,
+                                        key=f"{_uwd_key_base}_scenario",
+                                    )
+                                    _uwd_opt = next(o for o in _options if o["name"] == _uwd_chosen_name)
+                                    _uwd_scenario = _build_uw_scenario_dict(_uwd_opt)
+
+                                    with st.expander("⚙️ Financing & Hold Assumptions", expanded=False):
+                                        uc1, uc2, uc3 = st.columns(3)
+                                        with uc1:
+                                            _uwd_hold = st.number_input("Hold period (yrs)", min_value=1, max_value=20,
+                                                                          value=_UW_D_HOLD, key=f"{_uwd_key_base}_hold")
+                                            _uwd_rentg = _uwd_pct_input("Rent growth %/yr", _UW_D_RENTG, f"{_uwd_key_base}_rentg")
+                                            _uwd_expg = _uwd_pct_input("Expense growth %/yr", _UW_D_EXPG, f"{_uwd_key_base}_expg")
+                                        with uc2:
+                                            _uwd_exitspread = st.number_input("Exit cap spread (bps over going-in)", min_value=-200, max_value=500,
+                                                                                value=_UW_D_EXITSPREAD, step=10, key=f"{_uwd_key_base}_exitspread")
+                                            _uwd_ltc = _uwd_pct_input("Construction LTC %", _UW_D_LTC, f"{_uwd_key_base}_ltc")
+                                            _uwd_crate = _uwd_pct_input("Construction rate %", _UW_D_CRATE, f"{_uwd_key_base}_crate", step=0.125)
+                                        with uc3:
+                                            _uwd_ltv = _uwd_pct_input("Perm loan LTV %", _UW_D_LTV, f"{_uwd_key_base}_ltv")
+                                            _uwd_dscr = st.number_input("Perm loan min DSCR", min_value=1.0, max_value=2.0,
+                                                                          value=_UW_D_DSCR, step=0.05, key=f"{_uwd_key_base}_dscr")
+                                            _uwd_prate = _uwd_pct_input("Perm loan rate %", _UW_D_PRATE, f"{_uwd_key_base}_prate", step=0.125)
+                                        _uwd_amort = st.number_input("Perm loan amortization (yrs)", min_value=10, max_value=40,
+                                                                       value=_UW_D_AMORT, key=f"{_uwd_key_base}_amort")
+
+                                    _uwd_financing_kwargs = {
+                                        "construction_ltc": _uwd_ltc, "construction_rate": _uwd_crate,
+                                        "perm_ltv": _uwd_ltv, "perm_dscr_min": _uwd_dscr,
+                                        "perm_rate": _uwd_prate, "perm_amort_years": _uwd_amort,
+                                    }
+                                    _uwd_cf_kwargs = {
+                                        "avg_rents": _avg_rents, "risk_level": _uwd_opt.get("risk_level", "MED"),
+                                        "borough": borough, "market_comps": _uw_mc,
+                                        "hold_years": _uwd_hold, "rent_growth_pct": _uwd_rentg,
+                                        "expense_growth_pct": _uwd_expg, "exit_cap_spread_bps": _uwd_exitspread,
+                                        "financing_kwargs": _uwd_financing_kwargs,
+                                    }
+
+                                    _uwd_equity_choice = st.radio(
+                                        "Equity Structure", ["Simple Sponsor IRR", "LP/GP Waterfall"],
+                                        key=f"{_uwd_key_base}_equity", horizontal=True,
+                                    )
+                                    _uwd_equity_structure = "waterfall" if _uwd_equity_choice == "LP/GP Waterfall" else "simple"
+
+                                    _uwd_waterfall_kwargs = {}
+                                    if _uwd_equity_structure == "waterfall":
+                                        with st.expander("💼 Waterfall Assumptions", expanded=True):
+                                            uw1, uw2 = st.columns(2)
+                                            with uw1:
+                                                _uwd_pref = _uwd_pct_input("Preferred return %", _UW_D_PREF, f"{_uwd_key_base}_pref")
+                                            with uw2:
+                                                _uwd_gpco = _uwd_pct_input("GP co-invest % of equity", _UW_D_GPCO, f"{_uwd_key_base}_gpco")
+                                            st.caption("Promote tiers (GP % of cash above each IRR hurdle):")
+                                            _uwd_tiers = []
+                                            for _uwd_ti, (lo, hi, default_pct) in enumerate(_UW_D_TIERS):
+                                                hi_label = f"{hi:.0%}" if hi is not None else "∞"
+                                                gp_pct = st.slider(f"{lo:.0%}–{hi_label} IRR", 0.0, 1.0, default_pct, step=0.05,
+                                                                    key=f"{_uwd_key_base}_tier{_uwd_ti}", format="%.0f%%")
+                                                _uwd_tiers.append((lo, hi, gp_pct))
+                                            _uwd_waterfall_kwargs = {"preferred_return_pct": _uwd_pref, "promote_tiers": _uwd_tiers, "gp_co_invest_pct": _uwd_gpco}
+
+                                    _uwd_cf_result = _uw_build_cf(_uwd_scenario, _uw_acq, **_uwd_cf_kwargs)
+
+                                    if _uwd_equity_structure == "waterfall":
+                                        _uwd_returns = _uw_waterfall(_uwd_cf_result["annual_cash_flows"], **_uwd_waterfall_kwargs)
+                                        _uwd_headline_irr, _uwd_headline_em = _uwd_returns["lp_irr"], _uwd_returns["lp_equity_multiple"]
+                                    else:
+                                        _uwd_returns = _uw_simple_returns(_uwd_cf_result["annual_cash_flows"])
+                                        _uwd_headline_irr, _uwd_headline_em = _uwd_returns["irr"], _uwd_returns["equity_multiple"]
+
+                                    um1, um2, um3, um4 = st.columns(4)
+                                    um1.metric("Levered IRR" + (" (LP)" if _uwd_equity_structure == "waterfall" else ""),
+                                               f"{_uwd_headline_irr:.1%}" if _uwd_headline_irr is not None else "N/A")
+                                    um2.metric("Equity Multiple" + (" (LP)" if _uwd_equity_structure == "waterfall" else ""),
+                                               f"{_uwd_headline_em:.2f}x" if _uwd_headline_em is not None else "N/A")
+                                    um3.metric("Total Dev. Cost", f"${_uwd_cf_result['total_dev_cost']:,.0f}")
+                                    um4.metric("Year 1 NOI", f"${_uwd_cf_result['year1_noi']:,.0f}" if _uwd_cf_result["year1_noi"] else "—")
+
+                                    if _uwd_equity_structure == "waterfall":
+                                        ug1, ug2 = st.columns(2)
+                                        ug1.metric("GP IRR", f"{_uwd_returns['gp_irr']:.1%}" if _uwd_returns["gp_irr"] is not None else "N/A")
+                                        ug2.metric("GP Promote ($)", f"${_uwd_returns['total_gp_promote']:,.0f}")
+                                        st.caption(_uwd_returns.get("note", ""))
+
+                                    with st.expander("Annual Cash Flow Detail", expanded=False):
+                                        _uwd_cf_rows = [{
+                                            "Year": c["year"], "Phase": c["phase"], "NOI": f"${c['noi']:,.0f}",
+                                            "Debt Service": f"${c['debt_service']:,.0f}",
+                                            "Reversion": f"${c['reversion_proceeds']:,.0f}" if c["reversion_proceeds"] else "—",
+                                            "Equity CF": f"${c['equity_cf']:,.0f}",
+                                        } for c in _uwd_cf_result["annual_cash_flows"]]
+                                        st.dataframe(pd.DataFrame(_uwd_cf_rows), use_container_width=True, hide_index=True)
+
+                                    with st.expander("Financing Detail", expanded=False):
+                                        _uwd_fin = _uwd_cf_result["financing"]
+                                        st.markdown(
+                                            f"- Construction loan: ${_uwd_fin['construction_loan_amount']:,.0f} "
+                                            f"(interest accrued: ${_uwd_fin['construction_interest_accrued']:,.0f})\n"
+                                            f"- Permanent loan: ${_uwd_fin['perm_loan_amount']:,.0f} "
+                                            f"(binding constraint: {_uwd_fin['binding_constraint']})\n"
+                                            f"- Annual debt service: ${_uwd_fin['annual_debt_service']:,.0f}\n"
+                                            f"- {_uwd_fin['note']}"
+                                        )
+
+                                    with st.expander("📉 Sensitivity / Stress Test", expanded=False):
+                                        if st.button("Run Sensitivity", key=f"{_uwd_key_base}_sens_btn"):
+                                            _uwd_sens = _uw_run_sensitivity(
+                                                _uwd_scenario, _uw_acq, base_kwargs=_uwd_cf_kwargs,
+                                                equity_structure=_uwd_equity_structure, waterfall_kwargs=_uwd_waterfall_kwargs,
+                                            )
+                                            st.session_state[f"{_uwd_key_base}_sens_result"] = _uwd_sens
+
+                                        _uwd_sens_cached = st.session_state.get(f"{_uwd_key_base}_sens_result")
+                                        if _uwd_sens_cached:
+                                            _uwd_tornado = _uwd_sens_cached["tornado_ranking"]
+                                            _uwd_fig = go.Figure(go.Bar(
+                                                x=[t["irr_range"] * 100 for t in _uwd_tornado],
+                                                y=[t["lever"].replace("_", " ").title() for t in _uwd_tornado],
+                                                orientation="h",
+                                            ))
+                                            _uwd_fig.update_layout(
+                                                title="IRR Sensitivity (percentage-point swing)", xaxis_title="IRR range (pp)",
+                                                height=280, margin=dict(l=10, r=10, t=40, b=10),
+                                            )
+                                            st.plotly_chart(_uwd_fig, use_container_width=True)
+                                            for lever, rows in _uwd_sens_cached["grid"].items():
+                                                st.markdown(f"**{lever.replace('_', ' ').title()}**")
+                                                _uwd_grid_row = {f"{r['delta_pct']:+.0%}": (f"{r['irr']:.1%}" if r["irr"] is not None else "N/A") for r in rows}
+                                                st.dataframe(pd.DataFrame([_uwd_grid_row]), use_container_width=True, hide_index=True)
+                                        else:
+                                            st.caption("Not yet run — click above to stress-test rent, hard cost, exit cap rate, and interest rate.")
+
+                                    # Stash a flattened summary for the "Export This Property" section below.
+                                    st.session_state[f"_uw_deepdive_{_bbl_disp}"] = _uwd_flatten(
+                                        _uwd_scenario, _uwd_cf_result, _uwd_returns, _uwd_equity_structure
+                                    )
                         else:
                             st.info(
                                 "Lot dimensions not available in PLUTO for this property. "
@@ -4785,6 +4970,9 @@ with tab_property:
                     _exp_rentstab = st.session_state.get(f"_rentstab_{_exp_bbl}")
                     if _exp_rentstab:
                         _exp_prop["rent_stab_signal"] = _exp_rentstab
+                    _exp_uw = st.session_state.get(f"_uw_deepdive_{_exp_bbl}")
+                    if _exp_uw:
+                        _exp_prop["underwriting"] = _exp_uw
                     _exp_prop.setdefault("strategies", [])
 
                     if not _exp_score and not _exp_abate:
@@ -4792,6 +4980,11 @@ with tab_property:
                             "Tip: Deal Score / Tax Abatement / Rent Stabilization sections above haven't "
                             "run yet for this property — scroll up to compute them before exporting for a "
                             "richer report."
+                        )
+                    if not _exp_uw:
+                        st.caption(
+                            "Tip: run the Underwriting Pro Forma — Deep Dive section above (under a massing "
+                            "scenario) to include IRR/equity-multiple detail in the exported report."
                         )
 
                     _exp1, _exp2, _exp3 = st.columns(3)
@@ -4949,7 +5142,7 @@ with tab_property:
                     _pc = _prob_class(_mr.get("probability", ""))
                     _ic = _prob_class(_mr.get("impact", ""))
                     st.markdown(
-                        f"<div style='padding:10px;border:1px solid #26304A;border-radius:8px;margin-bottom:8px;background:white'>"
+                        f"<div style='padding:10px;border:1px solid #26304A;border-radius:8px;margin-bottom:8px;background:#121826'>"
                         f"<div style='display:flex;gap:8px;align-items:center;margin-bottom:4px'>"
                         f"<b style='font-size:0.83rem'>{_mr['category']}</b>"
                         f"&nbsp;<span class='{_pc}' style='padding:1px 7px;border-radius:10px;font-size:0.68rem;font-weight:700'>"
