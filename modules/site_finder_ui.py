@@ -924,7 +924,7 @@ def _render_ai_diligence_section(prop: dict) -> None:
     ic = prop.get("ic_summary")
     if ic:
         rec = ic.get("recommendation", "—")
-        _rec_color = {"GO": "#15803D", "WATCH": "#B45309", "REJECT": "#DC2626"}.get(rec, "#6B7280")
+        _rec_color = {"GO": "#4ADE80", "WATCH": "#FBBF24", "REJECT": "#F87171"}.get(rec, "#8590A8")
         st.markdown(
             f"<div style='background:{_rec_color};color:white;padding:10px 16px;"
             f"border-radius:8px;font-weight:700;font-size:1.1rem;text-align:center'>"
@@ -1052,9 +1052,9 @@ def render_site_finder(anthropic_key: str = "") -> None:
     else:
         st.markdown("---")
         st.markdown(
-            "<div style='text-align:center;padding:48px 24px;color:#9CA3AF'>"
+            "<div style='text-align:center;padding:48px 24px;color:#8590A8'>"
             "<div style='font-size:3rem;margin-bottom:8px'>🏙️</div>"
-            "<h4 style='color:#374151'>Enter investment criteria above and search to begin</h4>"
+            "<h4 style='color:#EDEFF5'>Enter investment criteria above and search to begin</h4>"
             "<p>Results are sourced live from NYC PLUTO — no API key required.</p>"
             "</div>",
             unsafe_allow_html=True,

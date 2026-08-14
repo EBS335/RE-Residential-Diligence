@@ -137,25 +137,26 @@ def _base_layout(title: str, lot_front: float, lot_depth: float,
                  max_z: float) -> dict:
     pad = max(lot_front, lot_depth) * 0.15
     return dict(
-        title=dict(text=title, font=dict(size=12, color="#111827"), x=0.5),
+        title=dict(text=title, font=dict(size=12, color="#EDEFF5"), x=0.5),
         scene=dict(
             xaxis=dict(title="", range=[-pad, lot_front + pad],
-                       showbackground=False, gridcolor="#E5E7EB",
+                       showbackground=False, gridcolor="#26304A",
                        showticklabels=False),
             yaxis=dict(title="", range=[-pad, lot_depth + pad],
-                       showbackground=False, gridcolor="#E5E7EB",
+                       showbackground=False, gridcolor="#26304A",
                        showticklabels=False),
             zaxis=dict(title="ft", range=[0, max_z * 1.20],
-                       showbackground=False, gridcolor="#E5E7EB"),
+                       showbackground=False, gridcolor="#26304A",
+                       color="#8590A8"),
             aspectmode="data",
             camera=dict(eye=dict(x=1.5, y=-1.5, z=1.1)),
-            bgcolor="rgba(248,249,250,1)",
+            bgcolor="#121826",
         ),
         margin=dict(l=0, r=0, t=32, b=0),
-        paper_bgcolor="rgba(248,249,250,1)",
+        paper_bgcolor="#121826",
         height=320,
-        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.70)",
-                    font=dict(size=9)),
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(18,24,38,0.75)",
+                    font=dict(size=9, color="#C7CDDB")),
     )
 
 
@@ -1287,7 +1288,7 @@ def floor_plate_fig(
     label = "Ground Floor Plan" if is_ground else "Typical Upper Floor Plan"
     fig = go.Figure(data=traces)
     fig.update_layout(
-        title=dict(text=label, font=dict(size=13, color="#111827"), x=0.5),
+        title=dict(text=label, font=dict(size=13, color="#EDEFF5"), x=0.5),
         xaxis=dict(
             range=[-2, footprint_w + 2], showgrid=False,
             zeroline=False, showticklabels=False,
@@ -1299,9 +1300,9 @@ def floor_plate_fig(
         ),
         margin=dict(l=0, r=0, t=36, b=0),
         height=380,
-        paper_bgcolor="rgba(248,249,250,1)",
-        plot_bgcolor="rgba(248,249,250,1)",
-        legend=dict(x=1.01, y=0.99, font=dict(size=10)),
+        paper_bgcolor="#121826",
+        plot_bgcolor="#121826",
+        legend=dict(x=1.01, y=0.99, font=dict(size=10, color="#C7CDDB")),
     )
     return fig
 
