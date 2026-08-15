@@ -238,11 +238,77 @@ _TIER_MARKER_COLOR = {
 _MAX_MAP_MARKERS = 300  # see _render_results_map() docstring
 
 
-def _render_results_map(properties: list[dict]) -> None:
+def _geojson_bounds(geojson: dict) -> list[list[float]] | None:
+    """[[min_lat, min_lon], [max_lat, max_lon]] over every coordinate in a
+    GeoJSON FeatureCollection (Polygon/MultiPolygon geometries — GeoJSON
+    coordinate order is [lon, lat]). None if there are no usable coords."""
+    lats: list[float] = []
+    lons: list[float] = []
+
+    def _walk(coords):
+        if not coords:
+            return
+        # A coordinate pair is [number, number]; anything else is a nested list.
+        if len(coords) == 2 and all(isinstance(c, (int, float)) for c in coords):
+            lons.append(coords[0])
+            lats.append(coords[1])
+            return
+        for c in coords:
+            _walk(c)
+
+    for feature in geojson.get("features", []):
+        _walk((feature.get("geometry") or {}).get("coordinates"))
+
+    if not lats or not lons:
+        return None
+    return [[min(lats), min(lons)], [max(lats), max(lons)]]
+
+
+def _fetch_search_extent_boundary(criteria: dict | None) -> tuple[dict | None, bool]:
+    """
+    Fetch (and session_state-cache, since Streamlit reruns the whole
+    script on every interaction) the boundary GeoJSON for the geographic
+    filter in `criteria` — ZIP codes take priority over boroughs when
+    both are set (a ZIP-level search is a tighter, more specific extent).
+    Returns (geojson_or_None, ok) — see modules/nyc_boundaries.py for the
+    exact contract. (None, True) means no geographic filter was set (an
+    unfiltered citywide search has no single extent to draw), not a
+    failure.
+    """
+    if not criteria:
+        return None, True
+
+    zip_codes = criteria.get("zip_codes") or []
+    boroughs = criteria.get("boroughs") or []
+
+    if zip_codes:
+        cache_key = f"{_SF_PREFIX}boundary_zip_{tuple(sorted(zip_codes))}"
+        kind, names = "zip", zip_codes
+    elif boroughs:
+        cache_key = f"{_SF_PREFIX}boundary_boro_{tuple(sorted(boroughs))}"
+        kind, names = "borough", boroughs
+    else:
+        return None, True
+
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    from modules.nyc_boundaries import fetch_zip_boundaries, fetch_borough_boundaries
+    fetch_fn = fetch_zip_boundaries if kind == "zip" else fetch_borough_boundaries
+    result = fetch_fn(names)
+    st.session_state[cache_key] = result
+    return result
+
+
+def _render_results_map(properties: list[dict], criteria: dict | None = None) -> None:
     """
     Flag results on a free OpenStreetMap/CartoDB basemap (same tile
     provider already used in the Property Analysis tab's visualizer.py —
-    no paid mapping API, no key required).
+    no paid mapping API, no key required), with an outline of the actual
+    borough/ZIP search extent (modules/nyc_boundaries.py) overlaid when
+    `criteria` carries a geographic filter, and the view auto-fit to that
+    extent (or to the markers themselves, if no boundary is available)
+    instead of a fixed zoom level.
 
     Rendered via streamlit_folium.folium_static(), NOT st_folium():
     st_folium's custom bidirectional component has a documented bug where
@@ -278,11 +344,25 @@ def _render_results_map(properties: list[dict]) -> None:
     center_lat = sum(p["latitude"] for p in shown) / len(shown)
     center_lon = sum(p["longitude"] for p in shown) / len(shown)
 
+    boundary_geojson, boundary_ok = _fetch_search_extent_boundary(criteria)
+    boundary_requested = bool(criteria and (criteria.get("zip_codes") or criteria.get("boroughs")))
+
     m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="CartoDB positron")
     folium.TileLayer(
         tiles=ESRI_SATELLITE_TILES, attr=ESRI_SATELLITE_ATTR,
         name="Satellite", overlay=False, control=True,
     ).add_to(m)
+
+    if boundary_geojson:
+        folium.GeoJson(
+            boundary_geojson,
+            name="Search Area",
+            style_function=lambda _f: {
+                "fillColor": "#1D4ED8", "fillOpacity": 0.06,
+                "color": "#1D4ED8", "weight": 2.5, "dashArray": "6, 4",
+            },
+        ).add_to(m)
+
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
     # Wider pixel radius than visualizer.py's tight rental-comps map (40px)
     # since Site Finder results can legitimately include adjacent-lot
@@ -308,9 +388,23 @@ def _render_results_map(properties: list[dict]) -> None:
             popup=folium.Popup(popup_html, max_width=260),
         ).add_to(cluster)
 
+    # Auto-fit the view to the actual extent instead of a fixed zoom level
+    # (previously always zoom_start=13 regardless of spread) — prefer the
+    # search-area boundary's own bounds so the view frames the searched
+    # area, falling back to the plotted markers' bounds otherwise.
+    fit_bounds = (boundary_geojson and _geojson_bounds(boundary_geojson)) or [
+        [min(p["latitude"] for p in shown), min(p["longitude"] for p in shown)],
+        [max(p["latitude"] for p in shown), max(p["longitude"] for p in shown)],
+    ]
+    m.fit_bounds(fit_bounds)
+
     folium_static(m, width=1200, height=420)
     legend = " · ".join(f"🟢 {t}" if c == "green" else (f"🟠 {t}" if c == "orange" else f"⚪ {t}") for t, c in _TIER_MARKER_COLOR.items())
     caption = legend
+    if boundary_geojson:
+        caption += " · dashed outline = search area"
+    elif boundary_requested and not boundary_ok:
+        caption += " · search-area outline unavailable this time (boundary data source unreachable)"
     if map_truncated:
         caption += f" · showing the top {len(shown):,} of {len(located):,} geolocated results by Deal Score (full set is in the table below)"
     if missing:
@@ -363,7 +457,7 @@ def _rent_stab_label(signal: dict) -> str:
     return "—"
 
 
-def _render_results_table(properties: list[dict]) -> None:
+def _render_results_table(properties: list[dict], criteria: dict | None = None) -> None:
     if not properties:
         st.info("No properties matched your criteria. Try widening the search (fewer filters, larger area).")
         return
@@ -376,7 +470,7 @@ def _render_results_table(properties: list[dict]) -> None:
     # caps at property_search._MAX_ROWS (3000) so this isn't unbounded.
     results_full = _apply_ownership_cache(properties)
 
-    _render_results_map(results_full)
+    _render_results_map(results_full, criteria)
     st.markdown("---")
 
     has_ownership = any("owner_type" in p for p in results_full)
@@ -1100,9 +1194,11 @@ def render_site_finder(anthropic_key: str = "") -> None:
         results, status = _run_search(criteria)
         st.session_state[f"{_SF_PREFIX}last_results"] = results
         st.session_state[f"{_SF_PREFIX}last_status"] = status
+        st.session_state[f"{_SF_PREFIX}last_criteria"] = criteria
 
     results = st.session_state.get(f"{_SF_PREFIX}last_results")
     status  = st.session_state.get(f"{_SF_PREFIX}last_status", {})
+    last_criteria = st.session_state.get(f"{_SF_PREFIX}last_criteria")
 
     if status.get("error"):
         st.error(f"Search failed: {status['error']}")
@@ -1129,7 +1225,7 @@ def render_site_finder(anthropic_key: str = "") -> None:
 
     if results is not None:
         st.markdown("---")
-        _render_results_table(results)
+        _render_results_table(results, last_criteria)
     else:
         st.markdown("---")
         st.markdown(
