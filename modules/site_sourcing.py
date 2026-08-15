@@ -13,6 +13,7 @@ diligence before an acquisition decision.
 """
 
 from __future__ import annotations
+import re
 
 # Strategy labels
 STRATEGY_VACANT       = "Vacant / Underutilized"
@@ -191,15 +192,102 @@ def enrich_property(prop: dict) -> dict:
         opportunity        — {score, tier, drivers}
         distress_signal    — str (quick pass, PLUTO-only — no violation counts)
         tax_abatement       — rules-based 485-x/J-51/ICAP estimate (PLUTO-only, cheap)
-        rent_stab_signal    — rules-based rent-stabilization estimate (PLUTO-only, cheap)
+        rent_stab_signal    — rent-stabilization signal: a confirmed ground-truth
+                               match against the bundled NYC Rent Guidelines Board
+                               building list (modules/rent_stab_registry.py) when
+                               available, else the PLUTO-only heuristic estimate
+                               (modules/rent_stab_estimator.py) as a fallback. Same
+                               dict shape either way (existing consumers keep
+                               working unchanged) plus two always-present extra
+                               keys: match_type ("bbl" | "address" | None) and
+                               registry_notes (list[str], e.g. exemption codes).
     """
     from modules.abatement_estimator import estimate_tax_abatement
     from modules.rent_stab_estimator import estimate_rent_stabilization
+    from modules.rent_stab_registry import check_rent_stabilized
 
     out = dict(prop)
     out["strategies"]      = classify_strategies(prop)
     out["opportunity"]     = compute_opportunity_score(prop)
     out["distress_signal"] = quick_distress_signal(prop)
     out["tax_abatement"]    = estimate_tax_abatement(prop)
-    out["rent_stab_signal"] = estimate_rent_stabilization(prop)
+
+    heuristic = estimate_rent_stabilization(prop)
+    registry_hit = check_rent_stabilized(
+        prop.get("borough_code", ""), prop.get("block"), prop.get("lot"), prop.get("address", ""),
+    )
+    if registry_hit.get("status") == "confirmed":
+        out["rent_stab_signal"] = {
+            **heuristic,
+            "likely_stabilized": True,
+            "confidence":        0.97,
+            "verified":          True,
+            "source":            "NYC Rent Guidelines Board building list (confirmed match)",
+            "match_type":        registry_hit.get("match_type"),
+            "registry_notes":    registry_hit.get("notes", []),
+        }
+    else:
+        out["rent_stab_signal"] = {**heuristic, "match_type": None, "registry_notes": []}
+
+    return out
+
+
+def _lot_number(prop: dict) -> int | None:
+    digits = re.sub(r"\D", "", str(prop.get("lot", "")))
+    return int(digits) if digits else None
+
+
+def flag_assemblage_candidates(properties: list[dict], max_lot_gap: int = 1) -> list[dict]:
+    """
+    Given a full Site Finder results list, flag properties that sit
+    directly beside ANOTHER property in the SAME results set — i.e. two
+    (or more) of a search's own qualifying results share a block and have
+    near-neighboring lot numbers, suggesting an assemblage opportunity.
+
+    Deliberately does NOT query PLUTO for every neighboring lot city-wide
+    (that would mean one extra Socrata call per result — impractical at up
+    to 3000 results, and most such neighbors wouldn't have matched the
+    user's own search criteria anyway). It only cross-references lots
+    already present in this result set — free, in-memory, O(n log n).
+
+    Does not mutate the input; returns a new list with every dict gaining:
+        assemblage_with: list[str]   — addresses of adjacent results in
+                                        this same result set (empty if none)
+
+    `max_lot_gap` controls how close two lot numbers must be to count as
+    "adjacent." PLUTO lot numbers on a block are usually (not always)
+    assigned in roughly physical sequence around the block, so a small
+    gap is a reasonable, free approximation — it will occasionally over-
+    or under-flag on irregular blocks; a genuine confirmation still
+    requires a tax map/title check. Never raises.
+    """
+    out = [dict(p) for p in properties]
+    for p in out:
+        p["assemblage_with"] = []
+
+    groups: dict[tuple[str, str], list[int]] = {}
+    for i, p in enumerate(out):
+        boro = str(p.get("borough_code") or "")
+        block = str(p.get("block") or "")
+        if not boro or not block:
+            continue
+        groups.setdefault((boro, block), []).append(i)
+
+    for idxs in groups.values():
+        if len(idxs) < 2:
+            continue
+        idxs_with_lots = [(i, _lot_number(out[i])) for i in idxs]
+        idxs_with_lots = [(i, lot) for i, lot in idxs_with_lots if lot is not None]
+        idxs_sorted = sorted(idxs_with_lots, key=lambda pair: pair[1])
+        for pos, (i, lot_i) in enumerate(idxs_sorted):
+            neighbors = []
+            for other_pos in (pos - 1, pos + 1):
+                if 0 <= other_pos < len(idxs_sorted):
+                    j, lot_j = idxs_sorted[other_pos]
+                    if abs(lot_j - lot_i) <= max_lot_gap:
+                        addr = out[j].get("address", "")
+                        if addr:
+                            neighbors.append(addr)
+            out[i]["assemblage_with"] = neighbors
+
     return out

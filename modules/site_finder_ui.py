@@ -22,7 +22,7 @@ from streamlit_folium import st_folium
 from modules.visualizer import ESRI_SATELLITE_TILES, ESRI_SATELLITE_ATTR
 
 from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE
-from modules.site_sourcing import enrich_property, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
+from modules.site_sourcing import enrich_property, flag_assemblage_candidates, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
 from modules.deal_scorer import compute_bulk_deal_scores
 from modules.zoning_rules import get_zoning_rules, get_zoning_citations
 from modules.zola_fetcher import bbl_to_zola_url
@@ -202,6 +202,10 @@ def _run_search(criteria: dict) -> tuple[list[dict], dict]:
         enriched = [p for p in enriched if p.get("assess_total", 0) <= criteria["max_price"]]
 
     scored = compute_bulk_deal_scores(enriched)
+    # Flag same-block/near-lot-number pairs WITHIN this result set as
+    # assemblage candidates — run once over the full scored list here so
+    # it's cached alongside `scored` itself (not recomputed on every rerun).
+    scored = flag_assemblage_candidates(scored)
     return scored, status
 
 
@@ -259,7 +263,9 @@ def _render_results_map(properties: list[dict]) -> None:
     # assemblage candidates worth grouping at a city-wide zoom; a higher
     # disableClusteringAtZoom (17 vs 16) defers full per-pin declustering
     # until the user has genuinely zoomed to a near-parcel view, avoiding a
-    # cloud of overlapping individual pins on a 50-result borough-wide set.
+    # cloud of overlapping individual pins on a full, unsliced (all-results)
+    # borough-wide set — the display cap was removed, so this can now be
+    # hundreds/thousands of markers rather than at most 50.
     cluster = MarkerCluster(options={"maxClusterRadius": 50, "disableClusteringAtZoom": 17}).add_to(m)
 
     for p in located:
@@ -293,6 +299,41 @@ def _apply_ownership_cache(top: list[dict]) -> list[dict]:
     return [cache.get(p["bbl"], p) for p in top]
 
 
+def _current_conditions(p: dict) -> str:
+    """Compose a 'what's currently on the site' summary from already-fetched
+    PLUTO fields — no extra fetch. Primary signal is PLUTO's own official
+    land-use category; unit count/year built are appended when present."""
+    parts = [p.get("landuse_label") or "Unknown"]
+    units = p.get("units_res", 0)
+    if units:
+        parts.append(f"{int(units)} units")
+    yb = p.get("year_built", "")
+    if yb:
+        parts.append(f"built {yb}")
+    return " · ".join(parts)
+
+
+_LOT_POSITION_LABELS = {
+    "Corner":   "Corner",
+    "Through":  "Through Lot",
+    "Interior": "Mid-Block",
+}
+
+
+def _lot_position_label(lot_type: str) -> str:
+    return _LOT_POSITION_LABELS.get(lot_type, "—")
+
+
+def _rent_stab_label(signal: dict) -> str:
+    if not signal:
+        return "—"
+    if signal.get("verified") and signal.get("likely_stabilized"):
+        return "✅ Confirmed"
+    if signal.get("likely_stabilized"):
+        return "🟡 Likely (est.)"
+    return "—"
+
+
 def _render_results_table(properties: list[dict]) -> None:
     if not properties:
         st.info("No properties matched your criteria. Try widening the search (fewer filters, larger area).")
@@ -301,19 +342,21 @@ def _render_results_table(properties: list[dict]) -> None:
     _render_summary_cards(properties)
     st.markdown("---")
 
-    top = properties[:50]
-    top = _apply_ownership_cache(top)
+    # Full result set (no display cap) — Streamlit's dataframe/map both
+    # handle large row counts natively; the upstream Socrata fetch already
+    # caps at property_search._MAX_ROWS (3000) so this isn't unbounded.
+    results_full = _apply_ownership_cache(properties)
 
-    _render_results_map(top)
+    _render_results_map(results_full)
     st.markdown("---")
 
-    has_ownership = any("owner_type" in p for p in top)
+    has_ownership = any("owner_type" in p for p in results_full)
 
     oc1, oc2 = st.columns([3, 1])
     with oc1:
         st.caption(
             "Owner/ACRIS/DOB-HPD distress data is fetched live per property and is "
-            f"limited to the top {DEFAULT_BATCH_SIZE} results to keep searches fast."
+            f"limited to the top {DEFAULT_BATCH_SIZE} results (by Deal Score) to keep searches fast."
         )
     with oc2:
         if st.button("🔍 Enrich Top 25 with Ownership", use_container_width=True):
@@ -322,26 +365,30 @@ def _render_results_table(properties: list[dict]) -> None:
             def _cb(i, n):
                 progress.progress(i / n, text=f"Fetching ownership & ACRIS data… ({i}/{n})")
 
-            enriched_top = enrich_ownership_batch(top, progress_callback=_cb)
+            # enrich_ownership_batch() only live-fetches its own internal
+            # batch_size (DEFAULT_BATCH_SIZE) slice and returns the rest of
+            # results_full unchanged — safe to pass the full (unsliced) list.
+            enriched_results = enrich_ownership_batch(results_full, progress_callback=_cb)
             progress.empty()
             cache = st.session_state.get(f"{_SF_PREFIX}ownership_cache", {})
-            for p in enriched_top:
+            for p in enriched_results:
                 cache[p["bbl"]] = p
             st.session_state[f"{_SF_PREFIX}ownership_cache"] = cache
             st.rerun()
 
     rows = []
-    for i, p in enumerate(top, start=1):
+    for i, p in enumerate(results_full, start=1):
         ds = p["deal_score"]
         row = {
             "Rank":        i,
             "Address":     p["address"],
             "Borough":     p["borough"],
-            "BBL":         p["bbl"],
+            "Current Conditions": _current_conditions(p),
             "Lot SF":      f"{p['lot_sf']:,.0f}",
             "Built FAR":   f"{p['far_built']:.2f}",
             "Max FAR":     f"{p['far_max']:.2f}",
             "Unused FAR %": f"{p['unused_far_pct']:.0f}%",
+            "Location":    _lot_position_label(p.get("lot_type", "—")),
             "Strategy":    ", ".join(p.get("strategies", [])) or "—",
         }
         if has_ownership:
@@ -365,12 +412,15 @@ def _render_results_table(properties: list[dict]) -> None:
             )
         else:
             row["Distress"] = f"{p.get('distress_signal', 'No Signal')} (not yet checked)"
+        row["Rent Stab."] = _rent_stab_label(p.get("rent_stab_signal", {}))
+        assemblage = p.get("assemblage_with") or []
+        row["Assemblage"] = ("🔗 " + "; ".join(assemblage)) if assemblage else "—"
         row["Deal Score"] = ds["score"]
         row["Tier"] = ds["tier"]
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    st.markdown(f"**Top {len(top)} results** (of {len(properties):,} matched), ranked by Deal Score")
+    st.markdown(f"**{len(results_full):,} results**, ranked by Deal Score")
     st.dataframe(
         df, use_container_width=True, hide_index=True,
         height=min(560, 60 + 35 * len(rows)),
@@ -383,13 +433,15 @@ def _render_results_table(properties: list[dict]) -> None:
 
     st.markdown("---")
     st.markdown("#### 🔬 View Preliminary Diligence")
-    options = ["— Select a property —"] + [f"{i}. {p['Address']} (BBL {p['BBL']})" for i, p in zip(range(1, len(rows) + 1), rows)]
+    options = ["— Select a property —"] + [
+        f"{i}. {p['address']} (BBL {p['bbl']})" for i, p in enumerate(results_full, start=1)
+    ]
     choice = st.selectbox("Choose a result to inspect", options=options, key=f"{_SF_PREFIX}detail_choice")
     if choice != options[0]:
         idx = options.index(choice) - 1
         if st.button("Open Preliminary Diligence →", type="primary"):
-            st.session_state[f"{_SF_PREFIX}selected_bbl"] = top[idx]["bbl"]
-            st.session_state[f"{_SF_PREFIX}selected_prop"] = top[idx]
+            st.session_state[f"{_SF_PREFIX}selected_bbl"] = results_full[idx]["bbl"]
+            st.session_state[f"{_SF_PREFIX}selected_prop"] = results_full[idx]
             st.rerun()
 
     st.markdown("---")
@@ -399,8 +451,8 @@ def _render_results_table(properties: list[dict]) -> None:
         save_idx = options.index(save_choice) - 1
         if st.button("☆ Save to Portfolio", key=f"{_SF_PREFIX}save_btn"):
             from modules.portfolio_db import save_property
-            save_property(top[save_idx], status="Watching")
-            st.success(f"Saved {top[save_idx]['address']} to Portfolio.")
+            save_property(results_full[save_idx], status="Watching")
+            st.success(f"Saved {results_full[save_idx]['address']} to Portfolio.")
 
     st.markdown("---")
     st.markdown("#### ⬇️ Export")
@@ -416,7 +468,7 @@ def _render_results_table(properties: list[dict]) -> None:
     with ex2:
         if st.button("📊 Build Excel workbook", use_container_width=True):
             try:
-                xlsx_bytes = build_excel_workbook(top)
+                xlsx_bytes = build_excel_workbook(results_full)
                 st.session_state[f"{_SF_PREFIX}xlsx_bytes"] = xlsx_bytes
             except ImportError as exc:
                 st.error(str(exc))

@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 import requests
 
+from modules.zola_fetcher import LOT_TYPE_LABELS
+
 _TIMEOUT   = 30
 _PLUTO_URL = "https://data.cityofnewyork.us/resource/64uk-42ks.json"
 _PAGE_SIZE = 1000
@@ -245,6 +247,11 @@ def _normalize_row(r: dict) -> dict:
         str(r.get("borough") or "").strip().upper(), ""
     )
 
+    # Mirrors zola_fetcher.py's own lot_type fallback convention exactly
+    # (unrecognized code -> the raw code itself, not silently dropped).
+    lot_type_code = str(r.get("lottype", "") or "").strip()
+    lot_type = LOT_TYPE_LABELS.get(lot_type_code, lot_type_code) if lot_type_code else "—"
+
     return {
         "bbl":              bbl,
         "borough":          boro_name or r.get("borough", ""),
@@ -279,6 +286,7 @@ def _normalize_row(r: dict) -> dict:
         "is_vacant":        lu_code == "11" or bldg_area <= 0,
         "historic_dist":    r.get("histdist", "") or "",
         "landmark":         r.get("landmark", "") or "",
+        "lot_type":         lot_type,
         "latitude":         f_any(["latitude", "lat"], None),
         "longitude":        f_any(["longitude", "lon", "lng"], None),
     }
