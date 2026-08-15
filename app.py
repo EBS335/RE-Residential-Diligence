@@ -1141,8 +1141,8 @@ st.markdown("""
 # TOP-LEVEL TABS — Property Analysis (existing) vs. Site Finder (new)
 # ═════════════════════════════════════════════════════════════════════════════
 
-tab_property, tab_sitefinder, tab_portfolio = st.tabs(
-    ["🏢 Property Analysis", "🔍 Site Finder", "📁 Portfolio"]
+tab_sitefinder, tab_property, tab_portfolio = st.tabs(
+    ["🔍 Site Finder", "🏢 Property Analysis", "📁 Portfolio"]
 )
 
 with tab_property:
