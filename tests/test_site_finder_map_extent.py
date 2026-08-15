@@ -38,7 +38,7 @@ def _geojson_layers(m):
 def test_boundary_overlay_added_when_criteria_has_boroughs():
     props = [_prop("1 Test St", 40.65, -73.95)]
     with patch("modules.nyc_boundaries.fetch_borough_boundaries", return_value=(_BOROUGH_FC, True)), \
-         patch.object(sf, "folium_static") as mock_render, \
+         patch.object(sf, "st_folium") as mock_render, \
          patch.dict(sf.st.session_state, {}, clear=True):
         sf._render_results_map(props, {"boroughs": ["Brooklyn"], "zip_codes": []})
     m = mock_render.call_args[0][0]
@@ -49,7 +49,7 @@ def test_boundary_overlay_zip_takes_priority_over_borough():
     props = [_prop("1 Test St", 40.65, -73.95)]
     with patch("modules.nyc_boundaries.fetch_zip_boundaries", return_value=(_BOROUGH_FC, True)) as mock_zip, \
          patch("modules.nyc_boundaries.fetch_borough_boundaries") as mock_boro, \
-         patch.object(sf, "folium_static"), \
+         patch.object(sf, "st_folium"), \
          patch.dict(sf.st.session_state, {}, clear=True):
         sf._render_results_map(props, {"boroughs": ["Brooklyn"], "zip_codes": ["11201"]})
     mock_zip.assert_called_once()
@@ -60,7 +60,7 @@ def test_no_boundary_overlay_when_no_geographic_filter():
     props = [_prop("1 Test St", 40.65, -73.95)]
     with patch("modules.nyc_boundaries.fetch_borough_boundaries") as mock_boro, \
          patch("modules.nyc_boundaries.fetch_zip_boundaries") as mock_zip, \
-         patch.object(sf, "folium_static") as mock_render, \
+         patch.object(sf, "st_folium") as mock_render, \
          patch.dict(sf.st.session_state, {}, clear=True):
         sf._render_results_map(props, {"boroughs": [], "zip_codes": []})
     mock_boro.assert_not_called()
@@ -72,7 +72,7 @@ def test_no_boundary_overlay_when_no_geographic_filter():
 def test_no_boundary_overlay_when_criteria_is_none():
     props = [_prop("1 Test St", 40.65, -73.95)]
     with patch("modules.nyc_boundaries.fetch_borough_boundaries") as mock_boro, \
-         patch.object(sf, "folium_static") as mock_render, \
+         patch.object(sf, "st_folium") as mock_render, \
          patch.dict(sf.st.session_state, {}, clear=True):
         sf._render_results_map(props, None)
     mock_boro.assert_not_called()
@@ -83,7 +83,7 @@ def test_no_boundary_overlay_when_criteria_is_none():
 def test_boundary_fetch_failure_degrades_gracefully():
     props = [_prop("1 Test St", 40.65, -73.95)]
     with patch("modules.nyc_boundaries.fetch_borough_boundaries", return_value=(None, False)), \
-         patch.object(sf, "folium_static") as mock_render, \
+         patch.object(sf, "st_folium") as mock_render, \
          patch.dict(sf.st.session_state, {}, clear=True):
         # Must not raise — map still renders with markers only.
         sf._render_results_map(props, {"boroughs": ["Brooklyn"], "zip_codes": []})
@@ -95,7 +95,7 @@ def test_boundary_fetch_failure_degrades_gracefully():
 def test_boundary_result_cached_in_session_state():
     props = [_prop("1 Test St", 40.65, -73.95)]
     with patch("modules.nyc_boundaries.fetch_borough_boundaries", return_value=(_BOROUGH_FC, True)) as mock_fetch, \
-         patch.object(sf, "folium_static"), \
+         patch.object(sf, "st_folium"), \
          patch.dict(sf.st.session_state, {}, clear=True):
         sf._render_results_map(props, {"boroughs": ["Brooklyn"], "zip_codes": []})
         sf._render_results_map(props, {"boroughs": ["Brooklyn"], "zip_codes": []})
@@ -108,7 +108,7 @@ def test_geojson_bounds_used_to_fit_map_when_boundary_present():
     # markers', when a boundary is available.
     props = [_prop("Far away", 41.5, -73.0)]
     with patch("modules.nyc_boundaries.fetch_borough_boundaries", return_value=(_BOROUGH_FC, True)), \
-         patch.object(sf, "folium_static"), \
+         patch.object(sf, "st_folium"), \
          patch.dict(sf.st.session_state, {}, clear=True):
         with patch("folium.Map.fit_bounds") as mock_fit:
             sf._render_results_map(props, {"boroughs": ["Brooklyn"], "zip_codes": []})
@@ -120,7 +120,7 @@ def test_geojson_bounds_used_to_fit_map_when_boundary_present():
 def test_fit_bounds_falls_back_to_markers_without_boundary():
     props = [_prop("A", 40.60, -74.00), _prop("B", 40.70, -73.90)]
     with patch("modules.nyc_boundaries.fetch_borough_boundaries") as mock_boro, \
-         patch.object(sf, "folium_static"), \
+         patch.object(sf, "st_folium"), \
          patch.dict(sf.st.session_state, {}, clear=True):
         with patch("folium.Map.fit_bounds") as mock_fit:
             sf._render_results_map(props, {"boroughs": [], "zip_codes": []})

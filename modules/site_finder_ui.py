@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 import folium
 from folium.plugins import MarkerCluster
-from streamlit_folium import folium_static
+from streamlit_folium import st_folium
 
 from modules.visualizer import ESRI_SATELLITE_TILES, ESRI_SATELLITE_ATTR
 
@@ -310,18 +310,25 @@ def _render_results_map(properties: list[dict], criteria: dict | None = None) ->
     extent (or to the markers themselves, if no boundary is available)
     instead of a fixed zoom level.
 
-    Rendered via streamlit_folium.folium_static(), NOT st_folium():
-    st_folium's custom bidirectional component has a documented bug where
-    it silently fails to paint in Chrome when placed in a non-first
-    st.tabs() tab (this map is tab 2 of 3) — see
-    https://github.com/randyzwitch/streamlit-folium/issues/128. This map
-    never consumed st_folium's bidirectional return value anyway (no
-    click/zoom/bounds sync needed here), so folium_static's simpler
-    components.html()-based static embed is a strictly safer fit, even
-    though it's deprecated upstream in favor of st_folium. If a future
-    streamlit-folium release removes folium_static entirely, this will
-    need revisiting — not preemptively, since the suggested replacement
-    is the specific thing suspected broken in this exact tab position.
+    Rendered via st_folium(width="100%", returned_objects=[], key=...) —
+    matching, kwarg-for-kwarg, the one rendering pattern every other map
+    in this app (all 6 of them, in modules/visualizer.py and app.py) uses
+    successfully. A prior pass swapped this to streamlit_folium.folium_static()
+    on the theory that st_folium's custom component silently fails to
+    paint in Chrome on a non-first st.tabs() tab (this map is tab 2 of 3;
+    see https://github.com/randyzwitch/streamlit-folium/issues/128) — that
+    swap did NOT fix the reported "markers not showing up" issue, which is
+    real evidence against that theory, not just inconclusive. folium_static
+    also used a fixed width=1200 (every other map uses the responsive
+    width="100%") and had no explicit `key=`, both genuine deviations from
+    the app's only proven-working pattern — this revert removes every one
+    of those deviations at once. If markers still don't render after this,
+    the one remaining untested variable specific to this map is its tab
+    position itself (no other map in the app lives on a non-first tab, and
+    this is also the only map with zero enclosing st.columns/st.expander)
+    — that would need a structural fix (reordering tabs, or wrapping this
+    map in a container like every working map is), not another render-call
+    swap.
 
     Also caps marker count at _MAX_MAP_MARKERS (by Deal Score, `properties`
     is already sorted) — separately from the results TABLE, which
@@ -398,7 +405,7 @@ def _render_results_map(properties: list[dict], criteria: dict | None = None) ->
     ]
     m.fit_bounds(fit_bounds)
 
-    folium_static(m, width=1200, height=420)
+    st_folium(m, width="100%", height=420, returned_objects=[], key=f"{_SF_PREFIX}results_map")
     legend = " · ".join(f"🟢 {t}" if c == "green" else (f"🟠 {t}" if c == "orange" else f"⚪ {t}") for t, c in _TIER_MARKER_COLOR.items())
     caption = legend
     if boundary_geojson:
