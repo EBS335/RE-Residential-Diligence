@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 import folium
 from folium.plugins import MarkerCluster
-from streamlit_folium import st_folium
+from streamlit_folium import folium_static
 
 from modules.visualizer import ESRI_SATELLITE_TILES, ESRI_SATELLITE_ATTR
 
@@ -235,22 +235,48 @@ _TIER_MARKER_COLOR = {
 }
 
 
+_MAX_MAP_MARKERS = 300  # see _render_results_map() docstring
+
+
 def _render_results_map(properties: list[dict]) -> None:
     """
-    Flag every result on a free OpenStreetMap/CartoDB basemap (same tile
+    Flag results on a free OpenStreetMap/CartoDB basemap (same tile
     provider already used in the Property Analysis tab's visualizer.py —
     no paid mapping API, no key required).
+
+    Rendered via streamlit_folium.folium_static(), NOT st_folium():
+    st_folium's custom bidirectional component has a documented bug where
+    it silently fails to paint in Chrome when placed in a non-first
+    st.tabs() tab (this map is tab 2 of 3) — see
+    https://github.com/randyzwitch/streamlit-folium/issues/128. This map
+    never consumed st_folium's bidirectional return value anyway (no
+    click/zoom/bounds sync needed here), so folium_static's simpler
+    components.html()-based static embed is a strictly safer fit, even
+    though it's deprecated upstream in favor of st_folium. If a future
+    streamlit-folium release removes folium_static entirely, this will
+    need revisiting — not preemptively, since the suggested replacement
+    is the specific thing suspected broken in this exact tab position.
+
+    Also caps marker count at _MAX_MAP_MARKERS (by Deal Score, `properties`
+    is already sorted) — separately from the results TABLE, which
+    intentionally shows the full, uncapped result set. Folium/Leaflet maps
+    are documented to fail to render at all above ~3000 markers
+    (https://github.com/python-visualization/folium/issues/803), a real
+    risk now that the table's own display cap was removed and a broad
+    search can return up to property_search._MAX_ROWS (3000) rows.
     """
     located = [p for p in properties if p.get("latitude") and p.get("longitude")]
     missing = len(properties) - len(located)
+    shown = located[:_MAX_MAP_MARKERS]
+    map_truncated = len(located) - len(shown)
 
     if not located:
         st.caption("No coordinates available to plot for these results.")
         return
 
     st.markdown("#### 🗺️ Map View")
-    center_lat = sum(p["latitude"] for p in located) / len(located)
-    center_lon = sum(p["longitude"] for p in located) / len(located)
+    center_lat = sum(p["latitude"] for p in shown) / len(shown)
+    center_lon = sum(p["longitude"] for p in shown) / len(shown)
 
     m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="CartoDB positron")
     folium.TileLayer(
@@ -263,12 +289,10 @@ def _render_results_map(properties: list[dict]) -> None:
     # assemblage candidates worth grouping at a city-wide zoom; a higher
     # disableClusteringAtZoom (17 vs 16) defers full per-pin declustering
     # until the user has genuinely zoomed to a near-parcel view, avoiding a
-    # cloud of overlapping individual pins on a full, unsliced (all-results)
-    # borough-wide set — the display cap was removed, so this can now be
-    # hundreds/thousands of markers rather than at most 50.
+    # cloud of overlapping individual pins on a wide borough-wide set.
     cluster = MarkerCluster(options={"maxClusterRadius": 50, "disableClusteringAtZoom": 17}).add_to(m)
 
-    for p in located:
+    for p in shown:
         ds = p.get("deal_score", {})
         color = _TIER_MARKER_COLOR.get(ds.get("tier"), "blue")
         popup_html = (
@@ -284,9 +308,14 @@ def _render_results_map(properties: list[dict]) -> None:
             popup=folium.Popup(popup_html, max_width=260),
         ).add_to(cluster)
 
-    st_folium(m, use_container_width=True, height=420, key=f"{_SF_PREFIX}results_map")
+    folium_static(m, width=1200, height=420)
     legend = " · ".join(f"🟢 {t}" if c == "green" else (f"🟠 {t}" if c == "orange" else f"⚪ {t}") for t, c in _TIER_MARKER_COLOR.items())
-    st.caption(f"{legend}" + (f" · {missing} of {len(properties)} results have no coordinates and are not plotted" if missing else ""))
+    caption = legend
+    if map_truncated:
+        caption += f" · showing the top {len(shown):,} of {len(located):,} geolocated results by Deal Score (full set is in the table below)"
+    if missing:
+        caption += f" · {missing:,} of {len(properties):,} results have no coordinates and are not plotted"
+    st.caption(caption)
 
 
 # ── Results table ────────────────────────────────────────────────────────────
