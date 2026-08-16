@@ -1023,12 +1023,18 @@ def _pct_input(label: str, value: float, key: str, step: float = 0.5, help: str 
 
 def _flatten_underwriting_for_export(scenario: dict, cf_result: dict, returns_result: dict, equity_structure: str) -> dict:
     """Small flat summary dict for report_exporter.py — decoupled from the
-    engine's internal nested cash-flow/tier-breakdown shapes."""
+    engine's internal nested cash-flow/tier-breakdown shapes. Also carries
+    annual_cash_flows/cost_breakdown verbatim (already-serializable lists
+    of plain dicts/numbers) so report_exporter.py's Pro Forma and
+    Construction Budget Excel sheets have real line-item data instead of
+    just the headline summary numbers below."""
     out = {
         "scenario_label": scenario["label"],
         "total_dev_cost": cf_result["total_dev_cost"],
         "year1_noi": cf_result["year1_noi"],
         "equity_structure": equity_structure,
+        "annual_cash_flows": cf_result.get("annual_cash_flows", []),
+        "cost_breakdown": cf_result.get("cost_breakdown", {}),
     }
     if equity_structure == "waterfall":
         out["irr"] = returns_result.get("lp_irr")

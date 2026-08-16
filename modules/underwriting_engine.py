@@ -430,6 +430,11 @@ def build_cash_flows(
     contingency = (hard_cost + soft_cost) * _CONTINGENCY_PCT
     closing_cost = acq_estimate * _CLOSING_COST_PCT
     total_dev_cost = acq_estimate + closing_cost + hard_cost + soft_cost + contingency
+    cost_breakdown = {
+        "acquisition_cost": acq_estimate, "closing_cost": closing_cost,
+        "hard_cost": hard_cost, "soft_cost": soft_cost, "contingency": contingency,
+        "total_dev_cost": total_dev_cost,
+    }
 
     cap_rate = CAP_RATES.get(borough, CAP_RATES["Manhattan"]) * cap_rate_multiplier
     exit_cap_rate = cap_rate + (exit_cap_spread_bps / 10_000.0)
@@ -467,6 +472,7 @@ def build_cash_flows(
             "unlevered_equity_multiple": equity_multiple([cf["unlevered_cf"] for cf in annual_cash_flows]),
             "total_equity_in": equity_in,
             "financing": financing,
+            "cost_breakdown": cost_breakdown,
             # Not meaningful for a lump-sum sellout (no stabilized Year-1 NOI
             # or amortizing debt service to divide by) — always None here.
             "achieved_dscr_yr1": None,
@@ -558,6 +564,7 @@ def build_cash_flows(
         "unlevered_equity_multiple": equity_multiple(unlevered_series),
         "total_equity_in": equity_in,
         "financing": financing,
+        "cost_breakdown": cost_breakdown,
         "achieved_dscr_yr1": achieved_dscr_yr1,
         "cash_on_cash_yr1": cash_on_cash_yr1,
         "yield_on_cost": yield_on_cost,

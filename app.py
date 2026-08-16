@@ -5273,7 +5273,9 @@ with tab_property:
             _exp_bbl = (_zinfo or {}).get("bbl", "—")
             if _exp_bbl and _exp_bbl != "—":
                 with st.expander("⬇️ Export This Property", expanded=False):
-                    from modules.report_exporter import build_pdf_report, build_pptx_report, build_excel_workbook
+                    from modules.report_exporter import (
+                        build_pdf_report, build_pptx_report, build_excel_workbook, compose_fallback_ic_summary,
+                    )
 
                     _exp_prop = _map_zinfo_to_portfolio_schema(_zinfo, _zinfo_label, lat, lon)
                     _exp_score = st.session_state.get("_ds_last_score_result")
@@ -5288,7 +5290,19 @@ with tab_property:
                     _exp_uw = st.session_state.get(f"_uw_deepdive_{_exp_bbl}")
                     if _exp_uw:
                         _exp_prop["underwriting"] = _exp_uw
+                    _exp_sales_listings = st.session_state.get(_sales_key, {}).get("listings", [])
+                    if _exp_sales_listings:
+                        _exp_prop["market_comps"] = {"comps": _exp_sales_listings, "count": len(_exp_sales_listings)}
                     _exp_prop.setdefault("strategies", [])
+
+                    # Auto-composed IC summary (no LLM required) — previously
+                    # this tab's exports always passed ic_summary=None, so the
+                    # Thesis/Risks/Next-Steps section never appeared at all.
+                    _exp_ic_summary = compose_fallback_ic_summary(_exp_prop)
+                    st.caption(
+                        f"IC summary auto-composed from the signals above "
+                        f"(recommendation: {_exp_ic_summary['recommendation']}) — not an LLM-generated memo."
+                    )
 
                     if not _exp_score and not _exp_abate:
                         st.caption(
@@ -5306,7 +5320,7 @@ with tab_property:
                     with _exp1:
                         if st.button("📄 Build PDF report", key="pa_pdf_btn", use_container_width=True):
                             try:
-                                st.session_state["_pa_pdf_bytes"] = build_pdf_report(_exp_prop, None)
+                                st.session_state["_pa_pdf_bytes"] = build_pdf_report(_exp_prop, _exp_ic_summary)
                             except ImportError as exc:
                                 st.error(str(exc))
                         if st.session_state.get("_pa_pdf_bytes"):
@@ -5318,7 +5332,7 @@ with tab_property:
                     with _exp2:
                         if st.button("📽️ Build PowerPoint pitch", key="pa_pptx_btn", use_container_width=True):
                             try:
-                                st.session_state["_pa_pptx_bytes"] = build_pptx_report(_exp_prop, None)
+                                st.session_state["_pa_pptx_bytes"] = build_pptx_report(_exp_prop, _exp_ic_summary)
                             except ImportError as exc:
                                 st.error(str(exc))
                         if st.session_state.get("_pa_pptx_bytes"):

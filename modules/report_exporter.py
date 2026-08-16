@@ -142,9 +142,100 @@ def build_excel_workbook(properties: list[dict], top_n_detail: int = 20) -> byte
         sh = wb.create_sheet(sheet_name)
         _write_property_detail_sheet(sh, p, header_fill, header_font)
 
+        # Optional per-property sheets — only created when the source data
+        # is actually present (underwriting/comps aren't always computed
+        # for every property before export).
+        uw = p.get("underwriting") or {}
+        if uw.get("annual_cash_flows"):
+            _write_pro_forma_sheet(wb, i, p, uw, header_fill, header_font)
+        if uw.get("cost_breakdown"):
+            _write_construction_budget_sheet(wb, i, p, uw, header_fill, header_font)
+        comps = (p.get("market_comps") or {}).get("comps") or []
+        if comps:
+            _write_comps_sheet(wb, i, p, comps, header_fill, header_font)
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _write_pro_forma_sheet(wb, i: int, p: dict, uw: dict, header_fill, header_font) -> None:
+    """Year-by-year cash-flow rows from build_cash_flows()'s
+    annual_cash_flows — a real Pro Forma sheet, not just headline numbers."""
+    from openpyxl.styles import Alignment
+
+    sh = wb.create_sheet(f"{i}. Pro Forma"[:31])
+    sh.cell(row=1, column=1, value=f"{p.get('address', '')} — Pro Forma ({uw.get('scenario_label', '')})").font = header_font
+    sh.merge_cells(start_row=1, start_column=1, end_row=1, end_column=7)
+
+    headers = ["Year", "Phase", "NOI", "Debt Service", "Reversion", "Equity CF", "Unlevered CF"]
+    for c, h in enumerate(headers, start=1):
+        cell = sh.cell(row=3, column=c, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for r, cf in enumerate(uw["annual_cash_flows"], start=4):
+        sh.cell(row=r, column=1, value=cf.get("year", ""))
+        sh.cell(row=r, column=2, value=cf.get("phase", ""))
+        sh.cell(row=r, column=3, value=round(cf.get("noi", 0) or 0))
+        sh.cell(row=r, column=4, value=round(cf.get("debt_service", 0) or 0))
+        sh.cell(row=r, column=5, value=round(cf.get("reversion_proceeds", 0) or 0))
+        sh.cell(row=r, column=6, value=round(cf.get("equity_cf", 0) or 0))
+        sh.cell(row=r, column=7, value=round(cf.get("unlevered_cf", 0) or 0))
+
+    for c in range(1, 8):
+        sh.column_dimensions[chr(64 + c)].width = 16
+
+
+def _write_construction_budget_sheet(wb, i: int, p: dict, uw: dict, header_fill, header_font) -> None:
+    """Hard/soft/contingency/closing cost line items from
+    build_cash_flows()'s cost_breakdown — a real budget breakdown, not
+    just the single total_dev_cost figure."""
+    sh = wb.create_sheet(f"{i}. Construction Budget"[:31])
+    cb = uw["cost_breakdown"]
+    bold_rows = [
+        ("Acquisition Cost", cb.get("acquisition_cost", 0)),
+        ("Closing Cost", cb.get("closing_cost", 0)),
+        ("Hard Cost", cb.get("hard_cost", 0)),
+        ("Soft Cost", cb.get("soft_cost", 0)),
+        ("Contingency", cb.get("contingency", 0)),
+        ("Total Development Cost", cb.get("total_dev_cost", 0)),
+    ]
+    sh.cell(row=1, column=1, value=f"{p.get('address', '')} — Construction Budget").font = header_font
+    sh.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
+    for r, (label, value) in enumerate(bold_rows, start=3):
+        sh.cell(row=r, column=1, value=label)
+        sh.cell(row=r, column=2, value=round(value or 0))
+    sh.column_dimensions["A"].width = 26
+    sh.column_dimensions["B"].width = 20
+
+
+def _write_comps_sheet(wb, i: int, p: dict, comps: list[dict], header_fill, header_font) -> None:
+    """The actual comps table (not just aggregate median/avg numbers)."""
+    from openpyxl.styles import Alignment
+
+    sh = wb.create_sheet(f"{i}. Comps"[:31])
+    sh.cell(row=1, column=1, value=f"{p.get('address', '')} — Market Comps").font = header_font
+    sh.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+
+    headers = ["Address", "Price", "SF", "$/SF", "Asset Type", "Date"]
+    for c, h in enumerate(headers, start=1):
+        cell = sh.cell(row=3, column=c, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for r, comp in enumerate(comps, start=4):
+        sh.cell(row=r, column=1, value=comp.get("address", ""))
+        sh.cell(row=r, column=2, value=comp.get("price") or "")
+        sh.cell(row=r, column=3, value=comp.get("sqft") or "")
+        sh.cell(row=r, column=4, value=comp.get("price_psf") or "")
+        sh.cell(row=r, column=5, value=comp.get("asset_type", ""))
+        sh.cell(row=r, column=6, value=comp.get("date", ""))
+
+    for c, w in zip(range(1, 7), (36, 14, 12, 12, 18, 14)):
+        sh.column_dimensions[chr(64 + c)].width = w
 
 
 def _write_property_detail_sheet(sh, p: dict, header_fill, header_font) -> None:
@@ -215,6 +306,88 @@ def _write_property_detail_sheet(sh, p: dict, header_fill, header_font) -> None:
 
     for col, width in (("A", 24), ("B", 40)):
         sh.column_dimensions[col].width = width
+
+
+# ── Fallback IC summary (no LLM required) ────────────────────────────────────
+
+def compose_fallback_ic_summary(prop: dict) -> dict:
+    """
+    Auto-compose an ic_summary dict from signals already computed on
+    `prop` — no Anthropic API key required. Exists because
+    modules.site_finder_agents.run_investment_committee() (the only other
+    ic_summary source in the app) requires an LLM call and is wired only
+    into Site Finder; the Property Analysis tab's own PDF/PPTX export call
+    sites previously always passed ic_summary=None, so their exports never
+    included a Thesis/Risks/Next-Steps section at all. Deliberately
+    simpler and more conservative than the LLM version — same shape
+    (recommendation/thesis/key_risks/next_steps) so build_pdf_report()/
+    build_pptx_report() need no changes to consume it.
+
+    Never raises; degrades to a minimal "insufficient data" summary if
+    the property dict is too thin to say anything specific.
+    """
+    try:
+        ds = prop.get("deal_score") or {}
+        score = ds.get("score")
+        tier = ds.get("tier", "")
+
+        if tier == "Strong Lead":
+            recommendation = "GO"
+        elif tier == "Watch":
+            recommendation = "WATCH"
+        elif tier:
+            recommendation = "REJECT"
+        else:
+            recommendation = "WATCH"
+
+        thesis: list[str] = []
+        unused_pct = prop.get("unused_far_pct")
+        if unused_pct:
+            thesis.append(f"{unused_pct:.0f}% unused FAR relative to zoning max — development upside on the existing basis.")
+        for s in prop.get("strategies", []):
+            thesis.append(f"Development signal: {s}.")
+        opp = prop.get("opportunity") or {}
+        for d in opp.get("drivers", [])[:2]:
+            thesis.append(d)
+        if not thesis:
+            thesis.append("Limited standout signals from the data checked so far — screen further before committing.")
+
+        key_risks: list[str] = []
+        distress = prop.get("distress_signal")
+        if distress and distress != "No Signal":
+            key_risks.append(f"Distress signal on record: {distress} — review ACRIS/DOB history before underwriting.")
+        rentstab = prop.get("rent_stab_signal") or {}
+        if rentstab.get("likely_stabilized"):
+            key_risks.append("Likely rent-stabilized — may constrain rent upside or conversion/demolition strategy.")
+        if not key_risks:
+            key_risks.append("No elevated distress or regulatory flags found in the data checked so far — confirm independently.")
+
+        next_steps = [
+            "Confirm zoning and buildable envelope directly with NYC Planning / ZOLA.",
+            "Order a title report and full ACRIS ownership/lien history.",
+        ]
+        if not prop.get("underwriting"):
+            next_steps.append("Run the Underwriting Pro Forma to size acquisition, financing, and target returns.")
+        if rentstab.get("likely_stabilized") is None and not rentstab:
+            next_steps.append("Confirm rent-stabilization status via the DHCR building list.")
+
+        return {
+            "recommendation": recommendation,
+            "thesis": thesis,
+            "key_risks": key_risks,
+            "key_unknowns": [],
+            "next_steps": next_steps,
+            "source": "auto-composed (no LLM) — see modules.site_finder_agents for the AI-generated version",
+        }
+    except Exception:
+        return {
+            "recommendation": "WATCH",
+            "thesis": ["Insufficient data to compose a thesis — screen further."],
+            "key_risks": ["Insufficient data to identify risks — screen further."],
+            "key_unknowns": [],
+            "next_steps": ["Confirm zoning, ownership, and financial basis before proceeding."],
+            "source": "auto-composed (no LLM) — fallback",
+        }
 
 
 # ── PDF: single-property investment report ──────────────────────────────────
