@@ -1919,6 +1919,26 @@ with tab_property:
                     "Housing-Maintenance-Code-Violations/wvxf-dwi5) "
                     "· [ACRIS (NYC DOF)](https://a836-acris.nyc.gov/CP/)"
                 )
+                # Direct per-BBL deep links to any online-pulled data already
+                # cached in this cell or by an opt-in fetch elsewhere on the
+                # page — additive to the static Sources caption above, reads
+                # existing cache keys only, triggers no new fetch.
+                _src_links = []
+                if _acris_ds.get("acris_url"):
+                    _src_links.append(f"[Full ACRIS document history ↗]({_acris_ds['acris_url']})")
+                _pip_dist = st.session_state.get(f"_pip_{_ds_bbl}", {})
+                if _pip_dist.get("pip_url"):
+                    _src_links.append(f"[NYC Property Information Portal (DOB+HPD+ECB) ↗]({_pip_dist['pip_url']})")
+                if _ecb_data.get("hpd_url"):
+                    _src_links.append(f"[HPD Online violation search ↗]({_ecb_data['hpd_url']})")
+                _taxlien_dist = st.session_state.get(f"_taxlien_{_ds_bbl}", {})
+                if _taxlien_dist.get("info_url"):
+                    _src_links.append(f"[NYC DOF Tax Lien Sale info ↗]({_taxlien_dist['info_url']})")
+                _oath_dist = st.session_state.get(f"_oath_{_ds_bbl}", {})
+                if _oath_dist.get("oath_url"):
+                    _src_links.append(f"[OATH/ECB hearing search ↗]({_oath_dist['oath_url']})")
+                if _src_links:
+                    st.caption("📎 " + "  ·  ".join(_src_links))
 
             # Compute nearby listings for Deal Score (even though we display Nearby Developments)
             _nearby_listings = [l for l in listings if float(l.get("distance_miles") or 99) < 0.15]
