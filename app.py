@@ -48,6 +48,8 @@ from modules.tax_lien_fetcher import fetch_tax_lien_status
 from modules.lpc_landmarks_fetcher import fetch_lpc_landmark_status
 from modules.ceqr_fetcher import fetch_ulurp_applications
 from modules.distress_scorer import compute_composite_distress_score, DEFAULT_WEIGHTS
+from modules.structural_risk import compute_structural_vintage_risk, recommend_structural_system
+from modules.risk_scorecard import compute_composite_risk_scorecard
 from modules.unit_mix import (
     get_avg_sf, optimize_unit_mix, compute_revenue,
     avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf, OPEX_RATIO,
@@ -5395,6 +5397,58 @@ with tab_property:
                     "text": f"Currently tax-exempt (${_rk_abate.get('exempt_value', 0):,.0f}) "
                             "— confirm exemption's expiration/phase-out schedule before underwriting stabilized taxes",
                 })
+
+            # ── Composite Risk Scorecard (Physical/Financial/Regulatory) ────────
+            # Buckets the same live signals above (plus structural-vintage risk
+            # and the composite distress score, when already fetched earlier in
+            # this render) into 3 explicit 0-100 categories with a "needs
+            # manual review" flag — complements, does not replace, the raw
+            # signal flags below or the static macro/micro tables further down.
+            _rk_oath = st.session_state.get(f"_oath_{_rk_bbl}", {}) or {}
+            _rk_taxlien = st.session_state.get(f"_taxlien_{_rk_bbl}", {}) or {}
+            _rk_lpc = st.session_state.get(f"_lpc_{_rk_bbl}", {}) or {}
+            _rk_struct = compute_structural_vintage_risk(
+                (_zinfo or {}).get("year_built"), num_floors=(_zinfo or {}).get("num_floors", 0),
+                bldg_class=(_zinfo or {}).get("bldg_class", ""),
+            )
+            _rk_distress = compute_composite_distress_score(
+                acris_summary=_rk_acris_sum,
+                dob_open_violations=_rk_open_dob, dob_open_complaints=_rk_open_cx,
+                hpd_open_violations=st.session_state.get(f"_ecb_{_rk_bbl}", {}).get("open_count", 0),
+                oath_data=_rk_oath, tax_lien_data=_rk_taxlien,
+            )
+            _rk_data_gaps = []
+            if _rk_acris.get("error"):
+                _rk_data_gaps.append(f"ACRIS: {_rk_acris['error']}")
+            if _rk_pip.get("error"):
+                _rk_data_gaps.append(f"DOB/HPD: {_rk_pip['error']}")
+            _rk_scorecard = compute_composite_risk_scorecard(
+                dob_open_violations=_rk_open_dob, dob_open_complaints=_rk_open_cx,
+                flood_data=_rk_flood, structural_risk_result=_rk_struct,
+                acris_summary=_rk_acris_sum, distress_score_result=_rk_distress,
+                tax_exempt=bool(_rk_abate.get("currently_exempt")),
+                rent_stab_likely=bool(_rk_rentstab.get("likely_stabilized")),
+                is_landmark=bool((_zinfo or {}).get("landmark")) or bool(_rk_lpc.get("is_individual_landmark")),
+                is_historic_district=bool((_zinfo or {}).get("historic_dist")),
+                data_gaps=_rk_data_gaps,
+            )
+            st.markdown("**Composite Risk Scorecard**")
+            _rksc1, _rksc2, _rksc3, _rksc4 = st.columns(4)
+            _rksc1.metric("Physical",   f"{_rk_scorecard['physical']['score']}/100",   _rk_scorecard['physical']['tier'])
+            _rksc2.metric("Financial",  f"{_rk_scorecard['financial']['score']}/100",  _rk_scorecard['financial']['tier'])
+            _rksc3.metric("Regulatory", f"{_rk_scorecard['regulatory']['score']}/100", _rk_scorecard['regulatory']['tier'])
+            _rksc4.metric("Overall",    f"{_rk_scorecard['overall_score']}/100",       _rk_scorecard['overall_tier'])
+            if _rk_scorecard["needs_manual_review"]:
+                st.warning("⚠️ **Needs manual review:** " + " · ".join(_rk_scorecard["needs_manual_review_reasons"]))
+            with st.expander("Scorecard factor detail", expanded=False):
+                for _rksc_bucket in ("physical", "financial", "regulatory"):
+                    _rksc_data = _rk_scorecard[_rksc_bucket]
+                    st.markdown(f"**{_rksc_bucket.title()}** — {_rksc_data['score']}/100 ({_rksc_data['tier']})")
+                    for _rksc_f in _rksc_data["factors"]:
+                        st.caption(f"• {_rksc_f}")
+                    if not _rksc_data["factors"]:
+                        st.caption("• No elevated factors found.")
+            st.markdown("---")
 
             if _rk_flags:
                 st.markdown("**Property-Specific Risk Signals** *(from live data already fetched above — ACRIS, DOB/HPD, tax/rent-stab estimates)*")
