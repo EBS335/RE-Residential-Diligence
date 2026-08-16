@@ -102,6 +102,30 @@ def test_boundary_fetch_failure_degrades_gracefully():
     assert kw == {"width": "stretch", "height": 420}
 
 
+# ── Map style toggle (Standard/Satellite) ────────────────────────────────────
+
+def test_map_style_defaults_to_light():
+    props = [_prop("A", 40.65, -73.95)]
+    deck, _ = _render_and_capture(props, None)
+    # pydeck resolves the "light" keyword to its backing Carto style URL.
+    assert "positron" in deck.map_style
+
+
+def test_map_style_satellite_when_toggled():
+    props = [_prop("A", 40.65, -73.95)]
+    with patch.object(sf.st, "radio", return_value="Satellite"):
+        deck, _ = _render_and_capture(props, None)
+    assert deck.map_style == "satellite"
+
+
+def test_all_results_plotted_no_marker_cap():
+    # 500 results, deliberately > the old 300-marker cap.
+    props = [_prop(f"{i} Test St", 40.60 + i * 0.0001, -74.00) for i in range(500)]
+    deck, _ = _render_and_capture(props, None)
+    scatter = _layers_of_type(deck, "ScatterplotLayer")[0]
+    assert len(scatter.data) == 500
+
+
 def test_boundary_result_cached_in_session_state():
     props = [_prop("1 Test St", 40.65, -73.95)]
     with patch("modules.nyc_boundaries.fetch_borough_boundaries", return_value=(_BOROUGH_FC, True)) as mock_fetch, \

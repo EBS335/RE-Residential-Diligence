@@ -233,9 +233,6 @@ _TIER_MARKER_COLOR = {
 _DEFAULT_MARKER_COLOR = [59, 130, 246]  # blue fallback for an unrecognized tier
 
 
-_MAX_MAP_MARKERS = 300  # see _render_results_map() docstring
-
-
 def _geojson_bounds(geojson: dict) -> list[list[float]] | None:
     """[[min_lat, min_lon], [max_lat, max_lon]] over every coordinate in a
     GeoJSON FeatureCollection (Polygon/MultiPolygon geometries — GeoJSON
@@ -328,20 +325,28 @@ def _render_results_map(properties: list[dict], criteria: dict | None = None) ->
     available) via pydeck.data_utils.compute_view() — pydeck's own
     fit-to-bounds helper, replacing folium's fit_bounds().
 
-    Caps marker count at _MAX_MAP_MARKERS (by Deal Score, `properties` is
-    already sorted) — separately from the results TABLE, which
-    intentionally shows the full, uncapped result set.
+    Plots every geolocated result — no display cap. deck.gl's
+    ScatterplotLayer is GPU-rendered and handles thousands of points
+    natively (unlike the old Leaflet/folium map, which is documented to
+    fail entirely above ~3000 markers — the reason a cap existed at all
+    previously; that risk doesn't apply to this rendering path).
     """
     located = [p for p in properties if p.get("latitude") and p.get("longitude")]
     missing = len(properties) - len(located)
-    shown = located[:_MAX_MAP_MARKERS]
-    map_truncated = len(located) - len(shown)
 
     if not located:
         st.caption("No coordinates available to plot for these results.")
         return
 
-    st.markdown("#### 🗺️ Map View")
+    map_hdr, map_toggle = st.columns([3, 1])
+    with map_hdr:
+        st.markdown("#### 🗺️ Map View")
+    with map_toggle:
+        map_view_choice = st.radio(
+            "View", ["Standard", "Satellite"], horizontal=True, label_visibility="collapsed",
+            key=f"{_SF_PREFIX}map_style_choice",
+        )
+    map_style = "satellite" if map_view_choice == "Satellite" else "light"
 
     boundary_geojson, boundary_ok = _fetch_search_extent_boundary(criteria)
     boundary_requested = bool(criteria and (criteria.get("zip_codes") or criteria.get("boroughs")))
@@ -358,7 +363,7 @@ def _render_results_map(properties: list[dict], criteria: dict | None = None) ->
         ))
 
     marker_rows = []
-    for p in shown:
+    for p in located:
         ds = p.get("deal_score", {})
         color = _TIER_MARKER_COLOR.get(ds.get("tier"), _DEFAULT_MARKER_COLOR)
         marker_rows.append({
@@ -391,14 +396,14 @@ def _render_results_map(properties: list[dict], criteria: dict | None = None) ->
         if boundary_bounds:
             fit_points = [[lon, lat] for lat, lon in boundary_bounds]
     if not fit_points:
-        fit_points = [[p["longitude"], p["latitude"]] for p in shown]
+        fit_points = [[p["longitude"], p["latitude"]] for p in located]
     view_state = compute_view(fit_points)
 
     st.pydeck_chart(
         pdk.Deck(
             layers=layers,
             initial_view_state=view_state,
-            map_style="light",
+            map_style=map_style,
             tooltip={"html": "<b>{address}</b><br/>Deal Score: {score}/100 ({tier})<br/>Strategy: {strategy}"},
         ),
         width="stretch", height=420,
@@ -412,8 +417,6 @@ def _render_results_map(properties: list[dict], criteria: dict | None = None) ->
         caption += " · shaded outline = search area"
     elif boundary_requested and not boundary_ok:
         caption += " · search-area outline unavailable this time (boundary data source unreachable)"
-    if map_truncated:
-        caption += f" · showing the top {len(shown):,} of {len(located):,} geolocated results by Deal Score (full set is in the table below)"
     if missing:
         caption += f" · {missing:,} of {len(properties):,} results have no coordinates and are not plotted"
     st.caption(caption)
