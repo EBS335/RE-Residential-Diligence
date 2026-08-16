@@ -168,3 +168,24 @@ def test_view_preliminary_diligence_dropdown_removed():
     selectbox_labels = [sb.label for sb in at.selectbox]
     assert "Choose a result to inspect" not in selectbox_labels
     assert "Choose a result to save" in selectbox_labels
+
+
+# ── Preliminary Diligence: site/building summary ────────────────────────────
+
+def test_property_detail_shows_site_building_summary():
+    prop = _prop(0, address="100 Test St", bldg_class="C1", num_floors=4.0,
+                 bldg_sf=8000.0, units_total=12.0, units_res=12.0, lot_sf=5000.0,
+                 zoning_dist="R6A", far_built=1.6, far_max=3.0, unused_far_pct=46.7,
+                 owner="TEST OWNER")
+    at = _run_with_results([prop], {"_sf_selected_bbl": prop["bbl"], "_sf_selected_prop": prop})
+    assert not at.exception
+    mds = " ".join(el.value for el in at.markdown)
+    assert "Site & Building Summary" in mds
+    assert "Multi-Family Walk-Up" in mds  # _current_conditions() reused
+    assert "C1" in mds
+    assert "8,000" in mds
+    assert "12 total (12 residential)" in mds
+    assert "5,000" in mds
+    assert "R6A" in mds
+    assert "1.60 built of 3.00 max" in mds
+    assert "TEST OWNER" in mds

@@ -727,6 +727,43 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
 # ── existing 4,000-line Property Analysis flow, to avoid any risk of ──────
 # ── disturbing it) ──────────────────────────────────────────────────────────
 
+def _render_site_building_summary(prop: dict) -> None:
+    """Plain-language 'what is this site, right now' orientation block —
+    every field here is already on `prop` from PLUTO/enrich_property(), no
+    extra fetch. Sits above the score cards so a reader gets bearings on
+    the physical site/building before diving into scores and expanders."""
+    st.markdown("#### 🏠 Site & Building Summary")
+
+    bcol, zcol = st.columns(2)
+
+    with bcol:
+        st.markdown("**Building**")
+        st.markdown(f"- Current use: {_current_conditions(prop)}")
+        bldg_class = prop.get("bldg_class")
+        st.markdown(f"- Building class: {bldg_class or '—'}")
+        floors = prop.get("num_floors") or 0
+        st.markdown(f"- Floors: {int(floors) if floors else '—'}")
+        bldg_sf = prop.get("bldg_sf") or 0
+        st.markdown(f"- Building SF: {bldg_sf:,.0f}" if bldg_sf else "- Building SF: —")
+        units_total = prop.get("units_total") or 0
+        units_res = prop.get("units_res") or 0
+        if units_total:
+            st.markdown(f"- Units: {int(units_total)} total ({int(units_res)} residential)")
+        else:
+            st.markdown("- Units: —")
+
+    with zcol:
+        st.markdown("**Site & Zoning**")
+        lot_sf = prop.get("lot_sf") or 0
+        st.markdown(f"- Lot SF: {lot_sf:,.0f}" if lot_sf else "- Lot SF: —")
+        st.markdown(f"- Lot position: {_lot_position_label(prop.get('lot_type', ''))}")
+        st.markdown(f"- Zoning district: {prop.get('zoning_dist') or '—'}")
+        st.markdown(
+            f"- FAR: {prop.get('far_built', 0):.2f} built of "
+            f"{prop.get('far_max', 0):.2f} max ({prop.get('unused_far_pct', 0):.0f}% unused)"
+        )
+        st.markdown(f"- Owner: {prop.get('owner') or '—'} ({prop.get('owner_type') or 'Unknown type'})")
+
 def _render_property_detail(prop: dict) -> None:
     if st.button("← Back to Results"):
         st.session_state.pop(f"{_SF_PREFIX}selected_bbl", None)
@@ -745,6 +782,8 @@ def _render_property_detail(prop: dict) -> None:
     zola_url = bbl_to_zola_url(prop["bbl"])
     if zola_url:
         st.markdown(f"🔗 [View on ZOLA ↗]({zola_url})")
+
+    _render_site_building_summary(prop)
 
     ds = prop["deal_score"]
     opp = prop["opportunity"]
