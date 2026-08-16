@@ -4302,6 +4302,62 @@ with tab_property:
                     else:
                         _render_lot_zoning_cols(_zinfo)
 
+                    # ── Local Law 97 Carbon-Emissions Compliance (opt-in) ────
+                    # Additive — sits after the existing FAR/zoning summary
+                    # above, doesn't touch or reorder any of it. Gated behind
+                    # a button (same opt-in convention as LPC/ULURP/OATH/
+                    # Tax-Lien) so it never adds an automatic fetch to the
+                    # page's critical path.
+                    st.markdown("---")
+                    with st.expander("🌎 Local Law 97 Carbon-Emissions Compliance (estimate)", expanded=False):
+                        from modules.carbon_compliance import (
+                            compute_ll97_compliance, map_landuse_to_occupancy_group,
+                            LL97_EMISSIONS_LIMITS_KGCO2E_PER_SF,
+                        )
+                        from modules.ll84_fetcher import fetch_ll84_emissions
+                        st.caption(
+                            "Applies LL97's published per-occupancy-group emissions limits against the "
+                            "property's actual reported LL84 energy-disclosure filing, when one exists "
+                            "(buildings under ~25,000 SF are typically not covered by LL84 and won't have "
+                            "a filing — that's expected, not an error). Coefficients require confirmation "
+                            "against NYC DOB's official LL97 rules before relying on this for underwriting."
+                        )
+                        _ll97_occ_default = map_landuse_to_occupancy_group(_zinfo.get("land_use", "")) or "Multifamily Residential"
+                        _ll97_c1, _ll97_c2 = st.columns(2)
+                        _ll97_occ = _ll97_c1.selectbox(
+                            "Occupancy group", list(LL97_EMISSIONS_LIMITS_KGCO2E_PER_SF.keys()),
+                            index=list(LL97_EMISSIONS_LIMITS_KGCO2E_PER_SF.keys()).index(_ll97_occ_default),
+                            key=f"_ll97_occ_{_bbl_disp}",
+                        )
+                        _ll97_period = _ll97_c2.selectbox(
+                            "Compliance period", ["2024-2029", "2030-2034"], key=f"_ll97_period_{_bbl_disp}",
+                        )
+                        if st.button("Check LL84 filing & LL97 compliance", key=f"_ll97_btn_{_bbl_disp}"):
+                            with st.spinner("Checking LL84 energy disclosure…"):
+                                st.session_state[f"_ll84_{_bbl_disp}"] = fetch_ll84_emissions(_bbl_disp)
+                        _ll84 = st.session_state.get(f"_ll84_{_bbl_disp}", {})
+                        _ll97_bldg_sf = _sf(_zinfo.get("bldg_area_sqft"))
+                        _ll97_actual = _ll84.get("total_ghg_emissions_metric_tons") if _ll84.get("reported") else None
+                        _ll97_result = compute_ll97_compliance(
+                            _ll97_bldg_sf, _ll97_occ, annual_emissions_tons_co2e=_ll97_actual, period=_ll97_period,
+                        )
+                        if _ll97_result.get("error"):
+                            st.caption(f"⚠️ {_ll97_result['error']}")
+                        else:
+                            _ll97_m1, _ll97_m2, _ll97_m3 = st.columns(3)
+                            _ll97_m1.metric("Emissions Limit", f"{_ll97_result['emissions_limit_tons']:,.0f} tons CO2e/yr")
+                            _ll97_m2.metric(
+                                "Reported Emissions",
+                                f"{_ll97_actual:,.0f} tons CO2e/yr" if _ll97_actual is not None else "N/A",
+                            )
+                            _ll97_m3.metric(
+                                "Est. Annual Penalty",
+                                f"${_ll97_result['estimated_annual_penalty']:,.0f}" if _ll97_result.get("estimated_annual_penalty") else "N/A",
+                            )
+                            st.caption(f"Compliance status: {_ll97_result['compliance_status']}")
+                            if _ll84 and not _ll84.get("reported") and _ll84.get("verified"):
+                                st.caption("ℹ️ No LL84 filing found for this BBL — likely under the ~25,000 SF disclosure threshold, or not yet filed.")
+
                     # ── Zoning Envelope Rules ────────────────────────────────
                     if _zrules:
                         st.markdown("---")
