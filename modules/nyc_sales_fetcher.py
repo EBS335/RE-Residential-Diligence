@@ -22,14 +22,16 @@ _SALES_URL  = "https://data.cityofnewyork.us/resource/usep-8jbt.json"
 _DOB_URL    = "https://data.cityofnewyork.us/resource/ipu4-2q9a.json"
 _TIMEOUT    = 20
 
-_SALES_SELECT_BASE = (
+_SALES_SELECT_MINIMAL = (
     "address,sale_price,gross_sq_ft,sale_date,"
     "building_class_category,zip_code,borough,block,lot"
 )
+_SALES_SELECT_BASE = _SALES_SELECT_MINIMAL + ",residential_units,commercial_units,total_units"
 # Augmented $select attempting geo columns for a real distance sort. This
 # sandbox cannot verify the live usep-8jbt schema actually has these column
 # names — _query_sales()'s HTTPError fallback below makes that safe either
-# way: a wrong guess just degrades to the base fields, same as today.
+# way: a wrong guess just degrades to the base (then minimal) fields, same
+# as today.
 _SALES_SELECT_GEO = _SALES_SELECT_BASE + ",latitude,longitude"
 
 
@@ -106,6 +108,15 @@ def fetch_nyc_sales(
         has_geo = False
         try:
             rows = _query_sales(where_clause, _SALES_SELECT_BASE)
+        except requests.HTTPError:
+            # Unit-count columns likely don't exist either — degrade once
+            # more to the original minimal field set.
+            try:
+                rows = _query_sales(where_clause, _SALES_SELECT_MINIMAL)
+            except Exception as exc:
+                log.warning("fetch_nyc_sales failed: %s", exc)
+                record_source_status("NYC Rolling Sales", ok=False, detail=str(exc))
+                return [], f"error: {exc}"
         except Exception as exc:
             log.warning("fetch_nyc_sales failed: %s", exc)
             record_source_status("NYC Rolling Sales", ok=False, detail=str(exc))
@@ -134,6 +145,13 @@ def fetch_nyc_sales(
 
             price_psf = round(price / sqft, 2) if sqft and sqft > 0 else None
 
+            units_raw = r.get("total_units") or "0"
+            try:
+                total_units = int(float(str(units_raw).replace(",", "")))
+            except ValueError:
+                total_units = 0
+            price_per_unit = round(price / total_units, 2) if total_units and total_units > 0 else None
+
             bcc = str(r.get("building_class_category") or "")
             asset_type = "Residential Sale" if _is_residential(bcc) else "Commercial Sale"
 
@@ -157,6 +175,8 @@ def fetch_nyc_sales(
                 "rent":           None,
                 "sqft":           sqft,
                 "price_psf":      price_psf,
+                "total_units":    total_units or None,
+                "price_per_unit": price_per_unit,
                 "asset_type":     asset_type,
                 "unit_type":      asset_type,
                 "bedrooms":       0,

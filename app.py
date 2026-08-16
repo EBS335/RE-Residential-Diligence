@@ -42,6 +42,7 @@ from modules.articles_fetcher import fetch_nearby_articles
 from modules.ecb_fetcher import fetch_ecb_violations
 from modules.deal_scorer import compute_deal_score
 from modules.site_sourcing import compute_opportunity_score
+from modules.rent_stab_registry import check_rent_stabilized
 from modules.unit_mix import (
     get_avg_sf, optimize_unit_mix, compute_revenue,
     avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf, OPEX_RATIO,
@@ -1518,6 +1519,7 @@ with tab_property:
             _ub_lot_area     = 0.0
             _ub_unused_pct   = 0.0
             _ub_uplift_pct   = 0.0
+            _ub_max_sf       = 0
             _ds_dist_level   = 0
             _nearby_listings = []
 
@@ -2609,10 +2611,23 @@ with tab_property:
                 else:
                     _sp_prices = [l["price"] for l in _sales_listings if l.get("price")]
                     _sp_psf    = [l["price_psf"] for l in _sales_listings if l.get("price_psf")]
-                    _sp_m1, _sp_m2, _sp_m3 = st.columns(3)
+                    _sp_ppu    = [l["price_per_unit"] for l in _sales_listings if l.get("price_per_unit")]
+                    _sp_m1, _sp_m2, _sp_m3, _sp_m4, _sp_m5 = st.columns(5)
                     _sp_m1.metric("Sales Found",    len(_sales_listings))
                     _sp_m2.metric("Avg Sale Price", f"${int(sum(_sp_prices)/len(_sp_prices)):,}" if _sp_prices else "—")
                     _sp_m3.metric("Avg $/SF",       f"${sum(_sp_psf)/len(_sp_psf):.2f}" if _sp_psf else "—")
+                    _sp_m4.metric("Avg $/Unit",     f"${int(sum(_sp_ppu)/len(_sp_ppu)):,}" if _sp_ppu else "N/A",
+                                  help="Only sales with a total-units figure on NYC Rolling Sales are included.")
+                    # $/buildable SF: subject's own max-FAR buildable envelope
+                    # (computed in the Underbuilt? panel above) against the
+                    # area's avg sale price — not a per-comp buildable-SF
+                    # figure (that would need a zoning lookup per sold
+                    # parcel), but a genuine acquisition-basis-vs-buildable-
+                    # envelope cross-reference for the subject site itself.
+                    _sp_bsf = (sum(_sp_prices) / len(_sp_prices) / _ub_max_sf) if _sp_prices and _ub_max_sf > 0 else None
+                    _sp_m5.metric("Avg Price ÷ Subject Buildable SF", f"${_sp_bsf:,.0f}" if _sp_bsf else "N/A",
+                                  help="Area's avg sale price divided by the SUBJECT property's own max-FAR "
+                                       "buildable SF — not a per-comp buildable-SF figure.")
 
                     # Sales chart: avg price by asset type
                     _sp_by_type: dict = {}
@@ -2659,6 +2674,26 @@ with tab_property:
                         st.plotly_chart(_sp_psf_fig, use_container_width=True,
                                         config={"displayModeBar": False})
 
+                    # Price trend over time ($/SF vs. sale date, by asset type)
+                    _sp_trend_pts = [
+                        (_sl["date"], _sl["price_psf"], _sl.get("asset_type", "—"))
+                        for _sl in _sales_listings if _sl.get("date") and _sl.get("price_psf")
+                    ]
+                    if len(_sp_trend_pts) >= 2:
+                        _sp_trend_fig = go.Figure()
+                        for _at in sorted({p[2] for p in _sp_trend_pts}):
+                            _pts = sorted((p for p in _sp_trend_pts if p[2] == _at), key=lambda p: p[0])
+                            _sp_trend_fig.add_trace(go.Scatter(
+                                x=[p[0] for p in _pts], y=[p[1] for p in _pts],
+                                mode="markers", name=_at,
+                            ))
+                        _sp_trend_fig.update_layout(
+                            title="Sale $/SF Over Time", xaxis_title="Sale Date", yaxis_title="$/SF",
+                            height=300, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+                        )
+                        st.plotly_chart(_sp_trend_fig, use_container_width=True,
+                                        config={"displayModeBar": False})
+
                 # AI Summary
                 with st.expander("🤖 AI Market Summary", expanded=False):
                     _ai_sales_key = f"_ai_sales_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
@@ -2690,6 +2725,8 @@ with tab_property:
                             "Sale Price":  f"${_sl['price']:,.0f}" if _sl.get("price") else "—",
                             "Sqft":        f"{_sl['sqft']:,}" if _sl.get("sqft") else "—",
                             "$/SF":        f"${_sl['price_psf']:.2f}" if _sl.get("price_psf") else "—",
+                            "Units":       _sl.get("total_units") or "—",
+                            "$/Unit":      f"${_sl['price_per_unit']:,.0f}" if _sl.get("price_per_unit") else "—",
                             "Date":        _sl.get("date","—"),
                             "Source":      _sl.get("source","—"),
                             "Reliability": _sl.get("reliability","—"),
@@ -3625,6 +3662,19 @@ with tab_property:
                         "Rent Stabilization Estimate", ok=(not _rentstab.get("error")), detail=_rentstab.get("error") or ""
                     )
 
+                    # Ground-truth registry lookup (NYC Rent Guidelines Board
+                    # building list) — same modules.rent_stab_registry check
+                    # Site Finder already uses via enrich_property(), now also
+                    # wired into this primary diligence tab instead of only
+                    # the unverified PLUTO-only heuristic above.
+                    _rentstab_reg_key = f"_rentstab_registry_{_bbl_disp}"
+                    if _rentstab_reg_key not in st.session_state and _bbl_disp != "—":
+                        st.session_state[_rentstab_reg_key] = check_rent_stabilized(
+                            _zinfo.get("borough_code", ""), _zinfo.get("block"), _zinfo.get("lot"),
+                            _zinfo.get("address_pluto") or st.session_state.get("address_raw", ""),
+                        )
+                    _rentstab_registry = st.session_state.get(_rentstab_reg_key, {})
+
                     _transit_key = f"_transit_{lat:.5f}_{lon:.5f}"
                     if _transit_key not in st.session_state:
                         st.session_state[_transit_key] = fetch_transit_proximity(lat, lon)
@@ -3660,13 +3710,27 @@ with tab_property:
                                 st.caption("Estimated (unverified) eligibility: " +
                                            ", ".join(f"{p['program']} ({p['confidence']:.0%} conf.)" for p in _progs))
 
-                        if _rentstab.get("error"):
+                        if _rentstab_registry.get("status") == "confirmed":
+                            st.markdown(
+                                f"**Rent Stabilization** — ✅ Confirmed on NYC Rent Guidelines "
+                                f"Board building list "
+                                f"<span style='font-size:0.72rem;color:#6B7280'>"
+                                f"(ground truth, matched by {_rentstab_registry.get('match_type', 'record')})</span>",
+                                unsafe_allow_html=True,
+                            )
+                            for _note in _rentstab_registry.get("notes", []):
+                                st.caption(f"• {_note}")
+                        elif _rentstab.get("error"):
                             st.caption(f"Rent stabilization: {_rentstab['error']}")
                         else:
                             _rs_lbl = "⚠️ Likely Rent Stabilized" if _rentstab.get("likely_stabilized") else "Unlikely rent stabilized"
+                            _rs_registry_note = (
+                                " · not found on NYC Rent Guidelines Board building list (not proof of unstabilized)"
+                                if _rentstab_registry.get("status") == "not_found" else ""
+                            )
                             st.markdown(
                                 f"**Rent Stabilization** — {_rs_lbl} "
-                                f"<span style='font-size:0.72rem;color:#6B7280'>(estimated, {_rentstab.get('confidence', 0):.0%} conf. — not verified)</span>  \n"
+                                f"<span style='font-size:0.72rem;color:#6B7280'>(estimated, {_rentstab.get('confidence', 0):.0%} conf. — not verified{_rs_registry_note})</span>  \n"
                                 f"<a href='{_rentstab.get('dhcr_lookup_url', '')}' target='_blank' "
                                 f"style='font-size:0.75rem'>Confirm via DHCR building list →</a>",
                                 unsafe_allow_html=True,
