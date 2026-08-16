@@ -2128,8 +2128,9 @@ with tab_property:
                                     f"latitude > {lat - _und_lat_d:.6f} AND latitude < {lat + _und_lat_d:.6f} "
                                     f"AND longitude > {lon - _und_lon_d:.6f} AND longitude < {lon + _und_lon_d:.6f}"
                                 ),
-                                "$select": "bbl,address,lotarea,builtfar,residfar,commfar,bldgarea,"
-                                           "numfloors,latitude,longitude,bldgclass,assessland,landuse",
+                                "$select": "bbl,borocode,block,lot,address,lotarea,builtfar,residfar,commfar,bldgarea,"
+                                           "numfloors,latitude,longitude,bldgclass,assessland,landuse,"
+                                           "landmark,histdist",
                                 "$limit": "1500",
                             },
                             timeout=25,
@@ -2181,6 +2182,15 @@ with tab_property:
                         "unused_far_pct": _ur_pct, "assess_land": _ur_assess_land,
                         "is_vacant": _ur_is_vacant,
                     })
+                    _ur_landmark = bool(_ur.get("landmark"))
+                    _ur_histdist = bool(_ur.get("histdist"))
+                    _ur_rentstab = False
+                    try:
+                        _ur_rentstab = check_rent_stabilized(
+                            _ur.get("borocode", ""), _ur.get("block"), _ur.get("lot"), _ur.get("address", ""),
+                        ).get("status") == "confirmed"
+                    except Exception:
+                        pass
                     _und_lots.append({
                         "address":    _ur.get("address", "—"),
                         "lot_area":   _ur_la,
@@ -2198,6 +2208,9 @@ with tab_property:
                         "dist_mi":    round(_ur_dist, 3),
                         "opportunity_score": _ur_opp["score"],
                         "opportunity_tier":  _ur_opp["tier"],
+                        "is_landmark":  _ur_landmark,
+                        "is_historic":  _ur_histdist,
+                        "is_rentstab":  _ur_rentstab,
                     })
                 except Exception:
                     continue
@@ -2316,6 +2329,81 @@ with tab_property:
                 f"{_und_total} nearest lots within {radius_miles:.2f} mi analyzed · "
                 f"Underbuilt threshold: unused FAR > {underbuilt_threshold_pct}% of max FAR"
             )
+
+            # ── Opportunity / Heatmap / Status views (pydeck) ────────────────
+            # Additional views alongside the Underbuilt Lot Map above (not a
+            # replacement — that map's row-selection/re-center interaction is
+            # left untouched). Uses st.pydeck_chart (native Streamlit element,
+            # no iframe/custom-component), matching the Site Finder map's
+            # proven approach, rather than another folium variant.
+            if _und_lots:
+                st.markdown("**Additional Area Views**")
+                _und_view_mode = st.radio(
+                    "View", ["Opportunity Score", "Heatmap", "Status (Rent-Stab/Landmark/Historic)"],
+                    horizontal=True, key="_und_pydeck_view_mode",
+                )
+                try:
+                    import pydeck as _und_pdk
+                    from pydeck.data_utils import compute_view as _und_compute_view
+
+                    _und_fit = [[lon, lat]] + [[l["lon"], l["lat"]] for l in _und_lots]
+                    _und_layers = []
+
+                    if _und_view_mode == "Heatmap":
+                        _und_layers.append(_und_pdk.Layer(
+                            "HeatmapLayer",
+                            data=[{"lon": l["lon"], "lat": l["lat"], "weight": l["opportunity_score"]} for l in _und_lots],
+                            get_position="[lon, lat]", get_weight="weight", radius_pixels=45,
+                        ))
+                    elif _und_view_mode == "Status (Rent-Stab/Landmark/Historic)":
+                        def _und_status_color(l):
+                            if l["is_landmark"] or l["is_historic"]:
+                                return [122, 46, 46]  # red — landmark/historic
+                            if l["is_rentstab"]:
+                                return [139, 105, 20]  # amber — rent-stabilized
+                            return [156, 163, 175]  # gray — no flag
+                        _und_status_rows = [{
+                            "lon": l["lon"], "lat": l["lat"], "address": l["address"],
+                            "color": _und_status_color(l),
+                            "status": ("Landmark/Historic" if (l["is_landmark"] or l["is_historic"])
+                                       else ("Rent-Stabilized" if l["is_rentstab"] else "No flag")),
+                        } for l in _und_lots]
+                        _und_layers.append(_und_pdk.Layer(
+                            "ScatterplotLayer", data=_und_status_rows,
+                            get_position="[lon, lat]", get_fill_color="color", get_radius=8,
+                            pickable=True, radius_min_pixels=5,
+                        ))
+                        st.caption(
+                            "🔴 Landmark/Historic District · 🟠 Rent-Stabilized (confirmed) · ⚪ No flag — "
+                            f"{sum(1 for l in _und_lots if l['is_landmark'] or l['is_historic'])} landmark/historic, "
+                            f"{sum(1 for l in _und_lots if l['is_rentstab'])} confirmed rent-stabilized"
+                        )
+                    else:  # Opportunity Score
+                        def _und_opp_color(score):
+                            if score >= 75: return [31, 107, 58]
+                            if score >= 40: return [139, 105, 20]
+                            return [156, 163, 175]
+                        _und_opp_rows = [{
+                            "lon": l["lon"], "lat": l["lat"], "address": l["address"],
+                            "color": _und_opp_color(l["opportunity_score"]),
+                            "score": l["opportunity_score"], "tier": l["opportunity_tier"],
+                        } for l in _und_lots]
+                        _und_layers.append(_und_pdk.Layer(
+                            "ScatterplotLayer", data=_und_opp_rows,
+                            get_position="[lon, lat]", get_fill_color="color", get_radius=8,
+                            pickable=True, radius_min_pixels=5,
+                        ))
+
+                    st.pydeck_chart(
+                        _und_pdk.Deck(
+                            layers=_und_layers, initial_view_state=_und_compute_view(_und_fit),
+                            map_style="light",
+                            tooltip={"html": "<b>{address}</b><br/>{status}{score}"},
+                        ),
+                        width="stretch", height=380,
+                    )
+                except Exception as _und_pdk_exc:
+                    st.caption(f"⚠️ Additional area views unavailable: {_und_pdk_exc}")
 
             # ── Live Scraping Status (shown above Market Insights) ────────────
             st.markdown(_scrape_status_html, unsafe_allow_html=True)
@@ -5355,6 +5443,88 @@ with tab_property:
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 use_container_width=True,
                             )
+
+            # ── Combined Site Map (subject + comps + permits + assemblage) ──────
+            # No single map anywhere else in the app combines all four layers —
+            # each exists separately (subject-only map, assemblage-only map,
+            # comps-only map). Reuses the already-fetched data from the
+            # sections above (comps, nearby-developments pipeline, adjacent
+            # lots) via the same session_state-lookup pattern the Investment
+            # Risk Analysis section below already uses, since those sections
+            # may not have run for this exact BBL yet if the user hasn't
+            # scrolled through them. pydeck (st.pydeck_chart), matching the
+            # Site Finder map's proven native-element approach — not folium.
+            _section_header("🗺️", "Combined Site Map")
+            try:
+                import pydeck as _cm_pdk
+                from pydeck.data_utils import compute_view as _cm_compute_view
+
+                _cm_comps = st.session_state.get(_sales_key, {}).get("listings", [])
+                _cm_permits = st.session_state.get(_nd_key, ([], {}))[0]
+                _cm_assemblage = [
+                    l for l in st.session_state.get(f"_assem_{_ds_bbl}", [])
+                    if l.get("bbl") and str(l.get("bbl", "")).replace(" ", "") != str(_ds_bbl)
+                ]
+
+                _cm_layers = []
+                _cm_fit_points = [[lon, lat]]
+                _cm_layers.append(_cm_pdk.Layer(
+                    "ScatterplotLayer",
+                    data=[{"lon": lon, "lat": lat, "label": "Subject Property"}],
+                    get_position="[lon, lat]", get_fill_color=[26, 58, 107], get_radius=14,
+                    pickable=True, radius_min_pixels=8,
+                ))
+                _cm_comp_rows = [
+                    {"lon": c["lon"], "lat": c["lat"], "label": f"{c.get('address','—')} · ${c.get('price',0):,.0f}"}
+                    for c in _cm_comps if c.get("lat") and c.get("lon")
+                ]
+                if _cm_comp_rows:
+                    _cm_layers.append(_cm_pdk.Layer(
+                        "ScatterplotLayer", data=_cm_comp_rows,
+                        get_position="[lon, lat]", get_fill_color=[31, 107, 58], get_radius=9,
+                        pickable=True, radius_min_pixels=5,
+                    ))
+                    _cm_fit_points += [[r["lon"], r["lat"]] for r in _cm_comp_rows]
+                _cm_permit_rows = [
+                    {"lon": p["lon"], "lat": p["lat"], "label": f"{p.get('address','—')} · {p.get('status','—')}"}
+                    for p in _cm_permits if p.get("lat") and p.get("lon")
+                ]
+                if _cm_permit_rows:
+                    _cm_layers.append(_cm_pdk.Layer(
+                        "ScatterplotLayer", data=_cm_permit_rows,
+                        get_position="[lon, lat]", get_fill_color=[139, 105, 20], get_radius=9,
+                        pickable=True, radius_min_pixels=5,
+                    ))
+                    _cm_fit_points += [[r["lon"], r["lat"]] for r in _cm_permit_rows]
+                _cm_asm_rows = [
+                    {"lon": float(l["longitude"]), "lat": float(l["latitude"]), "label": l.get("address", "—")}
+                    for l in _cm_assemblage if l.get("latitude") and l.get("longitude")
+                ]
+                if _cm_asm_rows:
+                    _cm_layers.append(_cm_pdk.Layer(
+                        "ScatterplotLayer", data=_cm_asm_rows,
+                        get_position="[lon, lat]", get_fill_color=[122, 46, 46], get_radius=9,
+                        pickable=True, radius_min_pixels=5,
+                    ))
+                    _cm_fit_points += [[r["lon"], r["lat"]] for r in _cm_asm_rows]
+
+                st.pydeck_chart(
+                    _cm_pdk.Deck(
+                        layers=_cm_layers, initial_view_state=_cm_compute_view(_cm_fit_points),
+                        map_style="light", tooltip={"html": "<b>{label}</b>"},
+                    ),
+                    width="stretch", height=420,
+                )
+                st.caption(
+                    "🔵 Subject · 🟢 Comps "
+                    f"({len(_cm_comp_rows)}) · 🟤 Nearby Permits/Pipeline ({len(_cm_permit_rows)}) · "
+                    f"🔴 Assemblage Candidates ({len(_cm_asm_rows)})"
+                )
+                if not (_cm_comp_rows or _cm_permit_rows or _cm_asm_rows):
+                    st.caption("ℹ️ Scroll through the Property Sales, Nearby Developments, and Assemblage "
+                               "sections above to populate this map with their data.")
+            except Exception as _cm_exc:
+                st.caption(f"⚠️ Combined site map unavailable: {_cm_exc}")
 
             # ── Macro + Micro Risk Matrix ──────────────────────────────────────
             _section_header("⚠️", "Investment Risk Analysis")
