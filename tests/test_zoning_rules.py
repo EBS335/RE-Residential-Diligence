@@ -1,4 +1,4 @@
-from modules.zoning_rules import get_zoning_rules, get_zoning_citations, all_districts
+from modules.zoning_rules import get_zoning_rules, get_zoning_citations, all_districts, classify_street_type
 
 
 def test_exact_match():
@@ -58,3 +58,32 @@ def test_get_zoning_citations_required_keys():
 def test_get_zoning_citations_empty_district():
     assert get_zoning_citations("") == {}
     assert get_zoning_citations(None) == {}
+
+
+# ── Avenue vs. side-street classification ────────────────────────────────────
+
+def test_classify_street_type_avenue_keywords():
+    assert classify_street_type("350 5th Avenue") == "Avenue"
+    assert classify_street_type("1 Park Ave") == "Avenue"
+    assert classify_street_type("123 Broadway") == "Avenue"
+    assert classify_street_type("40-15 Northern Boulevard") == "Avenue"
+
+
+def test_classify_street_type_side_street_keywords():
+    assert classify_street_type("123 W 55th Street") == "Side Street"
+    assert classify_street_type("45 Union Place") == "Side Street"
+    assert classify_street_type("10 Bond St") == "Side Street"
+    assert classify_street_type("22 Riverside Drive") == "Side Street"
+
+
+def test_classify_street_type_avenue_checked_before_side_street():
+    # "1st Avenue" contains an ordinal-suffix token ("st") that also
+    # appears in the side-street keyword list — avenue keywords must be
+    # checked across the whole address before falling back to side-street.
+    assert classify_street_type("100 1st Avenue") == "Avenue"
+
+
+def test_classify_street_type_unknown_on_no_match_or_empty():
+    assert classify_street_type("") == "Unknown"
+    assert classify_street_type(None) == "Unknown"
+    assert classify_street_type("123 XYZ") == "Unknown"

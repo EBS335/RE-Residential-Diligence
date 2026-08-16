@@ -26,7 +26,7 @@ from modules.app_logging import init_logging, get_logger, record_source_status
 from modules.analyzer import compute_summary, compute_insights
 from modules.visualizer import build_map, build_bar_chart, build_range_chart, ESRI_SATELLITE_TILES, ESRI_SATELLITE_ATTR
 from modules.zola_fetcher import fetch_zoning_info
-from modules.zoning_rules import get_zoning_rules, get_zoning_citations, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info, estimate_entitlement_path
+from modules.zoning_rules import get_zoning_rules, get_zoning_citations, SPECIAL_DISTRICTS, COMMERCIAL_OVERLAYS, get_special_district_info, estimate_entitlement_path, classify_street_type
 from modules.cityrealty_fetcher import fetch_cityrealty_comps
 from modules.pip_fetcher import (
     fetch_property_history,
@@ -1610,6 +1610,30 @@ with tab_property:
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+                if _ub_max_far > 0:
+                    _ub_gauge = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=_ub_built_far,
+                        number={"suffix": f" / {_ub_max_far:.2f} FAR"},
+                        gauge={
+                            "axis": {"range": [0, _ub_max_far]},
+                            "bar": {"color": "#1A1D2E"},
+                            "steps": [
+                                {"range": [0, _ub_max_far * 0.5], "color": "#DCFCE7"},
+                                {"range": [_ub_max_far * 0.5, _ub_max_far * 0.8], "color": "#F5EBD3"},
+                                {"range": [_ub_max_far * 0.8, _ub_max_far], "color": "#F3E1DE"},
+                            ],
+                            "threshold": {
+                                "line": {"color": "#1F6B3A", "width": 3},
+                                "thickness": 0.85,
+                                "value": _ub_max_far * (1 - underbuilt_threshold_pct / 100.0),
+                            },
+                        },
+                    ))
+                    _ub_gauge.update_layout(height=140, margin=dict(l=20, r=20, t=10, b=10))
+                    st.plotly_chart(_ub_gauge, use_container_width=True)
+
                 if _ub_unused_pct > underbuilt_threshold_pct:
                     st.markdown(
                         f'<div class="opportunity-flag">🏗️ Underbuilt — '
@@ -1803,7 +1827,7 @@ with tab_property:
                                     f"AND longitude > {lon - _as_lon_d:.6f} AND longitude < {lon + _as_lon_d:.6f}"
                                 ),
                                 "$select": "bbl,lot,address,lotarea,lotfront,lotdepth,bldgclass,"
-                                           "numfloors,residfar,commfar,builtfar,latitude,longitude",
+                                           "numfloors,residfar,commfar,builtfar,latitude,longitude,ownername",
                                 "$limit": "50",
                             },
                             timeout=12,
@@ -1828,10 +1852,37 @@ with tab_property:
                     _comb_sf       = _comb_la    * _as_max_far
                     _ub_uplift_pct = ((_comb_sf - _indiv_sf) / _indiv_sf * 100) if _indiv_sf > 0 else 0.0
 
-                    _am1, _am2, _am3 = st.columns(3)
+                    # Same-owner detection — normalized string match against the
+                    # subject's own PLUTO owner-of-record. A same-owner adjacent
+                    # lot is a much stronger assemblage signal than mere physical
+                    # adjacency (no separate acquisition negotiation needed).
+                    def _norm_owner(name: str) -> str:
+                        return " ".join(str(name or "").upper().split())
+                    _subj_owner_norm = _norm_owner(_ds_zi.get("owner", ""))
+                    _same_owner_lots = [
+                        l for l in _adj_lots_as
+                        if _subj_owner_norm and _norm_owner(l.get("ownername")) == _subj_owner_norm
+                    ]
+
+                    _am1, _am2, _am3, _am4 = st.columns(4)
                     _am1.metric("Adj Lots",  len(_adj_lots_as))
                     _am2.metric("Comb Area", f"{int(_comb_la):,} SF")
                     _am3.metric("Uplift",    f"{_ub_uplift_pct:.0f}%")
+                    _am4.metric("Same-Owner Adj Lots", len(_same_owner_lots))
+
+                    if _same_owner_lots:
+                        st.markdown(
+                            f'<div class="opportunity-flag">👤 {len(_same_owner_lots)} adjacent lot'
+                            f'{"s" if len(_same_owner_lots) != 1 else ""} share the subject\'s owner of '
+                            f'record ({_ds_zi.get("owner", "—")}) — '
+                            f'{", ".join(l.get("address", "—") for l in _same_owner_lots)}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(
+                            "⚠️ Matched on normalized PLUTO owner-of-record string only — "
+                            "does not resolve shared beneficial ownership through separate LLCs "
+                            "(see ACRIS Parties for that)."
+                        )
 
                     if _ub_uplift_pct > 30:
                         st.markdown(
@@ -3922,11 +3973,15 @@ with tab_property:
                                 unsafe_allow_html=True,
                             )
                             st.markdown("**📍 Location**")
+                            _street_type = classify_street_type(
+                                zi.get("address_pluto") or st.session_state.get("address_raw", "")
+                            )
                             st.markdown(
                                 _zrow("Community Board", zi.get("community_board")) +
                                 _zrow("ZIP Code",        zi.get("zip_code")) +
                                 _zrow("NTA",             zi.get("nta")) +
-                                _zrow("PLUTO Address",   zi.get("address_pluto")),
+                                _zrow("PLUTO Address",   zi.get("address_pluto")) +
+                                _zrow("Street Type",     _street_type),
                                 unsafe_allow_html=True,
                             )
                         with _zc3:

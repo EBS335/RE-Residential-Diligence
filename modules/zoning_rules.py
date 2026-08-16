@@ -24,6 +24,8 @@ Each district entry contains:
 
 from __future__ import annotations
 
+import re
+
 # ── Data table ────────────────────────────────────────────────────────────────
 _RULES: dict[str, dict] = {
 
@@ -993,3 +995,45 @@ def estimate_entitlement_path(risk_level: str, description: str = "") -> dict:
         key = "as_of_right"
 
     return {**ENTITLEMENT_PATHS[key], "path_key": key}
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Avenue vs. side-street classification
+# ═════════════════════════════════════════════════════════════════════════
+
+# Street-type suffix keywords, not a per-street-name lookup table (NYC has
+# no single free/open dataset mapping every street to a functional-class
+# hierarchy) — a heuristic on the address's own street-type word, same
+# honesty-in-labeling convention as this repo's other *_estimator modules.
+_AVENUE_KEYWORDS = (
+    "avenue", "ave", "boulevard", "blvd", "parkway", "pkwy",
+    "broadway", "concourse", "expressway", "turnpike",
+)
+_SIDE_STREET_KEYWORDS = (
+    "street", "st", "place", "pl", "lane", "ln", "court", "ct",
+    "drive", "dr", "road", "rd", "terrace", "ter", "way", "alley",
+    "circle", "cir", "crescent",
+)
+
+
+def classify_street_type(address: str) -> str:
+    """
+    Heuristic avenue-vs-side-street classification from the street-type
+    word in a NYC address (e.g. "350 5th Avenue" -> "Avenue", "123 W 55th
+    Street" -> "Side Street"). Matches on generic street-type suffix
+    keywords, not a specific per-street-name reference table — NYC
+    Planning does not publish one for free. Never raises; returns
+    "Unknown" if no address or no recognizable street-type word is found.
+    """
+    if not address:
+        return "Unknown"
+    # Strip a leading house number/unit, then tokenize on non-letter chars
+    # (handles "5th", "55th-1", punctuation, etc.).
+    tokens = re.findall(r"[A-Za-z]+", address.lower())
+    for tok in tokens:
+        if tok in _AVENUE_KEYWORDS:
+            return "Avenue"
+    for tok in tokens:
+        if tok in _SIDE_STREET_KEYWORDS:
+            return "Side Street"
+    return "Unknown"

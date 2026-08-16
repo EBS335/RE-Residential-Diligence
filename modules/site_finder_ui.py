@@ -21,7 +21,7 @@ from pydeck.data_utils import compute_view
 from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE
 from modules.site_sourcing import enrich_property, flag_assemblage_candidates, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
 from modules.deal_scorer import compute_bulk_deal_scores
-from modules.zoning_rules import get_zoning_rules, get_zoning_citations
+from modules.zoning_rules import get_zoning_rules, get_zoning_citations, classify_street_type
 from modules.zola_fetcher import bbl_to_zola_url
 from modules.acris_fetcher import fetch_acris
 from modules.ownership_research import enrich_ownership_batch, DEFAULT_BATCH_SIZE
@@ -757,6 +757,7 @@ def _render_site_building_summary(prop: dict) -> None:
         lot_sf = prop.get("lot_sf") or 0
         st.markdown(f"- Lot SF: {lot_sf:,.0f}" if lot_sf else "- Lot SF: —")
         st.markdown(f"- Lot position: {_lot_position_label(prop.get('lot_type', ''))}")
+        st.markdown(f"- Street type: {classify_street_type(prop.get('address', ''))}")
         st.markdown(f"- Zoning district: {prop.get('zoning_dist') or '—'}")
         st.markdown(
             f"- FAR: {prop.get('far_built', 0):.2f} built of "
