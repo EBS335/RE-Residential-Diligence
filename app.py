@@ -43,6 +43,11 @@ from modules.ecb_fetcher import fetch_ecb_violations
 from modules.deal_scorer import compute_deal_score
 from modules.site_sourcing import compute_opportunity_score
 from modules.rent_stab_registry import check_rent_stabilized
+from modules.oath_fetcher import fetch_oath_hearings
+from modules.tax_lien_fetcher import fetch_tax_lien_status
+from modules.lpc_landmarks_fetcher import fetch_lpc_landmark_status
+from modules.ceqr_fetcher import fetch_ulurp_applications
+from modules.distress_scorer import compute_composite_distress_score, DEFAULT_WEIGHTS
 from modules.unit_mix import (
     get_avg_sf, optimize_unit_mix, compute_revenue,
     avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf, OPEX_RATIO,
@@ -1568,6 +1573,44 @@ with tab_property:
                     st.markdown(_p_html + "</table>", unsafe_allow_html=True)
                     st.caption("NYC PLUTO · NYC Planning GeoSearch")
 
+                    # LPC Individual Landmarks — authoritative corroboration of
+                    # PLUTO's own landmark/histdist fields, which the audit
+                    # found are not always complete/current.
+                    if _ds_bbl and len(str(_ds_bbl)) == 10:
+                        _lpc_key = f"_lpc_{_ds_bbl}"
+                        if _lpc_key not in st.session_state:
+                            st.session_state[_lpc_key] = fetch_lpc_landmark_status(_ds_bbl)
+                        _lpc = st.session_state.get(_lpc_key, {})
+                        if _lpc.get("is_individual_landmark"):
+                            st.markdown(
+                                f'<div class="opportunity-flag">🏛️ LPC-designated individual landmark'
+                                f'{" — " + _lpc["landmark_name"] if _lpc.get("landmark_name") else ""}'
+                                f'{" (designated " + _lpc["designation_date"] + ")" if _lpc.get("designation_date") else ""}'
+                                f'</div>', unsafe_allow_html=True,
+                            )
+                        elif _lpc.get("verified") and not _ds_zi.get("landmark"):
+                            st.caption("✅ Not on the LPC Individual Landmarks list (corroborates PLUTO)")
+                        elif not _lpc.get("verified"):
+                            st.caption("ℹ️ Could not confirm LPC individual-landmark status this time.")
+
+                    # ULURP applications in this parcel's community district —
+                    # a coarser (project-level, not per-BBL) but genuine signal
+                    # of nearby rezoning/entitlement activity.
+                    _cd = _ds_zi.get("community_board", "")
+                    if _cd and _ds_bbl:
+                        _ulurp_key = f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}"
+                        if _ulurp_key not in st.session_state:
+                            st.session_state[_ulurp_key] = fetch_ulurp_applications(
+                                _ds_zi.get("borough_code", ""), _cd,
+                            )
+                        _ulurp = st.session_state.get(_ulurp_key, {})
+                        if _ulurp.get("count"):
+                            with st.expander(f"📜 ULURP Applications in this Community District ({_ulurp['count']})", expanded=False):
+                                st.dataframe(pd.DataFrame(_ulurp["applications"]), use_container_width=True,
+                                             height=min(_ulurp["count"] * 35 + 40, 220))
+                        elif _ulurp.get("verified"):
+                            st.caption("No recent ULURP applications found in this community district.")
+
             # ─── CELL 2: Underbuilt? ─────────────────────────────────────────────
             with _ds_r1b:
                 st.markdown("**📈 Underbuilt? (Subject Property)**")
@@ -1705,25 +1748,91 @@ with tab_property:
                     1 for d in _acris_ds.get("documents", [])
                     if d.get("doc_type", "").upper() in ("UCC1", "LIEN", "LIEN2")
                 )
-                _ds_dist_level = _ecb_data.get("distress_level", 0)
-                if _lien_count >= 3:
-                    _ds_dist_level = min(2, _ds_dist_level + 1)
-
-                _dist_labels = ["Low", "Medium", "High"]
-                _dist_css    = ["distress-low", "distress-medium", "distress-high"]
-
                 _dm1, _dm2, _dm3, _dm4 = st.columns(4)
                 _dm1.metric("Class A",  _ecb_data.get("class_a", "—"))
                 _dm2.metric("Class B",  _ecb_data.get("class_b", "—"))
                 _dm3.metric("Class C",  _ecb_data.get("class_c", "—"))
                 _dm4.metric("Liens",    _lien_count)
 
-                st.markdown(
-                    f'<div style="margin:8px 0 12px">'
-                    f'<span class="{_dist_css[_ds_dist_level]}">'
-                    f'⚡ Distress: {_dist_labels[_ds_dist_level]}</span></div>',
-                    unsafe_allow_html=True,
-                )
+                # ── Composite 0-100 distress score ────────────────────────────
+                # Replaces the old HPD-only 3-tier signal as the Deal Score's
+                # distress input (below) — combines ACRIS foreclosures/liens,
+                # DOB open violations/complaints, real HPD open-violation
+                # count (already fetched above via _ecb_data — despite the
+                # module's name, modules.ecb_fetcher actually queries HPD),
+                # OATH/ECB hearings with an open balance, and Tax Lien Sale
+                # List status, with user-configurable component weights.
+                if _ds_bbl:
+                    _pip_dist_key = f"_pip_{_ds_bbl}"
+                    if _pip_dist_key not in st.session_state:
+                        with st.spinner("Checking DOB violations/complaints…"):
+                            st.session_state[_pip_dist_key] = fetch_property_history(
+                                _ds_bbl, borough_name=borough,
+                            )
+                    _pip_dist = st.session_state.get(_pip_dist_key, {})
+
+                    _oath_key = f"_oath_{_ds_bbl}"
+                    if _oath_key not in st.session_state:
+                        with st.spinner("Checking OATH/ECB hearings…"):
+                            st.session_state[_oath_key] = fetch_oath_hearings(
+                                _ds_zi.get("borough_code", ""), _ds_zi.get("block"), _ds_zi.get("lot"),
+                            )
+                    _oath_dist = st.session_state.get(_oath_key, {})
+
+                    _taxlien_key = f"_taxlien_{_ds_bbl}"
+                    if _taxlien_key not in st.session_state:
+                        with st.spinner("Checking Tax Lien Sale List…"):
+                            st.session_state[_taxlien_key] = fetch_tax_lien_status(
+                                _ds_zi.get("borough_code", ""), _ds_zi.get("block"), _ds_zi.get("lot"),
+                            )
+                    _taxlien_dist = st.session_state.get(_taxlien_key, {})
+
+                    with st.expander("⚙️ Distress score weights", expanded=False):
+                        _dw1, _dw2, _dw3, _dw4, _dw5 = st.columns(5)
+                        _dw_acris = _dw1.slider("ACRIS", 0, 100, int(DEFAULT_WEIGHTS["acris"] * 100), key=f"_dw_acris_{_ds_bbl}")
+                        _dw_dob   = _dw2.slider("DOB", 0, 100, int(DEFAULT_WEIGHTS["dob"] * 100), key=f"_dw_dob_{_ds_bbl}")
+                        _dw_hpd   = _dw3.slider("HPD", 0, 100, int(DEFAULT_WEIGHTS["hpd"] * 100), key=f"_dw_hpd_{_ds_bbl}")
+                        _dw_oath  = _dw4.slider("OATH", 0, 100, int(DEFAULT_WEIGHTS["oath"] * 100), key=f"_dw_oath_{_ds_bbl}")
+                        _dw_lien  = _dw5.slider("Tax Lien", 0, 100, int(DEFAULT_WEIGHTS["tax_lien"] * 100), key=f"_dw_lien_{_ds_bbl}")
+
+                    _composite_dist = compute_composite_distress_score(
+                        acris_summary=_acris_ds.get("summary", {}),
+                        dob_open_violations=_pip_dist.get("summary", {}).get("open_dob_viol", 0),
+                        dob_open_complaints=_pip_dist.get("summary", {}).get("open_complaints", 0),
+                        hpd_open_violations=_ecb_data.get("open_count", 0),
+                        oath_data=_oath_dist,
+                        tax_lien_data=_taxlien_dist,
+                        weights={"acris": _dw_acris, "dob": _dw_dob, "hpd": _dw_hpd, "oath": _dw_oath, "tax_lien": _dw_lien},
+                    )
+                    # Bucket the 0-100 composite into the 0/1/2 level Deal
+                    # Score's distress component already expects — keeps
+                    # compute_deal_score()'s signature (and Site Finder's
+                    # bulk pipeline, which calls it with its own lightweight
+                    # signal) completely unchanged.
+                    _ds_dist_level = 2 if _composite_dist["score"] >= 60 else (1 if _composite_dist["score"] >= 30 else 0)
+
+                    _dist_tier_css = {"Minimal": "distress-low", "Moderate": "distress-low",
+                                       "Elevated": "distress-medium", "Severe": "distress-high"}
+                    st.markdown(
+                        f'<div style="margin:8px 0 4px">'
+                        f'<span class="{_dist_tier_css.get(_composite_dist["tier"], "distress-low")}">'
+                        f'⚡ Composite Distress Score: {_composite_dist["score"]}/100 ({_composite_dist["tier"]})</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    for _comp, _cd in _composite_dist["breakdown"].items():
+                        st.caption(f"• {_comp.upper()}: {_cd['reasoning']}")
+                else:
+                    _ds_dist_level = _ecb_data.get("distress_level", 0)
+                    if _lien_count >= 3:
+                        _ds_dist_level = min(2, _ds_dist_level + 1)
+                    _dist_labels = ["Low", "Medium", "High"]
+                    _dist_css    = ["distress-low", "distress-medium", "distress-high"]
+                    st.markdown(
+                        f'<div style="margin:8px 0 12px">'
+                        f'<span class="{_dist_css[_ds_dist_level]}">'
+                        f'⚡ Distress: {_dist_labels[_ds_dist_level]}</span></div>',
+                        unsafe_allow_html=True,
+                    )
                 if _ecb_data.get("violations"):
                     _vrows = [
                         {
