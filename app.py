@@ -1515,7 +1515,13 @@ with tab_property:
             # Pre-fetch subject PLUTO data (same session key reused later in Zoning section)
             _ds_addr = st.session_state.get("address_raw", geo.get("formatted_address", ""))
             _ds_zk   = f"_zola_subject_{lat:.5f}_{lon:.5f}"
-            if _ds_zk not in st.session_state and _ds_addr:
+            # Only treat a fetch as "done" if it actually succeeded — a stored
+            # {"error": ...} result must not permanently block retries. Before
+            # this fix, a single transient NYC Planning/Socrata failure locked
+            # an address out of parcel data + the entire Zoning/Massing/
+            # Underwriting section below for the rest of the session.
+            _ds_zk_cached = st.session_state.get(_ds_zk)
+            if (_ds_zk_cached is None or "error" in _ds_zk_cached) and _ds_addr:
                 with st.spinner("Fetching parcel data from NYC Planning…"):
                     st.session_state[_ds_zk] = fetch_zoning_info(_ds_addr, lat=lat, lon=lon)
             _ds_zi  = st.session_state.get(_ds_zk) or {}
@@ -1545,6 +1551,11 @@ with tab_property:
                 st.markdown("**📋 Parcel Data**")
                 if not _ds_zi or "error" in _ds_zi:
                     st.info("Parcel data unavailable — zoning lookup may have failed.")
+                    if _ds_zi.get("error"):
+                        st.caption(f"Detail: {_ds_zi['error']}")
+                    if st.button("🔄 Retry zoning lookup", key="_ds_zi_retry_btn"):
+                        st.session_state.pop(_ds_zk, None)
+                        st.rerun()
                 else:
                     _la_v  = int(_sf(_ds_zi.get("lot_area_sqft")))
                     _gfa_v = _ds_zi.get("bldg_area_sqft", "—")
@@ -1575,14 +1586,23 @@ with tab_property:
                     st.markdown(_p_html + "</table>", unsafe_allow_html=True)
                     st.caption("NYC PLUTO · NYC Planning GeoSearch")
 
-                    # LPC Individual Landmarks — authoritative corroboration of
-                    # PLUTO's own landmark/histdist fields, which the audit
-                    # found are not always complete/current.
+                    # LPC Individual Landmarks + ULURP applications — both are
+                    # additional live NYC Open Data checks, opt-in (matches the
+                    # existing "Fetch ACRIS ownership & distress" button
+                    # pattern below) rather than automatic on every page load,
+                    # so a slow/rate-limited response here never competes with
+                    # or delays the core parcel-data/zoning-lookup fetch above.
+                    _cd = _ds_zi.get("community_board", "")
                     if _ds_bbl and len(str(_ds_bbl)) == 10:
-                        _lpc_key = f"_lpc_{_ds_bbl}"
-                        if _lpc_key not in st.session_state:
-                            st.session_state[_lpc_key] = fetch_lpc_landmark_status(_ds_bbl)
-                        _lpc = st.session_state.get(_lpc_key, {})
+                        if st.button("🏛️ Check landmark & entitlement signals", key=f"_lpc_ulurp_btn_{_ds_bbl}"):
+                            with st.spinner("Checking LPC landmarks + ULURP applications…"):
+                                st.session_state[f"_lpc_{_ds_bbl}"] = fetch_lpc_landmark_status(_ds_bbl)
+                                if _cd:
+                                    st.session_state[f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}"] = (
+                                        fetch_ulurp_applications(_ds_zi.get("borough_code", ""), _cd)
+                                    )
+
+                        _lpc = st.session_state.get(f"_lpc_{_ds_bbl}", {})
                         if _lpc.get("is_individual_landmark"):
                             st.markdown(
                                 f'<div class="opportunity-flag">🏛️ LPC-designated individual landmark'
@@ -1592,20 +1612,10 @@ with tab_property:
                             )
                         elif _lpc.get("verified") and not _ds_zi.get("landmark"):
                             st.caption("✅ Not on the LPC Individual Landmarks list (corroborates PLUTO)")
-                        elif not _lpc.get("verified"):
+                        elif _lpc and not _lpc.get("verified"):
                             st.caption("ℹ️ Could not confirm LPC individual-landmark status this time.")
 
-                    # ULURP applications in this parcel's community district —
-                    # a coarser (project-level, not per-BBL) but genuine signal
-                    # of nearby rezoning/entitlement activity.
-                    _cd = _ds_zi.get("community_board", "")
-                    if _cd and _ds_bbl:
-                        _ulurp_key = f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}"
-                        if _ulurp_key not in st.session_state:
-                            st.session_state[_ulurp_key] = fetch_ulurp_applications(
-                                _ds_zi.get("borough_code", ""), _cd,
-                            )
-                        _ulurp = st.session_state.get(_ulurp_key, {})
+                        _ulurp = st.session_state.get(f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}", {})
                         if _ulurp.get("count"):
                             with st.expander(f"📜 ULURP Applications in this Community District ({_ulurp['count']})", expanded=False):
                                 st.dataframe(pd.DataFrame(_ulurp["applications"]), use_container_width=True,
@@ -1765,37 +1775,37 @@ with tab_property:
                 # OATH/ECB hearings with an open balance, and Tax Lien Sale
                 # List status, with user-configurable component weights.
                 if _ds_bbl:
-                    _pip_dist_key = f"_pip_{_ds_bbl}"
-                    if _pip_dist_key not in st.session_state:
-                        with st.spinner("Checking DOB violations/complaints…"):
-                            st.session_state[_pip_dist_key] = fetch_property_history(
-                                _ds_bbl, borough_name=borough,
-                            )
-                    _pip_dist = st.session_state.get(_pip_dist_key, {})
+                    # DOB/HPD history is read from cache only here, never
+                    # fetched — the "🏢 Property History" section further
+                    # down the page (same _pip_{bbl} cache key) is the one
+                    # place that fetches it. Avoids duplicating that section's
+                    # 5-sub-request fetch earlier in the page's critical path;
+                    # the DOB component below just shows a conservative 0/
+                    # "not yet checked" until the user scrolls to that section.
+                    _pip_dist = st.session_state.get(f"_pip_{_ds_bbl}", {})
 
-                    _oath_key = f"_oath_{_ds_bbl}"
-                    if _oath_key not in st.session_state:
-                        with st.spinner("Checking OATH/ECB hearings…"):
-                            st.session_state[_oath_key] = fetch_oath_hearings(
-                                _ds_zi.get("borough_code", ""), _ds_zi.get("block"), _ds_zi.get("lot"),
-                            )
-                    _oath_dist = st.session_state.get(_oath_key, {})
-
-                    _taxlien_key = f"_taxlien_{_ds_bbl}"
-                    if _taxlien_key not in st.session_state:
-                        with st.spinner("Checking Tax Lien Sale List…"):
-                            st.session_state[_taxlien_key] = fetch_tax_lien_status(
-                                _ds_zi.get("borough_code", ""), _ds_zi.get("block"), _ds_zi.get("lot"),
-                            )
-                    _taxlien_dist = st.session_state.get(_taxlien_key, {})
-
-                    with st.expander("⚙️ Distress score weights", expanded=False):
+                    with st.expander("⚙️ Distress score weights & additional signals", expanded=False):
+                        st.caption(
+                            "OATH/ECB hearings and Tax Lien Sale List are additional live NYC Open "
+                            "Data checks, opt-in so they never delay the parcel-data/zoning lookup above."
+                        )
+                        if st.button("Check OATH/Tax Lien signals", key=f"_oath_taxlien_btn_{_ds_bbl}"):
+                            with st.spinner("Checking OATH/ECB hearings + Tax Lien Sale List…"):
+                                st.session_state[f"_oath_{_ds_bbl}"] = fetch_oath_hearings(
+                                    _ds_zi.get("borough_code", ""), _ds_zi.get("block"), _ds_zi.get("lot"),
+                                )
+                                st.session_state[f"_taxlien_{_ds_bbl}"] = fetch_tax_lien_status(
+                                    _ds_zi.get("borough_code", ""), _ds_zi.get("block"), _ds_zi.get("lot"),
+                                )
                         _dw1, _dw2, _dw3, _dw4, _dw5 = st.columns(5)
                         _dw_acris = _dw1.slider("ACRIS", 0, 100, int(DEFAULT_WEIGHTS["acris"] * 100), key=f"_dw_acris_{_ds_bbl}")
                         _dw_dob   = _dw2.slider("DOB", 0, 100, int(DEFAULT_WEIGHTS["dob"] * 100), key=f"_dw_dob_{_ds_bbl}")
                         _dw_hpd   = _dw3.slider("HPD", 0, 100, int(DEFAULT_WEIGHTS["hpd"] * 100), key=f"_dw_hpd_{_ds_bbl}")
                         _dw_oath  = _dw4.slider("OATH", 0, 100, int(DEFAULT_WEIGHTS["oath"] * 100), key=f"_dw_oath_{_ds_bbl}")
                         _dw_lien  = _dw5.slider("Tax Lien", 0, 100, int(DEFAULT_WEIGHTS["tax_lien"] * 100), key=f"_dw_lien_{_ds_bbl}")
+
+                    _oath_dist = st.session_state.get(f"_oath_{_ds_bbl}", {})
+                    _taxlien_dist = st.session_state.get(f"_taxlien_{_ds_bbl}", {})
 
                     _composite_dist = compute_composite_distress_score(
                         acris_summary=_acris_ds.get("summary", {}),
@@ -3345,7 +3355,12 @@ with tab_property:
             _subject_addr   = st.session_state.get("address_raw", geo.get("formatted_address", ""))
             _zola_subj_key  = f"_zola_subject_{lat:.5f}_{lon:.5f}"
 
-            if _zola_subj_key not in st.session_state and _subject_addr:
+            # Same key as CELL 1's pre-fetch above — only treat it as "done"
+            # if it actually succeeded, so a transient failure doesn't
+            # permanently block this section (Zoning Summary, massing/floor
+            # plates, Underwriting, Export, Risk Analysis) for the session.
+            _zola_subj_cached = st.session_state.get(_zola_subj_key)
+            if (_zola_subj_cached is None or "error" in _zola_subj_cached) and _subject_addr:
                 with st.spinner("Fetching zoning data from NYC Planning…"):
                     st.session_state[_zola_subj_key] = fetch_zoning_info(
                         _subject_addr, lat=lat, lon=lon
@@ -3391,6 +3406,9 @@ with tab_property:
             if _zinfo:
                 if "error" in _zinfo:
                     st.warning(f"Zoning lookup: {_zinfo['error']}")
+                    if st.button("🔄 Retry zoning lookup", key="_zinfo_retry_btn"):
+                        st.session_state.pop(_ov_active if _ov_active else _zola_subj_key, None)
+                        st.rerun()
                 else:
                     # ── Header: BBL + ZOLA link ──────────────────────────────
                     _bbl_disp = _zinfo.get("bbl", "—")
