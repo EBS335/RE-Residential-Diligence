@@ -1156,6 +1156,35 @@ tab_sitefinder, tab_property, tab_portfolio = st.tabs(
 )
 
 with tab_property:
+    # ── Address autocomplete (additive — lives OUTSIDE the form below, since
+    # a form's widgets only rerun on submit, but a live-typeahead suggestion
+    # list needs a rerun on every keystroke). Purely assistive: it only ever
+    # pre-fills the existing text field below; the existing type-and-submit
+    # flow, and the Google→Nominatim→Photon geocode cascade it triggers, are
+    # completely unchanged either way — this doesn't call fetch_zoning_info()
+    # or set st.session_state["geo"] itself, so there's no new path around
+    # the fetch/cache guard fixed earlier this session.
+    _ac_query = st.text_input(
+        "🔎 Address lookup (optional — start typing for suggestions)",
+        key="_addr_autocomplete_query",
+        placeholder="Start typing an NYC address…",
+    )
+    if _ac_query and len(_ac_query.strip()) >= 3:
+        _ac_cache_key = f"_ac_suggest_{_ac_query.strip().lower()}"
+        if _ac_cache_key not in st.session_state:
+            from modules.zola_fetcher import geosearch_autocomplete
+            st.session_state[_ac_cache_key] = geosearch_autocomplete(_ac_query.strip())
+        _ac_suggestions = st.session_state.get(_ac_cache_key, [])
+        if _ac_suggestions:
+            _ac_cols = st.columns(min(3, len(_ac_suggestions)))
+            for _ac_i, _ac_s in enumerate(_ac_suggestions):
+                with _ac_cols[_ac_i % len(_ac_cols)]:
+                    if st.button(_ac_s["label"][:45], key=f"_ac_btn_{_ac_cache_key}_{_ac_i}", use_container_width=True):
+                        st.session_state["address_input_field"] = _ac_s["label"]
+                        st.rerun()
+        # If the call failed or found nothing, the suggestion row just
+        # doesn't appear — the type-and-submit flow below is unaffected.
+
     # ═════════════════════════════════════════════════════════════════════════════
     # INPUT FORM
     # ═════════════════════════════════════════════════════════════════════════════
@@ -1169,6 +1198,7 @@ with tab_property:
             label_visibility="collapsed",
             placeholder="e.g.  250 W 55th St, New York, NY  ·  123 Atlantic Ave, Brooklyn, NY 11201",
             help="Enter any valid NYC street address including borough or ZIP code.",
+            key="address_input_field",
         )
 
         st.markdown("<br/>", unsafe_allow_html=True)
@@ -3382,6 +3412,19 @@ with tab_property:
                     )
                 with _ov_col2:
                     _ov_btn = st.button("Look Up", key="zola_lookup_btn")
+                if _ov_addr and len(_ov_addr.strip()) >= 3:
+                    _ov_ac_key = f"_ac_suggest_{_ov_addr.strip().lower()}"
+                    if _ov_ac_key not in st.session_state:
+                        from modules.zola_fetcher import geosearch_autocomplete
+                        st.session_state[_ov_ac_key] = geosearch_autocomplete(_ov_addr.strip())
+                    _ov_suggestions = st.session_state.get(_ov_ac_key, [])
+                    if _ov_suggestions:
+                        _ov_ac_cols = st.columns(min(3, len(_ov_suggestions)))
+                        for _ov_ac_i, _ov_ac_s in enumerate(_ov_suggestions):
+                            with _ov_ac_cols[_ov_ac_i % len(_ov_ac_cols)]:
+                                if st.button(_ov_ac_s["label"][:40], key=f"_ov_ac_btn_{_ov_ac_key}_{_ov_ac_i}", use_container_width=True):
+                                    st.session_state["zola_override_input"] = _ov_ac_s["label"]
+                                    st.rerun()
                 if _ov_btn and _ov_addr.strip():
                     _ov_cache = f"_zola_ov_{_ov_addr.strip().lower()}"
                     if _ov_cache not in st.session_state:

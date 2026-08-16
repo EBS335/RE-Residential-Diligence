@@ -144,6 +144,59 @@ def geosearch_bbl(address: str, lat: float = None, lon: float = None) -> dict | 
     }
 
 
+_GEOSEARCH_AUTOCOMPLETE_URL = "https://geosearch.planninglabs.nyc/v2/autocomplete"
+
+
+def geosearch_autocomplete(text: str, lat: float = None, lon: float = None, size: int = 5) -> list[dict]:
+    """
+    Multi-suggestion address typeahead — sibling to geosearch_bbl() above,
+    which stays completely unchanged (still size=1/single-best-match; this
+    is a new, separate function, not a modification of it). Hits NYC
+    Planning Labs GeoSearch's /v2/autocomplete endpoint (same service,
+    same request/response shape as /v2/search, just multi-result) rather
+    than /v2/search.
+
+    NOTE: this sandbox's egress to geosearch.planninglabs.nyc is blocked,
+    so the exact live /v2/autocomplete param/response shape could not be
+    verified against a real request — confirm before relying on this in
+    production. Same try/except -> [] degrade-gracefully pattern already
+    used by modules.cityrealty_fetcher._autocomplete().
+
+    Returns a list of up to `size` dicts: [{"label", "bbl", "lat", "lon"}],
+    best-match first. Never raises; returns [] on any failure or when
+    `text` is too short to search meaningfully.
+    """
+    if not text or len(text.strip()) < 3:
+        return []
+    params: dict = {"text": text.strip(), "size": size}
+    if lat is not None and lon is not None:
+        params["focus.point.lat"] = round(lat, 6)
+        params["focus.point.lon"] = round(lon, 6)
+    try:
+        r = requests.get(_GEOSEARCH_AUTOCOMPLETE_URL, params=params, timeout=8)
+        r.raise_for_status()
+        features = r.json().get("features", [])
+    except Exception as exc:
+        log.warning("geosearch_autocomplete failed for %r: %s", text, exc)
+        return []
+
+    suggestions = []
+    for feat in features[:size]:
+        props = feat.get("properties", {})
+        bbl = props.get("pad_bbl") or props.get("addendum", {}).get("pad", {}).get("bbl")
+        coords = feat.get("geometry", {}).get("coordinates", [None, None])
+        label = props.get("label", "")
+        if not label:
+            continue
+        suggestions.append({
+            "label": label,
+            "bbl": str(bbl).replace(" ", "") if bbl else None,
+            "lat": coords[1],
+            "lon": coords[0],
+        })
+    return suggestions
+
+
 def fetch_pluto(bbl: str) -> dict | None:
     """
     Fetch the PLUTO row for a BBL from NYC Open Data.
