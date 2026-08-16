@@ -104,3 +104,70 @@ def test_saved_search_crud_round_trip(conn):
 
 def test_get_saved_search_missing_returns_none(conn):
     assert pdb.get_saved_search(9999, conn=conn) is None
+
+
+# ── Diligence Checklist/Tracker ──────────────────────────────────────────────
+
+def test_add_and_list_diligence_items(conn):
+    pdb.add_diligence_item("3001", "Title", "Order title report", conn=conn)
+    pdb.add_diligence_item("3001", "Zoning", "Confirm zoning district", conn=conn)
+    items = pdb.list_diligence_items("3001", conn=conn)
+    assert len(items) == 2
+    assert items[0]["is_complete"] == 0
+    assert items[0]["notes"] == ""
+
+
+def test_diligence_items_scoped_by_bbl(conn):
+    pdb.add_diligence_item("3001", "Title", "Order title report", conn=conn)
+    pdb.add_diligence_item("3002", "Title", "Order title report", conn=conn)
+    assert len(pdb.list_diligence_items("3001", conn=conn)) == 1
+    assert len(pdb.list_diligence_items("3002", conn=conn)) == 1
+
+
+def test_update_diligence_item_completion_and_notes(conn):
+    item = pdb.add_diligence_item("3001", "Title", "Order title report", conn=conn)
+    assert pdb.update_diligence_item(item["id"], is_complete=True, notes="Ordered 1/1", conn=conn) is True
+    updated = pdb.list_diligence_items("3001", conn=conn)[0]
+    assert updated["is_complete"] == 1
+    assert updated["notes"] == "Ordered 1/1"
+
+
+def test_update_diligence_item_no_fields_returns_false(conn):
+    item = pdb.add_diligence_item("3001", "Title", "Order title report", conn=conn)
+    assert pdb.update_diligence_item(item["id"], conn=conn) is False
+
+
+def test_delete_diligence_item(conn):
+    item = pdb.add_diligence_item("3001", "Title", "Order title report", conn=conn)
+    assert pdb.delete_diligence_item(item["id"], conn=conn) is True
+    assert pdb.list_diligence_items("3001", conn=conn) == []
+
+
+def test_diligence_progress_computed_correctly(conn):
+    i1 = pdb.add_diligence_item("3001", "Title", "A", conn=conn)
+    i2 = pdb.add_diligence_item("3001", "Title", "B", conn=conn)
+    pdb.add_diligence_item("3001", "Title", "C", conn=conn)
+    pdb.update_diligence_item(i1["id"], is_complete=True, conn=conn)
+    pdb.update_diligence_item(i2["id"], is_complete=True, conn=conn)
+    progress = pdb.diligence_progress("3001", conn=conn)
+    assert progress == {"total": 3, "complete": 2, "pct": pytest.approx(66.666, rel=1e-3)}
+
+
+def test_diligence_progress_empty_bbl_zero_not_divide_by_zero(conn):
+    progress = pdb.diligence_progress("nonexistent", conn=conn)
+    assert progress == {"total": 0, "complete": 0, "pct": 0.0}
+
+
+def test_seed_default_checklist_populates_once(conn):
+    items = pdb.seed_default_checklist("3001", conn=conn)
+    assert len(items) == len(pdb.DEFAULT_CHECKLIST)
+    # Calling again must NOT duplicate rows.
+    items2 = pdb.seed_default_checklist("3001", conn=conn)
+    assert len(items2) == len(pdb.DEFAULT_CHECKLIST)
+    assert len(pdb.list_diligence_items("3001", conn=conn)) == len(pdb.DEFAULT_CHECKLIST)
+
+
+def test_seed_default_checklist_categories_match_source_list(conn):
+    items = pdb.seed_default_checklist("3001", conn=conn)
+    categories = {i["category"] for i in items}
+    assert categories == {c for c, _ in pdb.DEFAULT_CHECKLIST}

@@ -7,9 +7,13 @@ what lets a shortlisted property or a saved Site Finder search survive
 across sessions/reruns.
 
 Storage: a single SQLite file at `data/portfolio.db` (repo-relative,
-created lazily on first import). Two tables:
+created lazily on first import). Three tables:
   portfolio        — one row per saved property, keyed by BBL (upsert)
   saved_searches   — Site Finder Investment Criteria snapshots, re-run manually
+  diligence_items  — categorized per-property diligence checklist/tracker
+                      (Title, Zoning, Phase I ESA, Structural, Financing,
+                      etc.), replacing the single free-text `status`
+                      pipeline-stage field as the only progress signal
 
 No API keys, no network calls. Every public function accepts an optional
 `conn` (an already-open `sqlite3.Connection`) so tests can pass an
@@ -51,7 +55,38 @@ CREATE TABLE IF NOT EXISTS saved_searches (
     created_at     TEXT NOT NULL,
     last_run_at    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS diligence_items (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    bbl            TEXT NOT NULL,
+    category       TEXT NOT NULL,
+    item           TEXT NOT NULL,
+    is_complete    INTEGER NOT NULL DEFAULT 0,
+    notes          TEXT DEFAULT '',
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_diligence_items_bbl ON diligence_items(bbl);
 """
+
+# Starter checklist seeded for a BBL the first time its tracker is opened —
+# a reasonable default set spanning the categories a real diligence process
+# covers; users can add/remove items freely afterward (this is a template,
+# not a fixed schema).
+DEFAULT_CHECKLIST: list[tuple[str, str]] = [
+    ("Title", "Order title report"),
+    ("Title", "Review ACRIS ownership/lien chain"),
+    ("Zoning", "Confirm zoning district and bulk regs with NYC Planning"),
+    ("Zoning", "Confirm landmark/historic-district status with LPC"),
+    ("Environmental", "Order Phase I Environmental Site Assessment"),
+    ("Environmental", "Confirm FEMA flood zone status"),
+    ("Structural", "Structural/MEP survey"),
+    ("Structural", "Confirm no open DOB/HPD violations blocking permits"),
+    ("Financing", "Obtain lender term sheet"),
+    ("Financing", "Confirm construction/permanent loan sizing assumptions"),
+    ("Legal", "Confirm rent-stabilization status via DHCR"),
+    ("Legal", "Review any existing leases/tenancies"),
+]
 
 
 def _now() -> str:
@@ -280,6 +315,105 @@ def touch_search_last_run(search_id: int, conn: sqlite3.Connection | None = None
     try:
         c.execute("UPDATE saved_searches SET last_run_at = ? WHERE id = ?", (_now(), search_id))
         c.commit()
+    finally:
+        if should_close:
+            c.close()
+
+
+# ── Diligence Checklist/Tracker CRUD ────────────────────────────────────
+
+def add_diligence_item(bbl: str, category: str, item: str,
+                        conn: sqlite3.Connection | None = None) -> dict:
+    c, should_close = _with_conn(conn)
+    try:
+        now = _now()
+        cur = c.execute(
+            """
+            INSERT INTO diligence_items (bbl, category, item, is_complete, notes, created_at, updated_at)
+            VALUES (?, ?, ?, 0, '', ?, ?)
+            """,
+            (str(bbl), category, item, now, now),
+        )
+        c.commit()
+        row = c.execute("SELECT * FROM diligence_items WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return dict(row)
+    finally:
+        if should_close:
+            c.close()
+
+
+def list_diligence_items(bbl: str, conn: sqlite3.Connection | None = None) -> list[dict]:
+    c, should_close = _with_conn(conn)
+    try:
+        rows = c.execute(
+            "SELECT * FROM diligence_items WHERE bbl = ? ORDER BY category, id", (str(bbl),)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if should_close:
+            c.close()
+
+
+def update_diligence_item(item_id: int, is_complete: bool | None = None, notes: str | None = None,
+                           conn: sqlite3.Connection | None = None) -> bool:
+    """Partial update — only fields that are not None change. Returns True
+    if a row was found and updated."""
+    if is_complete is None and notes is None:
+        return False
+    c, should_close = _with_conn(conn)
+    try:
+        sets, params = [], []
+        if is_complete is not None:
+            sets.append("is_complete = ?")
+            params.append(1 if is_complete else 0)
+        if notes is not None:
+            sets.append("notes = ?")
+            params.append(notes)
+        sets.append("updated_at = ?")
+        params.append(_now())
+        params.append(item_id)
+        cur = c.execute(f"UPDATE diligence_items SET {', '.join(sets)} WHERE id = ?", params)
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if should_close:
+            c.close()
+
+
+def delete_diligence_item(item_id: int, conn: sqlite3.Connection | None = None) -> bool:
+    c, should_close = _with_conn(conn)
+    try:
+        cur = c.execute("DELETE FROM diligence_items WHERE id = ?", (item_id,))
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if should_close:
+            c.close()
+
+
+def diligence_progress(bbl: str, conn: sqlite3.Connection | None = None) -> dict:
+    """Returns {"total": int, "complete": int, "pct": float (0-100)}."""
+    items = list_diligence_items(bbl, conn=conn)
+    total = len(items)
+    complete = sum(1 for i in items if i["is_complete"])
+    pct = (complete / total * 100.0) if total > 0 else 0.0
+    return {"total": total, "complete": complete, "pct": pct}
+
+
+def seed_default_checklist(bbl: str, conn: sqlite3.Connection | None = None) -> list[dict]:
+    """Insert DEFAULT_CHECKLIST's items for `bbl` — but ONLY if this BBL
+    has no diligence items at all yet (idempotent; safe to call every time
+    the tracker UI renders without duplicating rows on every rerun)."""
+    c, should_close = _with_conn(conn)
+    try:
+        existing = c.execute(
+            "SELECT COUNT(*) AS n FROM diligence_items WHERE bbl = ?", (str(bbl),)
+        ).fetchone()
+        if existing["n"] > 0:
+            return list_diligence_items(bbl, conn=c)
+        for category, item in DEFAULT_CHECKLIST:
+            add_diligence_item(bbl, category, item, conn=c)
+        return list_diligence_items(bbl, conn=c)
     finally:
         if should_close:
             c.close()

@@ -27,6 +27,12 @@ from modules.portfolio_db import (
     list_saved_searches,
     delete_saved_search,
     touch_search_last_run,
+    seed_default_checklist,
+    list_diligence_items,
+    update_diligence_item,
+    add_diligence_item,
+    delete_diligence_item,
+    diligence_progress,
 )
 
 _MAX_COMPARE = 4
@@ -203,6 +209,74 @@ def _render_saved_searches() -> None:
         st.divider()
 
 
+def _render_diligence_tracker(rows: list[dict]) -> None:
+    st.markdown("### ✅ Diligence Checklist / Tracker")
+    st.caption(
+        "A categorized diligence checklist per saved property (Title, Zoning, Environmental, "
+        "Structural, Financing, Legal) — distinct from the single Status pipeline-stage field "
+        "in the Pipeline table above. Opening a property's tracker for the first time seeds a "
+        "starter checklist you can freely add to or remove from."
+    )
+    if not rows:
+        st.info("Save a property to the Portfolio first to start a diligence checklist for it.")
+        return
+
+    bbl_options = [f"{r['bbl']} — {r['address']}" for r in rows]
+    dt_choice = st.selectbox("Property", options=bbl_options, key="_portfolio_dt_choice")
+    bbl = dt_choice.split(" — ")[0]
+
+    items = list_diligence_items(bbl)
+    if not items:
+        items = seed_default_checklist(bbl)
+
+    progress = diligence_progress(bbl)
+    st.progress(progress["pct"] / 100.0, text=f"{progress['complete']} / {progress['total']} complete ({progress['pct']:.0f}%)")
+
+    df = pd.DataFrame([
+        {
+            "_id": i["id"], "Category": i["category"], "Item": i["item"],
+            "Done": bool(i["is_complete"]), "Notes": i.get("notes") or "",
+        }
+        for i in items
+    ])
+    edited = st.data_editor(
+        df.drop(columns=["_id"]), use_container_width=True, hide_index=True, key=f"_dt_editor_{bbl}",
+        column_config={
+            "Category": st.column_config.TextColumn(disabled=True),
+            "Item":     st.column_config.TextColumn(disabled=True),
+            "Done":     st.column_config.CheckboxColumn(),
+            "Notes":    st.column_config.TextColumn(),
+        },
+    )
+
+    changed = 0
+    for (_, orig_row), (_, edit_row) in zip(df.iterrows(), edited.iterrows()):
+        if orig_row["Done"] != edit_row["Done"] or orig_row["Notes"] != edit_row["Notes"]:
+            update_diligence_item(
+                int(orig_row["_id"]),
+                is_complete=bool(edit_row["Done"]) if orig_row["Done"] != edit_row["Done"] else None,
+                notes=edit_row["Notes"] if orig_row["Notes"] != edit_row["Notes"] else None,
+            )
+            changed += 1
+    if changed:
+        st.toast(f"Updated {changed} checklist item{'s' if changed != 1 else ''}.", icon="✅")
+        st.rerun()
+
+    with st.expander("➕ Add / 🗑️ remove a checklist item"):
+        ac1, ac2, ac3 = st.columns([2, 3, 1])
+        new_cat = ac1.text_input("Category", key=f"_dt_newcat_{bbl}")
+        new_item = ac2.text_input("Item", key=f"_dt_newitem_{bbl}")
+        if ac3.button("Add", key=f"_dt_addbtn_{bbl}") and new_cat.strip() and new_item.strip():
+            add_diligence_item(bbl, new_cat.strip(), new_item.strip())
+            st.rerun()
+
+        rm_options = ["— Select —"] + [f"{i['id']} — {i['category']}: {i['item']}" for i in items]
+        rm_choice = st.selectbox("Remove item", options=rm_options, key=f"_dt_rmchoice_{bbl}")
+        if rm_choice != rm_options[0] and st.button("Remove", key=f"_dt_rmbtn_{bbl}"):
+            delete_diligence_item(int(rm_choice.split(" — ")[0]))
+            st.rerun()
+
+
 def render_portfolio() -> None:
     st.markdown("## 📁 Portfolio")
     st.caption(
@@ -211,6 +285,8 @@ def render_portfolio() -> None:
     )
 
     _render_pipeline_table()
+    st.markdown("---")
+    _render_diligence_tracker(list_portfolio())
     st.markdown("---")
     _render_comparison(list_portfolio())
     st.markdown("---")
