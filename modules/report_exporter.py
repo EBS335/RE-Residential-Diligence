@@ -191,7 +191,10 @@ def _write_pro_forma_sheet(wb, i: int, p: dict, uw: dict, header_fill, header_fo
 def _write_construction_budget_sheet(wb, i: int, p: dict, uw: dict, header_fill, header_font) -> None:
     """Hard/soft/contingency/closing cost line items from
     build_cash_flows()'s cost_breakdown — a real budget breakdown, not
-    just the single total_dev_cost figure."""
+    just the single total_dev_cost figure. When a trade-level estimate
+    (modules.construction_budget_estimator) is also present on `uw`, its
+    per-trade line items are appended below — purely additive; the 5-line
+    summary above is always written unchanged, trade-budget or not."""
     sh = wb.create_sheet(f"{i}. Construction Budget"[:31])
     cb = uw["cost_breakdown"]
     bold_rows = [
@@ -204,11 +207,28 @@ def _write_construction_budget_sheet(wb, i: int, p: dict, uw: dict, header_fill,
     ]
     sh.cell(row=1, column=1, value=f"{p.get('address', '')} — Construction Budget").font = header_font
     sh.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
-    for r, (label, value) in enumerate(bold_rows, start=3):
-        sh.cell(row=r, column=1, value=label)
-        sh.cell(row=r, column=2, value=round(value or 0))
+    row = 3
+    for label, value in bold_rows:
+        sh.cell(row=row, column=1, value=label)
+        sh.cell(row=row, column=2, value=round(value or 0))
+        row += 1
     sh.column_dimensions["A"].width = 26
     sh.column_dimensions["B"].width = 20
+
+    trade_budget = uw.get("trade_budget")
+    if trade_budget and trade_budget.get("trade_breakdown"):
+        row += 2
+        sh.cell(row=row, column=1, value="Trade-Level Detail").font = header_font
+        row += 1
+        sh.cell(row=row, column=1, value="Trade").fill = header_fill
+        sh.cell(row=row, column=1).font = header_font
+        sh.cell(row=row, column=2, value="Total").fill = header_fill
+        sh.cell(row=row, column=2).font = header_font
+        row += 1
+        for trade, detail in trade_budget["trade_breakdown"].items():
+            sh.cell(row=row, column=1, value=trade)
+            sh.cell(row=row, column=2, value=round(detail.get("total", 0) or 0))
+            row += 1
 
 
 def _write_comps_sheet(wb, i: int, p: dict, comps: list[dict], header_fill, header_font) -> None:

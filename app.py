@@ -5303,6 +5303,50 @@ with tab_property:
                                             f"- {_uwd_fin['note']}"
                                         )
 
+                                    with st.expander("🔨 Trade-Level Budget Detail", expanded=False):
+                                        st.caption(
+                                            "Splits the same blended hard-cost rate used above into illustrative "
+                                            "trade line items (site work, structure, envelope, MEP, interior "
+                                            "finishes, general conditions) — a rule-of-thumb split, not a GC bid."
+                                        )
+                                        from modules.construction_budget_estimator import (
+                                            estimate_trade_level_budget, BUDGET_TIER_MULTIPLIERS,
+                                            RENOVATION_SCOPE_MULTIPLIERS,
+                                        )
+                                        _tlb_c1, _tlb_c2, _tlb_c3 = st.columns(3)
+                                        _tlb_tier = _tlb_c1.selectbox(
+                                            "Budget tier", list(BUDGET_TIER_MULTIPLIERS.keys()),
+                                            index=1, key=f"{_uwd_key_base}_tlb_tier",
+                                        )
+                                        _tlb_scope = None
+                                        if _uwd_scenario["development_type"] == "conversion":
+                                            _tlb_scope = _tlb_c2.selectbox(
+                                                "Renovation scope", list(RENOVATION_SCOPE_MULTIPLIERS.keys()),
+                                                index=1, key=f"{_uwd_key_base}_tlb_scope",
+                                            )
+                                        _tlb_wage = _tlb_c3.checkbox(
+                                            "Prevailing wage", value=False, key=f"{_uwd_key_base}_tlb_wage",
+                                        )
+                                        _tlb_result = estimate_trade_level_budget(
+                                            _uwd_scenario["gross_buildable_sf"],
+                                            development_type=_uwd_scenario["development_type"],
+                                            budget_tier=_tlb_tier, renovation_scope=_tlb_scope,
+                                            prevailing_wage=_tlb_wage,
+                                        )
+                                        if _tlb_result["error"]:
+                                            st.caption(f"⚠️ {_tlb_result['error']}")
+                                        else:
+                                            _tlb_rows = [
+                                                {"Trade": t, "$/SF": f"${d['psf']:,.2f}", "Total": f"${d['total']:,.0f}"}
+                                                for t, d in _tlb_result["trade_breakdown"].items()
+                                            ]
+                                            st.dataframe(pd.DataFrame(_tlb_rows), use_container_width=True, hide_index=True)
+                                            st.metric("Total Hard Cost (Trade-Level)", f"${_tlb_result['total_hard_cost']:,.0f}")
+                                            # Stash for the Excel export's Construction Budget sheet (additive —
+                                            # the sheet's existing 5-line fallback is unaffected when this key
+                                            # isn't present, which is every other scenario/property as before).
+                                            st.session_state[f"_uw_trade_budget_{_bbl_disp}"] = _tlb_result
+
                                     with st.expander("🎯 Land Residual Solver", expanded=False):
                                         st.caption(
                                             "Reverse-solves the maximum land/acquisition price this scenario can "
@@ -5396,6 +5440,13 @@ with tab_property:
                     _exp_uw = st.session_state.get(f"_uw_deepdive_{_exp_bbl}")
                     if _exp_uw:
                         _exp_prop["underwriting"] = _exp_uw
+                        # Additive — only present if the Trade-Level Budget Detail
+                        # expander above was opened/computed for this property;
+                        # report_exporter.py's Construction Budget sheet falls back
+                        # to its existing 5-line summary whenever this key is absent.
+                        _exp_trade_budget = st.session_state.get(f"_uw_trade_budget_{_exp_bbl}")
+                        if _exp_trade_budget and not _exp_trade_budget.get("error"):
+                            _exp_prop["underwriting"]["trade_budget"] = _exp_trade_budget
                     _exp_sales_listings = st.session_state.get(_sales_key, {}).get("listings", [])
                     if _exp_sales_listings:
                         _exp_prop["market_comps"] = {"comps": _exp_sales_listings, "count": len(_exp_sales_listings)}

@@ -241,6 +241,57 @@ def test_excel_workbook_pro_forma_and_budget_sheets_created_when_present():
     assert budget_sheet.cell(row=3, column=2).value == 3_500_000  # acquisition cost
 
 
+def test_excel_workbook_construction_budget_sheet_without_trade_budget_unchanged():
+    # No "trade_budget" key present (every property before this batch, and
+    # every property today unless the new expander was opened) — the
+    # existing 5-line summary must render exactly as before, nothing extra.
+    prop = _prop(underwriting={
+        "scenario_label": "Ground-Up Mixed-Use", "irr": 0.184, "equity_multiple": 2.1,
+        "total_dev_cost": 12_000_000, "year1_noi": 780_000, "equity_structure": "simple",
+        "cost_breakdown": {
+            "acquisition_cost": 3_500_000, "closing_cost": 105_000,
+            "hard_cost": 6_800_000, "soft_cost": 1_360_000,
+            "contingency": 816_500, "total_dev_cost": 12_581_500,
+        },
+    })
+    xlsx_bytes = build_excel_workbook([prop])
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    budget_sheet = next(wb[n] for n in wb.sheetnames if "Construction Budget" in n)
+    assert budget_sheet.cell(row=3, column=1).value == "Acquisition Cost"
+    assert budget_sheet.cell(row=8, column=1).value == "Total Development Cost"
+    assert budget_sheet.cell(row=9, column=1).value is None  # nothing appended
+
+
+def test_excel_workbook_construction_budget_sheet_appends_trade_detail_when_present():
+    from modules.construction_budget_estimator import estimate_trade_level_budget
+    trade_budget = estimate_trade_level_budget(10_000, budget_tier="Standard")
+    prop = _prop(underwriting={
+        "scenario_label": "Ground-Up Mixed-Use", "irr": 0.184, "equity_multiple": 2.1,
+        "total_dev_cost": 12_000_000, "year1_noi": 780_000, "equity_structure": "simple",
+        "cost_breakdown": {
+            "acquisition_cost": 3_500_000, "closing_cost": 105_000,
+            "hard_cost": 6_800_000, "soft_cost": 1_360_000,
+            "contingency": 816_500, "total_dev_cost": 12_581_500,
+        },
+        "trade_budget": trade_budget,
+    })
+    xlsx_bytes = build_excel_workbook([prop])
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    budget_sheet = next(wb[n] for n in wb.sheetnames if "Construction Budget" in n)
+    # Existing 5-line summary still present, unchanged, at the same rows.
+    assert budget_sheet.cell(row=3, column=1).value == "Acquisition Cost"
+    assert budget_sheet.cell(row=8, column=1).value == "Total Development Cost"
+    # Trade detail appended below it.
+    sheet_text = " ".join(
+        str(budget_sheet.cell(row=r, column=1).value or "")
+        for r in range(1, budget_sheet.max_row + 1)
+    )
+    assert "Trade-Level Detail" in sheet_text
+    assert "Structure & Superstructure" in sheet_text
+
+
 def test_excel_workbook_comps_sheet_created_when_present():
     prop = _prop(market_comps={
         "median_price_psf": 850, "count": 1,
