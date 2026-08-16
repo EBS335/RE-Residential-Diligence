@@ -41,6 +41,7 @@ from modules.acris_fetcher import fetch_acris
 from modules.articles_fetcher import fetch_nearby_articles
 from modules.ecb_fetcher import fetch_ecb_violations
 from modules.deal_scorer import compute_deal_score
+from modules.site_sourcing import compute_opportunity_score
 from modules.unit_mix import (
     get_avg_sf, optimize_unit_mix, compute_revenue,
     avg_rents_from_listings, NEIGHBORHOOD_AVG_SF, net_rentable_sf, OPEX_RATIO,
@@ -1163,7 +1164,7 @@ with tab_property:
 
         st.markdown("<br/>", unsafe_allow_html=True)
 
-        col_radius, _ = st.columns([2, 3])
+        col_radius, col_threshold = st.columns([2, 3])
 
         # ── Radius ───────────────────────────────────────────────────────────────
         with col_radius:
@@ -1177,6 +1178,19 @@ with tab_property:
             )
 
         radius_miles = RADIUS_OPTIONS[radius_choice]
+
+        # ── Underbuilt threshold ────────────────────────────────────────────────
+        with col_threshold:
+            st.markdown('<div class="section-label">🏗️ Underbuilt Threshold (% unused FAR)</div>',
+                        unsafe_allow_html=True)
+            underbuilt_threshold_pct = st.slider(
+                label="underbuilt_threshold",
+                label_visibility="collapsed",
+                min_value=5, max_value=60, value=20, step=5,
+                help="A lot is flagged 'underbuilt' below in the single-property and "
+                     "area-underdevelopment panels once its unused FAR exceeds this "
+                     "percentage of the zoning max.",
+            )
 
         st.markdown("<br/>", unsafe_allow_html=True)
 
@@ -1215,6 +1229,7 @@ with tab_property:
         st.session_state["geo"]           = geo
         st.session_state["radius_miles"]  = radius_miles
         st.session_state["radius_choice"] = radius_choice
+        st.session_state["underbuilt_threshold_pct"] = underbuilt_threshold_pct
         st.session_state["address_raw"]   = address_input.strip()
         # Clear stale listing + ZOLA caches so each new search always refetches
         for _k in [k for k in list(st.session_state)
@@ -1231,6 +1246,7 @@ with tab_property:
         geo           = st.session_state['geo']
         radius_miles  = st.session_state['radius_miles']
         radius_choice = st.session_state.get('radius_choice', '5 blocks  (~0.25 mi)')
+        underbuilt_threshold_pct = st.session_state.get('underbuilt_threshold_pct', 20)
 
         # ── Derived fields ────────────────────────────────────────────────────────
         borough      = geo.get("borough")      or "—"
@@ -1584,17 +1600,17 @@ with tab_property:
       </div>
       <div style="flex:1;min-width:80px;background:#FCFAF3;border:1px solid #DCD5C2;border-radius:8px;padding:10px 8px">
         <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Unused FAR %</div>
-        <div style="font-size:1.15rem;font-weight:700;color:#{'15803D' if _ub_unused_pct > 20 else '111827'}">{_ub_unused_pct:.0f}%</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#{'15803D' if _ub_unused_pct > underbuilt_threshold_pct else '111827'}">{_ub_unused_pct:.0f}%</div>
         <div style="font-size:0.68rem;color:#6B7280">({_ub_add_sf:,} SF)</div>
       </div>
-      <div style="flex:1;min-width:80px;background:#{'DCFCE7' if _ub_unused_pct > 20 else 'F9FAFB'};border:1px solid #{'BBF7D0' if _ub_unused_pct > 20 else 'E5E7EB'};border-radius:8px;padding:10px 8px">
+      <div style="flex:1;min-width:80px;background:#{'DCFCE7' if _ub_unused_pct > underbuilt_threshold_pct else 'F9FAFB'};border:1px solid #{'BBF7D0' if _ub_unused_pct > underbuilt_threshold_pct else 'E5E7EB'};border-radius:8px;padding:10px 8px">
         <div style="font-size:0.64rem;color:#6B7280;font-weight:700;text-transform:uppercase">Add&apos;l Buildable</div>
         <div style="font-size:1.15rem;font-weight:700;color:#1A1D2E">{_ub_add_sf:,}</div>
         <div style="font-size:0.68rem;color:#6B7280">SF</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
-                if _ub_unused_pct > 20:
+                if _ub_unused_pct > underbuilt_threshold_pct:
                     st.markdown(
                         f'<div class="opportunity-flag">🏗️ Underbuilt — '
                         f'{_ub_unused_pct:.0f}% unused FAR · {_ub_add_sf:,} additional buildable SF</div>',
@@ -1637,7 +1653,7 @@ with tab_property:
                                 "Max FAR":    round(_ul_max_f, 2),
                                 "Unused %":   f"{_ul_pct:.0f}%",
                                 "Add'l SF":   f"{int(max(0, _ul_max_f - _ul_built) * _ul_la):,}",
-                                "Flag":       "🏗️" if _ul_pct > 20 else "—",
+                                "Flag":       "🏗️" if _ul_pct > underbuilt_threshold_pct else "—",
                             })
                         except Exception:
                             continue
@@ -1931,7 +1947,7 @@ with tab_property:
             # ── Area Underdevelopment ─────────────────────────────────────────
             _section_header(
                 "🏗️", "Area Underdevelopment",
-                f"All PLUTO lots within {radius_choice} · Underbuilt = unused FAR > 20% of max",
+                f"All PLUTO lots within {radius_choice} · Underbuilt = unused FAR > {underbuilt_threshold_pct}% of max",
             )
             _und_key = f"_area_und_{lat:.5f}_{lon:.5f}_{radius_miles:.2f}"
             if _und_key not in st.session_state:
@@ -1949,7 +1965,7 @@ with tab_property:
                                     f"AND longitude > {lon - _und_lon_d:.6f} AND longitude < {lon + _und_lon_d:.6f}"
                                 ),
                                 "$select": "bbl,address,lotarea,builtfar,residfar,commfar,bldgarea,"
-                                           "numfloors,latitude,longitude,bldgclass",
+                                           "numfloors,latitude,longitude,bldgclass,assessland,landuse",
                                 "$limit": "1500",
                             },
                             timeout=25,
@@ -1994,6 +2010,13 @@ with tab_property:
                     _ur_add_sf  = int(_ur_unused * _ur_la)
                     _ur_flrs_raw= _ur.get("numfloors", "")
                     _ur_flrs    = (str(int(float(_ur_flrs_raw))) if _ur_flrs_raw and str(_ur_flrs_raw).replace(".", "").isdigit() else (_ur_flrs_raw or "—"))
+                    _ur_assess_land = float(_ur.get("assessland") or 0)
+                    _ur_is_vacant   = (_ur.get("landuse") == "11") or (_ur_bldg_sf <= 0)
+                    _ur_opp = compute_opportunity_score({
+                        "lot_sf": _ur_la, "far_max": _ur_max_f, "far_built": _ur_built,
+                        "unused_far_pct": _ur_pct, "assess_land": _ur_assess_land,
+                        "is_vacant": _ur_is_vacant,
+                    })
                     _und_lots.append({
                         "address":    _ur.get("address", "—"),
                         "lot_area":   _ur_la,
@@ -2007,8 +2030,10 @@ with tab_property:
                         "lon":        _ur_lon,
                         "floors":     _ur_flrs,
                         "bldg_class": _ur.get("bldgclass", "—"),
-                        "underbuilt": _ur_pct > 20,
+                        "underbuilt": _ur_pct > underbuilt_threshold_pct,
                         "dist_mi":    round(_ur_dist, 3),
+                        "opportunity_score": _ur_opp["score"],
+                        "opportunity_tier":  _ur_opp["tier"],
                     })
                 except Exception:
                     continue
@@ -2020,12 +2045,14 @@ with tab_property:
             _und_ub_ct   = len(_und_ub_lots)
             _und_ub_pct  = (_und_ub_ct / _und_total * 100) if _und_total > 0 else 0
             _und_avg_far = (sum(l["unused_pct"] for l in _und_ub_lots) / _und_ub_ct) if _und_ub_ct > 0 else 0
+            _und_avg_opp = (sum(l["opportunity_score"] for l in _und_ub_lots) / _und_ub_ct) if _und_ub_ct > 0 else 0
 
-            _um1, _um2, _um3, _um4 = st.columns(4)
+            _um1, _um2, _um3, _um4, _um5 = st.columns(5)
             _um1.metric("Total Lots Analyzed", f"{_und_total:,}")
             _um2.metric("Underbuilt Lots",      f"{_und_ub_ct:,}")
             _um3.metric("% Underbuilt",          f"{_und_ub_pct:.0f}%")
             _um4.metric("Avg Unused FAR (ub)",   f"{_und_avg_far:.0f}%")
+            _um5.metric("Avg Opportunity Score (ub)", f"{_und_avg_opp:.0f}/100")
 
             def _und_color(pct: float) -> str:
                 if pct >= 80: return "#1F6B3A"
@@ -2037,7 +2064,11 @@ with tab_property:
             if _und_lots:
                 _und_show_all = st.checkbox("Show all lots (including near-buildout)", value=False)
                 _und_display  = _und_lots if _und_show_all else _und_ub_lots
-                _und_display  = sorted(_und_display, key=lambda x: x["unused_pct"], reverse=True)
+                # Ranked by the same multi-factor Opportunity Score Site Finder's
+                # boundary search uses (site_sourcing.compute_opportunity_score:
+                # unused FAR + vacancy + assessed land basis + lot-size scale) —
+                # not just raw unused-FAR%, which ignores vacancy/basis/scale.
+                _und_display  = sorted(_und_display, key=lambda x: x["opportunity_score"], reverse=True)
 
                 # Map + Table side by side
                 _und_mc, _und_tc = st.columns([1, 1])
@@ -2080,6 +2111,7 @@ with tab_property:
                             "Max FAR":       _ul2['max_far'],
                             "Unused FAR %":  round(_ul2['unused_pct'], 1),
                             "Add'l Build SF":f"{_ul2['add_sf']:,}",
+                            "Opportunity":   f"{_ul2['opportunity_score']}/100 ({_ul2['opportunity_tier']})",
                             "Flag":          "🏗️ Underbuilt" if _ul2["underbuilt"] else "—",
                             "_lat":          _ul2["lat"],
                             "_lon":          _ul2["lon"],
@@ -2118,7 +2150,7 @@ with tab_property:
             st.caption(
                 f"Source: NYC PLUTO via Socrata (64uk-42ks) · "
                 f"{_und_total} nearest lots within {radius_miles:.2f} mi analyzed · "
-                f"Underbuilt threshold: unused FAR > 20% of max FAR"
+                f"Underbuilt threshold: unused FAR > {underbuilt_threshold_pct}% of max FAR"
             )
 
             # ── Live Scraping Status (shown above Market Insights) ────────────
