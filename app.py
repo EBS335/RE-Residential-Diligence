@@ -1637,6 +1637,27 @@ with tab_property:
                         elif _ulurp.get("verified"):
                             st.caption("No recent ULURP applications found in this community district.")
 
+                        # ── Rent Stabilization (compact pointer, same registry
+                        # Site Finder uses via site_sourcing.enrich_property()) ──
+                        _rentstab_reg_key = f"_rentstab_registry_{_ds_bbl}"
+                        if _rentstab_reg_key not in st.session_state:
+                            st.session_state[_rentstab_reg_key] = check_rent_stabilized(
+                                _ds_zi.get("borough_code", ""), _ds_zi.get("block"), _ds_zi.get("lot"),
+                                _ds_zi.get("address_pluto") or st.session_state.get("address_raw", ""),
+                            )
+                        _rentstab_registry_cell1 = st.session_state.get(_rentstab_reg_key, {})
+                        if _rentstab_registry_cell1.get("status") == "confirmed":
+                            st.markdown(
+                                '<div class="opportunity-flag">🏠 Rent-Stabilized (confirmed — NYC RGB list)</div>',
+                                unsafe_allow_html=True,
+                            )
+                        elif _rentstab_registry_cell1.get("status") == "not_found":
+                            st.caption("Not found on NYC Rent Guidelines Board building list.")
+                        # "unavailable" status renders nothing here — the fuller
+                        # Tax Abatement, Rent Stabilization & Transit section
+                        # further down the page already surfaces the error text;
+                        # this pointer stays silent-on-failure to stay compact.
+
             # ─── CELL 2: Underbuilt? ─────────────────────────────────────────────
             with _ds_r1b:
                 st.markdown("**📈 Underbuilt? (Subject Property)**")
