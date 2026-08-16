@@ -479,6 +479,61 @@ def _floor_table_html(tiers: list) -> str:
     )
 
 
+def build_floor_stack(scenario: dict, m: dict) -> list[dict]:
+    """
+    Generate a real per-floor breakdown for a massing scenario — the 10
+    scenarios' own dicts only carry a single "floors" int and
+    "typical_floor_sqft" float (no per-floor list), and _floor_table_html()
+    above only ever embeds a "Podium"/"Tower" tier summary as an HTML
+    string inside the description text, not structured data. This is
+    additive: neither the scenario dict shape nor _floor_table_html()'s
+    existing tiers/description behavior is changed by this function.
+
+    Args:
+        scenario: one of build_massing_options()'s returned scenario dicts.
+        m: the same _calc_massing() dict already computed for this lot
+           (base_h, f2f, floors_at_base) — reused, not recomputed.
+
+    Returns a list of dicts, one per floor (never raises; returns [] for
+    a malformed scenario):
+        [{"floor_num": int, "use": str, "program_label": str,
+          "gross_sf": int, "is_below_base_height": bool,
+          "is_in_setback_zone": bool}, ...]
+    """
+    try:
+        n_floors = max(1, int(scenario.get("floors", 1)))
+        floors_at_base = max(1, int(m.get("floors_at_base", n_floors)))
+        footprint_sf = int(scenario.get("footprint_sqft", 0) or 0)
+        typical_sf = int(scenario.get("typical_floor_sqft", 0) or 0)
+        # Same string-based mixed-use heuristic app.py already uses to pick
+        # floor_plate_fig()'s ground-floor mode (app.py's "_is_mu" check on
+        # the scenario name) — kept consistent rather than introducing a
+        # second, different mixed-use detection rule.
+        name_lower = str(scenario.get("name", "")).lower()
+        is_mixed_use = "mixed" in name_lower
+
+        stack = []
+        for floor_num in range(1, n_floors + 1):
+            is_ground = floor_num == 1
+            if is_ground and is_mixed_use:
+                use, program = "Retail/Commercial", "Ground Floor Retail"
+            elif is_ground:
+                use, program = "Residential", "Lobby / Amenity + Residential"
+            else:
+                use, program = "Residential", "Typical Residential Floor"
+            stack.append({
+                "floor_num": floor_num,
+                "use": use,
+                "program_label": program,
+                "gross_sf": footprint_sf if is_ground else typical_sf,
+                "is_below_base_height": floor_num <= floors_at_base,
+                "is_in_setback_zone": floor_num > floors_at_base,
+            })
+        return stack
+    except (TypeError, ValueError, KeyError):
+        return []
+
+
 # ── 10 Scenario builders ──────────────────────────────────────────────────────
 
 def _option_1(lot_front, lot_depth, lot_area, rules, m, existing_bldg=None) -> dict:

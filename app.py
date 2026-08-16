@@ -34,7 +34,8 @@ from modules.pip_fetcher import (
     _extract_mortgages_from_acris,
     _extract_liens_from_acris,
 )
-from modules.massing_viz import build_massing_options, floor_plate_fig
+from modules.massing_viz import build_massing_options, floor_plate_fig, build_floor_stack, _calc_massing
+from modules.massing_feasibility import compute_massing_feasibility_score
 from modules.comps_research import search_competing_devs, generate_pipeline_summary
 from modules.neighborhood_fetcher import fetch_neighborhood_data
 from modules.acris_fetcher import fetch_acris
@@ -4889,10 +4890,20 @@ with tab_property:
                                         except Exception:
                                             pass
 
+                                    # Feasibility score (Batch D item 3) — additive column;
+                                    # every other field in this row is unchanged.
+                                    _sum_feas = compute_massing_feasibility_score(
+                                        _o, lot_frontage_ft=_lf_v, lot_area_sqft=_la_v, lot_depth_ft=_ld_v,
+                                        zoning_dist=_primary_zone, max_far=_max_far_val,
+                                        is_landmark=bool(_zinfo.get("landmark") and _zinfo.get("landmark") != "—"),
+                                        is_historic_district=bool(_zinfo.get("historic_dist") and _zinfo.get("historic_dist") != "—"),
+                                    )
+
                                     _sum_rows.append({
                                         "#":           _o.get("number", ""),
                                         "Scenario":    _o.get("name", "—"),
                                         "Risk":        _o.get("risk_level", "—"),
+                                        "Feasibility": f"{_sum_feas['score']}/100 ({_sum_feas['tier']})",
                                         "Stories":     _o.get("floors", 0),
                                         "Height (ft)": _o.get("height_ft", 0),
                                         "Gross SF":    _gross_sf,
@@ -4991,15 +5002,33 @@ with tab_property:
                                     return "<span class='risk-med'>🟡 Med Risk</span>"
 
                                 # ── Tile renderer ────────────────────────────
+                                # Feasibility score (Batch D item 3) — computed once, reused by
+                                # every tile below and the summary table further down. Additive:
+                                # doesn't touch any of the 10 scenario dicts or _calc_massing()'s
+                                # own return value.
+                                _mass_m = _calc_massing(_lf_v, _ld_v, _la_v, _zrules) if _zrules else {}
+
                                 def _render_tile(opt: dict, key_suffix: str):
                                     rl = opt.get("risk_level", "MED")
                                     _tile_gross   = opt.get("total_sqft", 0)
                                     _tile_net     = opt.get("net_rentable_sqft", 0)
                                     _tile_max_sf  = int(_la_v * _max_far_val) if _max_far_val > 0 else 0
+                                    _feas = compute_massing_feasibility_score(
+                                        opt, lot_frontage_ft=_lf_v, lot_area_sqft=_la_v, lot_depth_ft=_ld_v,
+                                        zoning_dist=_primary_zone, max_far=_max_far_val,
+                                        is_landmark=bool(_zinfo.get("landmark") and _zinfo.get("landmark") != "—"),
+                                        is_historic_district=bool(_zinfo.get("historic_dist") and _zinfo.get("historic_dist") != "—"),
+                                    )
+                                    _feas_color = {"Strong": "#1F6B3A", "Viable": "#8B6914",
+                                                   "Constrained": "#B45309", "Weak": "#7A2E2E"}.get(_feas["tier"], "#6B7280")
                                     st.markdown(
                                         f"<div style='background:#FFFFFF;border:1px solid #DCD5C2;"
                                         f"border-radius:12px;padding:8px 10px 4px'>"
                                         f"{_risk_badge(rl)}"
+                                        f"<span style='float:right;font-size:0.62rem;font-weight:700;color:{_feas_color}' "
+                                        f"title='Massing feasibility: FAR utilization, frontage/height fit, lot depth, "
+                                        f"zoning flexibility, landmark risk'>"
+                                        f"Feasibility: {_feas['score']}/100 ({_feas['tier']})</span>"
                                         f"<div style='font-weight:700;font-size:0.72rem;margin:5px 0 1px'>"
                                         f"{opt['name']}</div></div>",
                                         unsafe_allow_html=True,
@@ -5049,7 +5078,9 @@ with tab_property:
 
                                     # Unit mix + financials + floor plates
                                     with st.expander("📊 Unit Mix, Financials & Floor Plans", expanded=False):
-                                        _tab_mix, _tab_fp = st.tabs(["💰 Unit Mix & Financials", "🏢 Floor Plates"])
+                                        _tab_mix, _tab_fp, _tab_stack = st.tabs(
+                                            ["💰 Unit Mix & Financials", "🏢 Floor Plates", "🏗️ Floor-by-Floor Stack"]
+                                        )
                                         _nrsf = opt.get("net_rentable_sqft", 0)
                                         _is_c = opt.get("is_conversion", False)
                                         with _tab_mix:
@@ -5119,6 +5150,41 @@ with tab_property:
                                                     key=f"fp_upr_{key_suffix}",
                                                 )
                                             st.caption("Indicative floor plate layout — unit sizes and placement are schematic.")
+
+                                        with _tab_stack:
+                                            _stack = build_floor_stack(opt, _mass_m)
+                                            if not _stack:
+                                                st.caption("Floor stack unavailable for this scenario.")
+                                            else:
+                                                _stack_floor = st.select_slider(
+                                                    "Floor", options=[f["floor_num"] for f in _stack],
+                                                    key=f"stack_floor_{key_suffix}",
+                                                )
+                                                _sel_floor = next(f for f in _stack if f["floor_num"] == _stack_floor)
+                                                st.markdown(
+                                                    f"**Floor {_sel_floor['floor_num']}** — {_sel_floor['program_label']} "
+                                                    f"({_sel_floor['gross_sf']:,} SF)"
+                                                    + (" · ⚠️ within setback/upper-tier zone" if _sel_floor["is_in_setback_zone"] else "")
+                                                )
+                                                st.plotly_chart(
+                                                    floor_plate_fig(_fp_w, _fp_d, is_ground=(_sel_floor["floor_num"] == 1),
+                                                                     is_mixed_use=_is_mu),
+                                                    use_container_width=True,
+                                                    config={"displayModeBar": False},
+                                                    key=f"fp_stack_{key_suffix}",
+                                                )
+                                                st.caption(
+                                                    "Reuses the same schematic floor-plate drawing per floor — the "
+                                                    "footprint doesn't yet narrow above the setback line (a documented "
+                                                    "limitation, not a bug)."
+                                                )
+                                                with st.expander("All floors", expanded=False):
+                                                    _stack_rows = [{
+                                                        "Floor": f["floor_num"], "Program": f["program_label"],
+                                                        "Gross SF": f"{f['gross_sf']:,}",
+                                                        "Zone": "Setback/Upper Tier" if f["is_in_setback_zone"] else "Base Height",
+                                                    } for f in _stack]
+                                                    st.dataframe(pd.DataFrame(_stack_rows), use_container_width=True, hide_index=True)
 
                                 # ── Display tiles by risk tier ───────────────
                                 for _tier, _tier_label, _tier_color in [
