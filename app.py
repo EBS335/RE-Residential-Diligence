@@ -1203,33 +1203,17 @@ with tab_property:
 
         st.markdown("<br/>", unsafe_allow_html=True)
 
-        col_radius, col_threshold = st.columns([2, 3])
-
         # ── Radius ───────────────────────────────────────────────────────────────
-        with col_radius:
-            st.markdown('<div class="section-label">📏 Search Radius</div>',
-                        unsafe_allow_html=True)
-            radius_choice = st.selectbox(
-                label="radius",
-                label_visibility="collapsed",
-                options=list(RADIUS_OPTIONS.keys()),
-                index=0,   # default: 5 blocks
-            )
+        st.markdown('<div class="section-label">📏 Search Radius</div>',
+                    unsafe_allow_html=True)
+        radius_choice = st.selectbox(
+            label="radius",
+            label_visibility="collapsed",
+            options=list(RADIUS_OPTIONS.keys()),
+            index=0,   # default: 5 blocks
+        )
 
         radius_miles = RADIUS_OPTIONS[radius_choice]
-
-        # ── Underbuilt threshold ────────────────────────────────────────────────
-        with col_threshold:
-            st.markdown('<div class="section-label">🏗️ Underbuilt Threshold (% unused FAR)</div>',
-                        unsafe_allow_html=True)
-            underbuilt_threshold_pct = st.slider(
-                label="underbuilt_threshold",
-                label_visibility="collapsed",
-                min_value=5, max_value=60, value=20, step=5,
-                help="A lot is flagged 'underbuilt' below in the single-property and "
-                     "area-underdevelopment panels once its unused FAR exceeds this "
-                     "percentage of the zoning max.",
-            )
 
         st.markdown("<br/>", unsafe_allow_html=True)
 
@@ -1268,7 +1252,6 @@ with tab_property:
         st.session_state["geo"]           = geo
         st.session_state["radius_miles"]  = radius_miles
         st.session_state["radius_choice"] = radius_choice
-        st.session_state["underbuilt_threshold_pct"] = underbuilt_threshold_pct
         st.session_state["address_raw"]   = address_input.strip()
         # Clear stale listing + ZOLA caches so each new search always refetches
         for _k in [k for k in list(st.session_state)
@@ -1285,7 +1268,7 @@ with tab_property:
         geo           = st.session_state['geo']
         radius_miles  = st.session_state['radius_miles']
         radius_choice = st.session_state.get('radius_choice', '5 blocks  (~0.25 mi)')
-        underbuilt_threshold_pct = st.session_state.get('underbuilt_threshold_pct', 20)
+        underbuilt_threshold_pct = 20  # fixed default (previously a user-configurable 5-60 slider)
 
         # ── Derived fields ────────────────────────────────────────────────────────
         borough      = geo.get("borough")      or "—"
