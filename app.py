@@ -46,7 +46,7 @@ from modules.site_sourcing import compute_opportunity_score
 from modules.rent_stab_registry import check_rent_stabilized
 from modules.oath_fetcher import fetch_oath_hearings
 from modules.tax_lien_fetcher import fetch_tax_lien_status
-from modules.lpc_landmarks_fetcher import fetch_lpc_landmark_status
+from modules.lpc_landmarks_fetcher import fetch_lpc_landmark_status, fetch_lpc_designation_status
 from modules.ceqr_fetcher import fetch_ulurp_applications
 from modules.distress_scorer import compute_composite_distress_score, DEFAULT_WEIGHTS
 from modules.structural_risk import compute_structural_vintage_risk, recommend_structural_system
@@ -1611,6 +1611,7 @@ with tab_property:
                         if st.button("🏛️ Check landmark & entitlement signals", key=f"_lpc_ulurp_btn_{_ds_bbl}"):
                             with st.spinner("Checking LPC landmarks + ULURP applications…"):
                                 st.session_state[f"_lpc_{_ds_bbl}"] = fetch_lpc_landmark_status(_ds_bbl)
+                                st.session_state[f"_lpc_hist_{_ds_bbl}"] = fetch_lpc_designation_status(_ds_bbl)
                                 if _cd:
                                     st.session_state[f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}"] = (
                                         fetch_ulurp_applications(_ds_zi.get("borough_code", ""), _cd)
@@ -1628,6 +1629,21 @@ with tab_property:
                             st.caption("✅ Not on the LPC Individual Landmarks list (corroborates PLUTO)")
                         elif _lpc and not _lpc.get("verified"):
                             st.caption("ℹ️ Could not confirm LPC individual-landmark status this time.")
+
+                        # ── Historic district (LPC "Discover NYC Landmarks" dataset —
+                        # a superset covering historic-district membership, which the
+                        # px3f-pupb individual-landmarks dataset above does not) ──
+                        _lpc_hist = st.session_state.get(f"_lpc_hist_{_ds_bbl}", {})
+                        if _lpc_hist.get("is_in_historic_district"):
+                            st.markdown(
+                                f'<div class="opportunity-flag">🏘️ In LPC historic district'
+                                f'{" — " + _lpc_hist["historic_district_name"] if _lpc_hist.get("historic_district_name") else ""}'
+                                f'</div>', unsafe_allow_html=True,
+                            )
+                        elif _lpc_hist.get("verified") and not _lpc_hist.get("is_in_historic_district") and not _lpc_hist.get("is_individual_landmark"):
+                            st.caption("✅ Not in an LPC historic district (LPC Discover NYC Landmarks dataset)")
+                        elif _lpc_hist and not _lpc_hist.get("verified"):
+                            st.caption("ℹ️ Could not confirm historic-district status this time.")
 
                         _ulurp = st.session_state.get(f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}", {})
                         if _ulurp.get("count"):
