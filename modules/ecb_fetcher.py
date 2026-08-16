@@ -11,6 +11,13 @@ Classes:
   A — Non-hazardous
   B — Hazardous
   C — Immediately hazardous
+
+hpd_url is a general (non-per-BBL) public HPD Online violation-search
+portal link, for surfacing a "see the source" link in the UI. This
+sandbox's egress to data.cityofnewyork.us and hpdonline.nyc.gov is
+blocked, so the exact live portal URL/param format is unverified —
+best-effort, same caveat convention as tax_lien_fetcher.py's
+_LIEN_SALE_INFO_URL.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ import re
 import requests
 
 _HPD_URL = "https://data.cityofnewyork.us/resource/wvxf-dwi5.json"
+_HPD_VIOLATIONS_PORTAL_URL = "https://hpdonline.nyc.gov/hpdonline/"
 _TIMEOUT = 12
 
 _EMPTY = {
@@ -29,6 +37,7 @@ _EMPTY = {
     "class_c": 0,
     "distress_score": "Low",
     "distress_level": 0,
+    "hpd_url": _HPD_VIOLATIONS_PORTAL_URL,
     "error": None,
 }
 
@@ -117,5 +126,6 @@ def fetch_ecb_violations(bbl: str, lien_count: int = 0) -> dict:
         "class_c":        class_c,
         "distress_score": distress_score,
         "distress_level": distress_level,
+        "hpd_url":        _HPD_VIOLATIONS_PORTAL_URL,
         "error":          None,
     }

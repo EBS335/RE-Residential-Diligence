@@ -51,3 +51,19 @@ def test_no_hearings_found():
     assert result["verified"] is True
     assert result["count"] == 0
     assert result["open_balance_count"] == 0
+
+
+def test_oath_url_field_present_in_all_paths():
+    # Success path
+    with patch.object(of.requests, "get", return_value=_fake_response([])):
+        result = of.fetch_oath_hearings("3", "1234", "56")
+    assert result["oath_url"] == of._OATH_PORTAL_URL
+
+    # Error path (unrecognized borough — never even makes a request)
+    result = of.fetch_oath_hearings("9", "1234", "56")
+    assert result["oath_url"] == of._OATH_PORTAL_URL
+
+    # Request-failure path
+    with patch.object(of.requests, "get", return_value=_fake_response(None, ok=False)):
+        result = of.fetch_oath_hearings("3", "1234", "56")
+    assert result["oath_url"] == of._OATH_PORTAL_URL

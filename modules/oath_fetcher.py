@@ -22,6 +22,12 @@ by the same graceful-degradation pattern environmental_fetcher.py uses
 for its own unverifiable DEC-spills query: Socrata 400s on an unknown
 $where column, which is treated as "couldn't confirm," never as a false
 "zero hearings" negative.
+
+oath_url is a general (non-per-BBL) public OATH/ECB violations-search
+portal link, for surfacing a "see the source" link in the UI. This
+sandbox's egress is blocked, so the exact live portal URL is
+unverified — best-effort, same caveat convention as
+tax_lien_fetcher.py's _LIEN_SALE_INFO_URL.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ from modules.app_logging import get_logger, record_source_status
 log = get_logger(__name__)
 
 _OATH_URL = "https://data.cityofnewyork.us/resource/6bgk-3dad.json"
+_OATH_PORTAL_URL = "https://a836-ecbviolations.nyc.gov/ecbonline/"
 _TIMEOUT = 15
 
 _BOROUGH_NAME = {
@@ -60,6 +67,7 @@ def fetch_oath_hearings(borough_code: str, block: str, lot: str, limit: int = 25
           "count": int,
           "open_balance_count": int,   # hearings with a nonzero balance still due
           "source": "NYC OATH Hearings Division Case Status",
+          "oath_url": str,               # general public OATH/ECB search portal link
           "verified": bool,             # True only when the query itself succeeded
           "error": str | None,
         }
@@ -69,6 +77,7 @@ def fetch_oath_hearings(borough_code: str, block: str, lot: str, limit: int = 25
         "count": 0,
         "open_balance_count": 0,
         "source": "NYC OATH Hearings Division Case Status",
+        "oath_url": _OATH_PORTAL_URL,
         "verified": False,
         "error": None,
     }
