@@ -277,6 +277,56 @@ def _render_diligence_tracker(rows: list[dict]) -> None:
             st.rerun()
 
 
+def _render_proposal_comparer() -> None:
+    st.markdown("### 📑 Consultant Proposal Comparer")
+    st.caption(
+        "Upload consultant proposal PDFs (structural, Phase I ESA, zoning, title, survey, "
+        "geotechnical, etc.) to compare estimated fees and scope coverage side by side. "
+        "Parsing runs entirely locally — nothing is uploaded anywhere except this session."
+    )
+    uploads = st.file_uploader(
+        "Upload consultant proposals (PDF)", type="pdf", accept_multiple_files=True,
+        key="_proposal_uploader",
+    )
+    if not uploads:
+        st.info("Upload one or more consultant proposal PDFs to compare fees and scope coverage.")
+        return
+
+    try:
+        from modules.proposal_parser import (
+            extract_proposal_text, extract_fee_estimate, score_scope_keywords,
+            SCOPE_KEYWORD_CATEGORIES,
+        )
+    except ImportError as exc:
+        st.error(str(exc))
+        return
+
+    rows = []
+    for f in uploads:
+        parsed = extract_proposal_text(f.getvalue())
+        if parsed["error"]:
+            st.warning(f"⚠️ Could not parse **{f.name}**: {parsed['error']}")
+            continue
+        if not parsed["text"].strip():
+            st.warning(f"⚠️ **{f.name}** yielded no extractable text (likely a scanned/image-only PDF) — skipped.")
+            continue
+        fee = extract_fee_estimate(parsed["text"])
+        scores = score_scope_keywords(parsed["text"])
+        matched = [cat for cat, count in scores.items() if count > 0]
+        missing = [cat for cat in SCOPE_KEYWORD_CATEGORIES if cat not in matched]
+        rows.append({
+            "Consultant / File": f.name,
+            "Total Fee": f"${fee:,.0f}" if fee is not None else "—",
+            "Scope Categories Matched": ", ".join(matched) if matched else "—",
+            "Categories Missing": ", ".join(missing) if missing else "—",
+        })
+
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No proposals could be parsed from the uploaded files.")
+
+
 def render_portfolio() -> None:
     st.markdown("## 📁 Portfolio")
     st.caption(
@@ -287,6 +337,8 @@ def render_portfolio() -> None:
     _render_pipeline_table()
     st.markdown("---")
     _render_diligence_tracker(list_portfolio())
+    st.markdown("---")
+    _render_proposal_comparer()
     st.markdown("---")
     _render_comparison(list_portfolio())
     st.markdown("---")
