@@ -15,11 +15,8 @@ professional diligence.
 from __future__ import annotations
 import pandas as pd
 import streamlit as st
-import folium
-from folium.plugins import MarkerCluster
-from streamlit_folium import st_folium
-
-from modules.visualizer import ESRI_SATELLITE_TILES, ESRI_SATELLITE_ATTR
+import pydeck as pdk
+from pydeck.data_utils import compute_view
 
 from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE
 from modules.site_sourcing import enrich_property, flag_assemblage_candidates, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
@@ -213,26 +210,27 @@ def _run_search(criteria: dict) -> tuple[list[dict], dict]:
 
 def _render_summary_cards(properties: list[dict]) -> None:
     n = len(properties)
-    strong = sum(1 for p in properties if p["deal_score"]["score"] >= 65)
     avg_far_gap = (
         sum(p.get("unused_far_pct", 0) for p in properties) / n if n else 0
     )
-    avg_score = (sum(p["deal_score"]["score"] for p in properties) / n) if n else 0
+    vacant_count = sum(1 for p in properties if STRATEGY_VACANT in p.get("strategies", []))
+    demo_count = sum(1 for p in properties if STRATEGY_DEMOLITION in p.get("strategies", []))
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Properties Matched", f"{n:,}")
-    c2.metric("Deal Score ≥ 65", f"{strong:,}", f"{(strong/n*100 if n else 0):.0f}% of results")
-    c3.metric("Avg. Unused FAR", f"{avg_far_gap:.0f}%")
-    c4.metric("Avg. Deal Score", f"{avg_score:.0f} / 100")
+    c2.metric("Vacant/Underutilized Lots", f"{vacant_count:,}", f"{(vacant_count/n*100 if n else 0):.0f}% of results")
+    c3.metric("Demolition Candidates", f"{demo_count:,}", f"{(demo_count/n*100 if n else 0):.0f}% of results")
+    c4.metric("Avg. Unused FAR", f"{avg_far_gap:.0f}%")
 
 
 # ── Results map ──────────────────────────────────────────────────────────────
 
 _TIER_MARKER_COLOR = {
-    "Strong Lead": "green",
-    "Watch":       "orange",
-    "Pass":        "lightgray",
+    "Strong Lead": [34, 197, 94],    # green
+    "Watch":       [249, 115, 22],   # orange
+    "Pass":        [156, 163, 175],  # gray
 }
+_DEFAULT_MARKER_COLOR = [59, 130, 246]  # blue fallback for an unrecognized tier
 
 
 _MAX_MAP_MARKERS = 300  # see _render_results_map() docstring
@@ -302,41 +300,37 @@ def _fetch_search_extent_boundary(criteria: dict | None) -> tuple[dict | None, b
 
 def _render_results_map(properties: list[dict], criteria: dict | None = None) -> None:
     """
-    Flag results on a free OpenStreetMap/CartoDB basemap (same tile
-    provider already used in the Property Analysis tab's visualizer.py —
-    no paid mapping API, no key required), with an outline of the actual
-    borough/ZIP search extent (modules/nyc_boundaries.py) overlaid when
-    `criteria` carries a geographic filter, and the view auto-fit to that
-    extent (or to the markers themselves, if no boundary is available)
-    instead of a fixed zoom level.
+    Flag results via st.pydeck_chart() — a NATIVE Streamlit element (same
+    rendering family as st.dataframe/st.line_chart), not a third-party
+    custom component. This replaces a folium/streamlit_folium
+    implementation that, across 6+ fix attempts (removing display caps,
+    swapping st_folium<->folium_static, matching every kwarg convention
+    used by this app's other working folium maps, reordering tabs so
+    this map was first instead of second), consistently rendered ZERO
+    visible footprint — not even a reserved blank area. Every one of
+    those attempts stayed within the same technical family: folium
+    rendered through Streamlit's custom-component/iframe bridge (whether
+    st_folium's bidirectional component or folium_static's
+    components.html() embed). Since swapping between every variant
+    *within* that family made no difference, AND tab position (the one
+    variable that had been unique to this map vs. the working Property
+    Analysis maps) also made no difference once tested, the one thing
+    shared across every failure — the custom-component/iframe bridge
+    itself — is the best-evidenced remaining cause. st.pydeck_chart()
+    sidesteps that whole class of failure rather than trying another
+    variant within it; pydeck ships as a core Streamlit dependency
+    (already installed, zero new dependency).
 
-    Rendered via st_folium(width="100%", returned_objects=[], key=...) —
-    matching, kwarg-for-kwarg, the one rendering pattern every other map
-    in this app (all 6 of them, in modules/visualizer.py and app.py) uses
-    successfully. A prior pass swapped this to streamlit_folium.folium_static()
-    on the theory that st_folium's custom component silently fails to
-    paint in Chrome on a non-first st.tabs() tab (this map is tab 2 of 3;
-    see https://github.com/randyzwitch/streamlit-folium/issues/128) — that
-    swap did NOT fix the reported "markers not showing up" issue, which is
-    real evidence against that theory, not just inconclusive. folium_static
-    also used a fixed width=1200 (every other map uses the responsive
-    width="100%") and had no explicit `key=`, both genuine deviations from
-    the app's only proven-working pattern — this revert removes every one
-    of those deviations at once. If markers still don't render after this,
-    the one remaining untested variable specific to this map is its tab
-    position itself (no other map in the app lives on a non-first tab, and
-    this is also the only map with zero enclosing st.columns/st.expander)
-    — that would need a structural fix (reordering tabs, or wrapping this
-    map in a container like every working map is), not another render-call
-    swap.
+    Draws an outline of the actual borough/ZIP search extent
+    (modules/nyc_boundaries.py, unchanged) as a GeoJsonLayer when
+    `criteria` carries a geographic filter, and auto-fits the view to
+    that extent (or to the markers themselves, if no boundary is
+    available) via pydeck.data_utils.compute_view() — pydeck's own
+    fit-to-bounds helper, replacing folium's fit_bounds().
 
-    Also caps marker count at _MAX_MAP_MARKERS (by Deal Score, `properties`
-    is already sorted) — separately from the results TABLE, which
-    intentionally shows the full, uncapped result set. Folium/Leaflet maps
-    are documented to fail to render at all above ~3000 markers
-    (https://github.com/python-visualization/folium/issues/803), a real
-    risk now that the table's own display cap was removed and a broad
-    search can return up to property_search._MAX_ROWS (3000) rows.
+    Caps marker count at _MAX_MAP_MARKERS (by Deal Score, `properties` is
+    already sorted) — separately from the results TABLE, which
+    intentionally shows the full, uncapped result set.
     """
     located = [p for p in properties if p.get("latitude") and p.get("longitude")]
     missing = len(properties) - len(located)
@@ -348,68 +342,74 @@ def _render_results_map(properties: list[dict], criteria: dict | None = None) ->
         return
 
     st.markdown("#### 🗺️ Map View")
-    center_lat = sum(p["latitude"] for p in shown) / len(shown)
-    center_lon = sum(p["longitude"] for p in shown) / len(shown)
 
     boundary_geojson, boundary_ok = _fetch_search_extent_boundary(criteria)
     boundary_requested = bool(criteria and (criteria.get("zip_codes") or criteria.get("boroughs")))
 
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="CartoDB positron")
-    folium.TileLayer(
-        tiles=ESRI_SATELLITE_TILES, attr=ESRI_SATELLITE_ATTR,
-        name="Satellite", overlay=False, control=True,
-    ).add_to(m)
-
+    layers = []
     if boundary_geojson:
-        folium.GeoJson(
-            boundary_geojson,
-            name="Search Area",
-            style_function=lambda _f: {
-                "fillColor": "#1D4ED8", "fillOpacity": 0.06,
-                "color": "#1D4ED8", "weight": 2.5, "dashArray": "6, 4",
-            },
-        ).add_to(m)
+        layers.append(pdk.Layer(
+            "GeoJsonLayer",
+            data=boundary_geojson,
+            stroked=True, filled=True,
+            get_fill_color=[29, 78, 216, 15],
+            get_line_color=[29, 78, 216, 220],
+            line_width_min_pixels=2,
+        ))
 
-    folium.LayerControl(position="topright", collapsed=True).add_to(m)
-    # Wider pixel radius than visualizer.py's tight rental-comps map (40px)
-    # since Site Finder results can legitimately include adjacent-lot
-    # assemblage candidates worth grouping at a city-wide zoom; a higher
-    # disableClusteringAtZoom (17 vs 16) defers full per-pin declustering
-    # until the user has genuinely zoomed to a near-parcel view, avoiding a
-    # cloud of overlapping individual pins on a wide borough-wide set.
-    cluster = MarkerCluster(options={"maxClusterRadius": 50, "disableClusteringAtZoom": 17}).add_to(m)
-
+    marker_rows = []
     for p in shown:
         ds = p.get("deal_score", {})
-        color = _TIER_MARKER_COLOR.get(ds.get("tier"), "blue")
-        popup_html = (
-            f"<b>{p.get('address', '')}</b><br>"
-            f"BBL {p.get('bbl', '')}<br>"
-            f"Deal Score: {ds.get('score', '—')}/100 ({ds.get('tier', '—')})<br>"
-            f"Strategy: {', '.join(p.get('strategies', [])) or '—'}"
-        )
-        folium.Marker(
-            location=[p["latitude"], p["longitude"]],
-            icon=folium.Icon(color=color, icon="flag", prefix="fa"),
-            tooltip=p.get("address", ""),
-            popup=folium.Popup(popup_html, max_width=260),
-        ).add_to(cluster)
+        color = _TIER_MARKER_COLOR.get(ds.get("tier"), _DEFAULT_MARKER_COLOR)
+        marker_rows.append({
+            "lon": p["longitude"], "lat": p["latitude"],
+            "color": color,
+            "address": p.get("address", ""),
+            "score": ds.get("score", "—"),
+            "tier": ds.get("tier", "—"),
+            "strategy": ", ".join(p.get("strategies", [])) or "—",
+            "bbl": p.get("bbl", ""),
+        })
+    layers.append(pdk.Layer(
+        "ScatterplotLayer",
+        data=marker_rows,
+        get_position="[lon, lat]",
+        get_fill_color="color",
+        get_radius=45, radius_min_pixels=5, radius_max_pixels=14,
+        pickable=True, auto_highlight=True,
+        stroked=True, get_line_color=[255, 255, 255], line_width_min_pixels=1,
+    ))
 
     # Auto-fit the view to the actual extent instead of a fixed zoom level
-    # (previously always zoom_start=13 regardless of spread) — prefer the
-    # search-area boundary's own bounds so the view frames the searched
-    # area, falling back to the plotted markers' bounds otherwise.
-    fit_bounds = (boundary_geojson and _geojson_bounds(boundary_geojson)) or [
-        [min(p["latitude"] for p in shown), min(p["longitude"] for p in shown)],
-        [max(p["latitude"] for p in shown), max(p["longitude"] for p in shown)],
-    ]
-    m.fit_bounds(fit_bounds)
+    # — prefer the search-area boundary's own vertices so the view frames
+    # the searched area, falling back to the plotted markers' positions
+    # otherwise. compute_view() wants [lon, lat] points (deck.gl order);
+    # _geojson_bounds() returns [lat, lon]-ordered corners, so swap here.
+    fit_points = None
+    if boundary_geojson:
+        boundary_bounds = _geojson_bounds(boundary_geojson)
+        if boundary_bounds:
+            fit_points = [[lon, lat] for lat, lon in boundary_bounds]
+    if not fit_points:
+        fit_points = [[p["longitude"], p["latitude"]] for p in shown]
+    view_state = compute_view(fit_points)
 
-    st_folium(m, width="100%", height=420, returned_objects=[], key=f"{_SF_PREFIX}results_map")
-    legend = " · ".join(f"🟢 {t}" if c == "green" else (f"🟠 {t}" if c == "orange" else f"⚪ {t}") for t, c in _TIER_MARKER_COLOR.items())
+    st.pydeck_chart(
+        pdk.Deck(
+            layers=layers,
+            initial_view_state=view_state,
+            map_style="light",
+            tooltip={"html": "<b>{address}</b><br/>Deal Score: {score}/100 ({tier})<br/>Strategy: {strategy}"},
+        ),
+        width="stretch", height=420,
+    )
+    legend = " · ".join(
+        f"🟢 {t}" if t == "Strong Lead" else (f"🟠 {t}" if t == "Watch" else f"⚪ {t}")
+        for t in _TIER_MARKER_COLOR
+    )
     caption = legend
     if boundary_geojson:
-        caption += " · dashed outline = search area"
+        caption += " · shaded outline = search area"
     elif boundary_requested and not boundary_ok:
         caption += " · search-area outline unavailable this time (boundary data source unreachable)"
     if map_truncated:
@@ -464,18 +464,119 @@ def _rent_stab_label(signal: dict) -> str:
     return "—"
 
 
+def _render_filter_panel(properties: list[dict]) -> list[dict]:
+    """
+    Client-side filter panel narrowing the already-fetched results list
+    for display (summary cards, map, table, exports, row-selection) — no
+    re-query against PLUTO. Deliberately does NOT affect assemblage
+    flagging (computed once over the full unfiltered set in
+    _run_search()) — two lots' physical adjacency is a fact independent
+    of which filters happen to be applied for display right now.
+
+    Options/ranges are computed dynamically from what's actually present
+    in `properties` so an untouched filter never excludes anything.
+    """
+    if not properties:
+        return properties
+
+    landuse_options = sorted({p.get("landuse_label") or "Unknown" for p in properties})
+    location_options = sorted({_lot_position_label(p.get("lot_type", "—")) for p in properties})
+    strategy_options = sorted({s for p in properties for s in p.get("strategies", [])})
+
+    lot_sf_vals = [p.get("lot_sf", 0) or 0 for p in properties]
+    far_built_vals = [p.get("far_built", 0) or 0 for p in properties]
+    far_max_vals = [p.get("far_max", 0) or 0 for p in properties]
+    lot_sf_lo, lot_sf_hi = (min(lot_sf_vals), max(lot_sf_vals)) if lot_sf_vals else (0.0, 0.0)
+    far_built_lo, far_built_hi = (min(far_built_vals), max(far_built_vals)) if far_built_vals else (0.0, 0.0)
+    far_max_lo, far_max_hi = (min(far_max_vals), max(far_max_vals)) if far_max_vals else (0.0, 0.0)
+
+    with st.expander("🔎 Filter Results", expanded=False):
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        with r1c1:
+            street_query = st.text_input(
+                "Street/Avenue", key=f"{_SF_PREFIX}filter_street", placeholder="e.g. Broadway",
+            )
+        with r1c2:
+            conditions_sel = st.multiselect(
+                "Current Conditions", options=landuse_options, key=f"{_SF_PREFIX}filter_conditions",
+            )
+        with r1c3:
+            location_sel = st.multiselect(
+                "Location", options=location_options, key=f"{_SF_PREFIX}filter_location",
+            )
+        with r1c4:
+            strategy_sel = st.multiselect(
+                "Strategy", options=strategy_options, key=f"{_SF_PREFIX}filter_strategy",
+            )
+
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        with r2c1:
+            lot_sf_min = st.number_input("Min Lot SF", min_value=0.0, value=float(lot_sf_lo), step=500.0, key=f"{_SF_PREFIX}filter_lotsf_min")
+            lot_sf_max = st.number_input("Max Lot SF", min_value=0.0, value=float(lot_sf_hi), step=500.0, key=f"{_SF_PREFIX}filter_lotsf_max")
+        with r2c2:
+            far_built_min = st.number_input("Min Built FAR", min_value=0.0, value=float(far_built_lo), step=0.1, key=f"{_SF_PREFIX}filter_farbuilt_min")
+            far_built_max = st.number_input("Max Built FAR", min_value=0.0, value=float(far_built_hi), step=0.1, key=f"{_SF_PREFIX}filter_farbuilt_max")
+        with r2c3:
+            far_max_min = st.number_input("Min Max FAR", min_value=0.0, value=float(far_max_lo), step=0.1, key=f"{_SF_PREFIX}filter_farmax_min")
+            far_max_max = st.number_input("Max Max FAR", min_value=0.0, value=float(far_max_hi), step=0.1, key=f"{_SF_PREFIX}filter_farmax_max")
+        with r2c4:
+            rent_stab_sel = st.selectbox(
+                "Rent Stabilized", options=["Any", "Confirmed only", "Confirmed or Likely"],
+                key=f"{_SF_PREFIX}filter_rentstab",
+            )
+
+        filtered = []
+        for p in properties:
+            if street_query and street_query.strip().lower() not in (p.get("address", "") or "").lower():
+                continue
+            if conditions_sel and (p.get("landuse_label") or "Unknown") not in conditions_sel:
+                continue
+            if location_sel and _lot_position_label(p.get("lot_type", "—")) not in location_sel:
+                continue
+            if strategy_sel and not (set(p.get("strategies", [])) & set(strategy_sel)):
+                continue
+            lot_sf = p.get("lot_sf", 0) or 0
+            if not (lot_sf_min <= lot_sf <= lot_sf_max):
+                continue
+            far_built = p.get("far_built", 0) or 0
+            if not (far_built_min <= far_built <= far_built_max):
+                continue
+            far_max = p.get("far_max", 0) or 0
+            if not (far_max_min <= far_max <= far_max_max):
+                continue
+            if rent_stab_sel != "Any":
+                rs = p.get("rent_stab_signal") or {}
+                if rent_stab_sel == "Confirmed only":
+                    if not (rs.get("verified") and rs.get("likely_stabilized")):
+                        continue
+                elif rent_stab_sel == "Confirmed or Likely":
+                    if not rs.get("likely_stabilized"):
+                        continue
+            filtered.append(p)
+
+        st.caption(f"Showing {len(filtered):,} of {len(properties):,} results")
+
+    return filtered
+
+
 def _render_results_table(properties: list[dict], criteria: dict | None = None) -> None:
     if not properties:
         st.info("No properties matched your criteria. Try widening the search (fewer filters, larger area).")
         return
 
-    _render_summary_cards(properties)
-    st.markdown("---")
-
     # Full result set (no display cap) — Streamlit's dataframe/map both
     # handle large row counts natively; the upstream Socrata fetch already
     # caps at property_search._MAX_ROWS (3000) so this isn't unbounded.
     results_full = _apply_ownership_cache(properties)
+
+    # Client-side filter panel narrows what's displayed everywhere below
+    # (summary cards, map, table, exports, row-selection) — it does NOT
+    # affect assemblage flagging, which stays computed over the full
+    # unfiltered set (see _render_filter_panel()'s docstring).
+    results_full = _render_filter_panel(results_full)
+
+    _render_summary_cards(results_full)
+    st.markdown("---")
 
     _render_results_map(results_full, criteria)
     st.markdown("---")
@@ -551,31 +652,38 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
 
     df = pd.DataFrame(rows)
     st.markdown(f"**{len(results_full):,} results**, ranked by Deal Score")
-    st.dataframe(
-        df, use_container_width=True, hide_index=True,
+    st.caption("🔬 Click a row to select it for Preliminary Diligence.")
+    table_state = st.dataframe(
+        df, width="stretch", hide_index=True,
         height=min(560, 60 + 35 * len(rows)),
         column_config={
             "Deal Score": st.column_config.ProgressColumn(
                 "Deal Score", min_value=0, max_value=100, format="%d"
             ),
         },
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"{_SF_PREFIX}results_table",
     )
 
-    st.markdown("---")
-    st.markdown("#### 🔬 View Preliminary Diligence")
-    options = ["— Select a property —"] + [
-        f"{i}. {p['address']} (BBL {p['bbl']})" for i, p in enumerate(results_full, start=1)
-    ]
-    choice = st.selectbox("Choose a result to inspect", options=options, key=f"{_SF_PREFIX}detail_choice")
-    if choice != options[0]:
-        idx = options.index(choice) - 1
-        if st.button("Open Preliminary Diligence →", type="primary"):
-            st.session_state[f"{_SF_PREFIX}selected_bbl"] = results_full[idx]["bbl"]
-            st.session_state[f"{_SF_PREFIX}selected_prop"] = results_full[idx]
+    # Row-click selection replaces the old separate dropdown+button —
+    # mirrors app.py's already-proven underbuilt-lots table pattern
+    # (on_select="rerun", selection_mode="single-row", then
+    # .selection.rows[0] as a positional index into the source list).
+    selected_rows = getattr(getattr(table_state, "selection", None), "rows", [])
+    if selected_rows:
+        _sel_prop = results_full[selected_rows[0]]
+        st.markdown(f"**Selected:** {_sel_prop['address']} (BBL {_sel_prop['bbl']})")
+        if st.button("🔬 Open Preliminary Diligence →", type="primary", key=f"{_SF_PREFIX}open_diligence_btn"):
+            st.session_state[f"{_SF_PREFIX}selected_bbl"] = _sel_prop["bbl"]
+            st.session_state[f"{_SF_PREFIX}selected_prop"] = _sel_prop
             st.rerun()
 
     st.markdown("---")
     st.markdown("#### ☆ Save to Portfolio")
+    options = ["— Select a property —"] + [
+        f"{i}. {p['address']} (BBL {p['bbl']})" for i, p in enumerate(results_full, start=1)
+    ]
     save_choice = st.selectbox("Choose a result to save", options=options, key=f"{_SF_PREFIX}save_choice")
     if save_choice != options[0]:
         save_idx = options.index(save_choice) - 1
@@ -1202,6 +1310,14 @@ def render_site_finder(anthropic_key: str = "") -> None:
         st.session_state[f"{_SF_PREFIX}last_results"] = results
         st.session_state[f"{_SF_PREFIX}last_status"] = status
         st.session_state[f"{_SF_PREFIX}last_criteria"] = criteria
+        # Reset any previous search's filter-panel widget state so numeric
+        # filter bounds (Lot SF/FAR min-max) reset to this new result
+        # set's actual range instead of silently carrying over stale
+        # values from a prior search and excluding results the user never
+        # meant to filter out.
+        for _k in list(st.session_state.keys()):
+            if _k.startswith(f"{_SF_PREFIX}filter_"):
+                del st.session_state[_k]
 
     results = st.session_state.get(f"{_SF_PREFIX}last_results")
     status  = st.session_state.get(f"{_SF_PREFIX}last_status", {})
