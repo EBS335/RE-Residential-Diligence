@@ -1,6 +1,7 @@
 from modules.underwriting_engine import (
     solve_irr, equity_multiple, build_scenarios, build_cash_flows,
     size_financing, simple_sponsor_returns, lp_gp_waterfall, run_sensitivity,
+    solve_land_residual_value,
     DEFAULT_SENSITIVITY_DELTAS_PCT, SENSITIVITY_LEVERS,
 )
 
@@ -141,6 +142,62 @@ def test_build_cash_flows_never_raises_on_thin_inputs():
         assert "annual_cash_flows" in result
 
 
+# ── Acquisition-analysis output metrics (DSCR / cash-on-cash / yield-on-cost) ─
+
+def test_build_cash_flows_rental_scenario_acquisition_metrics_present():
+    scenarios = build_scenarios(_prop())
+    rental = next(s for s in scenarios if s["use_type"] == "rental")
+    result = build_cash_flows(rental, _acq(), borough="Brooklyn", hold_years=7)
+    assert result["achieved_dscr_yr1"] > 0
+    assert result["cash_on_cash_yr1"] is not None
+    assert result["yield_on_cost"] == result["year1_noi"] / result["total_dev_cost"]
+    # DSCR should reconcile against the financing sub-dict already returned.
+    assert abs(result["achieved_dscr_yr1"] - result["year1_noi"] / result["financing"]["annual_debt_service"]) < 1e-6
+
+
+def test_build_cash_flows_condo_scenario_acquisition_metrics_none():
+    scenarios = build_scenarios(_prop())
+    condo = next(s for s in scenarios if s["use_type"] == "condo")
+    result = build_cash_flows(condo, _acq(), market_comps={"median_price_psf": 900, "count": 10})
+    assert result["achieved_dscr_yr1"] is None
+    assert result["cash_on_cash_yr1"] is None
+    assert result["yield_on_cost"] is None
+
+
+# ── Land-residual solver ─────────────────────────────────────────────────────
+
+def test_solve_land_residual_value_reconciles_against_build_cash_flows():
+    scenarios = build_scenarios(_prop())
+    rental = next(s for s in scenarios if s["use_type"] == "rental")
+    # This scenario's zero-land-cost IRR is ~2.4% (hard costs dominate) —
+    # use a target comfortably below that so it's actually reachable.
+    result = solve_land_residual_value(rental, _acq(), target_irr=0.02, borough="Brooklyn", hold_years=7)
+    assert result["land_value"] is not None
+    assert result["achieved_irr"] is not None
+    assert abs(result["achieved_irr"] - 0.02) < 0.005
+    # Re-running build_cash_flows at the solved price should reproduce
+    # (approximately) the same IRR — no parallel cash-flow model drift.
+    acq = {"estimate": result["land_value"], "basis": "test", "method": "solved", "confidence": "High"}
+    cf = build_cash_flows(rental, acq, borough="Brooklyn", hold_years=7)
+    irr = simple_sponsor_returns(cf["annual_cash_flows"])["irr"]
+    assert abs(irr - result["achieved_irr"]) < 1e-4
+
+
+def test_solve_land_residual_value_unreachable_target_returns_zero():
+    scenarios = build_scenarios(_prop())
+    rental = next(s for s in scenarios if s["use_type"] == "rental")
+    result = solve_land_residual_value(rental, _acq(), target_irr=5.0, borough="Brooklyn", hold_years=7)
+    assert result["land_value"] == 0.0
+    assert result["note"] is not None
+
+
+def test_solve_land_residual_value_never_raises_on_thin_inputs():
+    scenarios = build_scenarios(_prop())
+    for s in scenarios:
+        result = solve_land_residual_value(s, {"estimate": None})
+        assert "land_value" in result
+
+
 # ── Simple sponsor returns ──────────────────────────────────────────────────
 
 def test_simple_sponsor_returns_shape():
@@ -229,6 +286,52 @@ def test_sensitivity_grid_shape():
     for lever in SENSITIVITY_LEVERS:
         assert len(result["grid"][lever]) == len(DEFAULT_SENSITIVITY_DELTAS_PCT)
     assert len(result["tornado_ranking"]) == len(SENSITIVITY_LEVERS)
+
+
+def test_sensitivity_new_levers_produce_valid_irrs():
+    # hold_period, vacancy, leverage, price, opex — all 5 newly-added levers
+    # should produce a full row of non-exception IRRs (None is allowed for
+    # extreme deltas where no sign change exists, but the call must not raise).
+    scenarios = build_scenarios(_prop())
+    rental = next(s for s in scenarios if s["scenario_id"] == "rental_hold_max_far")
+    acq = _acq()
+    result = run_sensitivity(
+        rental, acq,
+        base_kwargs={"market_comps": {"median_price_psf": 900, "count": 10}, "borough": "Brooklyn"},
+        levers=["hold_period", "vacancy", "leverage", "price", "opex"],
+    )
+    for lever in ["hold_period", "vacancy", "leverage", "price", "opex"]:
+        assert len(result["grid"][lever]) == len(DEFAULT_SENSITIVITY_DELTAS_PCT)
+
+
+def test_sensitivity_vacancy_lever_higher_vacancy_lowers_irr():
+    scenarios = build_scenarios(_prop())
+    rental = next(s for s in scenarios if s["scenario_id"] == "rental_hold_max_far")
+    acq = _acq()
+    result = run_sensitivity(
+        rental, acq,
+        base_kwargs={"market_comps": {"median_price_psf": 900, "count": 10}, "borough": "Brooklyn"},
+        levers=["vacancy"],
+    )
+    rows = {r["delta_pct"]: r["irr"] for r in result["grid"]["vacancy"]}
+    # +15% more vacancy should never beat -15% less vacancy.
+    assert rows[0.15] is not None and rows[-0.15] is not None
+    assert rows[0.15] < rows[-0.15]
+
+
+def test_sensitivity_price_lever_perturbs_acquisition_not_scenario():
+    scenarios = build_scenarios(_prop())
+    rental = next(s for s in scenarios if s["scenario_id"] == "rental_hold_max_far")
+    acq = _acq(estimate=3_000_000.0)
+    result = run_sensitivity(
+        rental, acq,
+        base_kwargs={"market_comps": {"median_price_psf": 900, "count": 10}, "borough": "Brooklyn"},
+        levers=["price"],
+    )
+    rows = {r["delta_pct"]: r["irr"] for r in result["grid"]["price"]}
+    # A higher acquisition price should never beat a lower one on IRR.
+    assert rows[0.15] is not None and rows[-0.15] is not None
+    assert rows[0.15] < rows[-0.15]
 
 
 def test_sensitivity_exit_cap_rate_produces_realistic_bounded_swings():

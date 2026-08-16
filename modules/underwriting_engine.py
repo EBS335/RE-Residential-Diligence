@@ -39,7 +39,7 @@ from modules.site_finder_valuation import (
     _CLOSING_COST_PCT,
     _EFFICIENCY_FACTOR,
 )
-from modules.unit_mix import optimize_unit_mix, compute_revenue, CAP_RATES
+from modules.unit_mix import optimize_unit_mix, compute_revenue, CAP_RATES, RISK_PARAMS
 from modules.zoning_rules import get_zoning_rules
 
 # ── Hold / exit assumptions (NYC-typical rules of thumb, all overridable) ──
@@ -78,7 +78,10 @@ DEFAULT_RETAIL_EFFICIENCY        = 0.95
 
 # ── Sensitivity assumptions ─────────────────────────────────────────────────
 DEFAULT_SENSITIVITY_DELTAS_PCT = [-0.15, -0.10, -0.05, 0.05, 0.10, 0.15]
-SENSITIVITY_LEVERS = ["rent", "hard_cost", "exit_cap_rate", "interest_rate"]
+SENSITIVITY_LEVERS = [
+    "rent", "hard_cost", "exit_cap_rate", "interest_rate",
+    "hold_period", "vacancy", "leverage", "price", "opex",
+]
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -402,6 +405,7 @@ def build_cash_flows(
     selling_cost_pct: float = DEFAULT_SELLING_COST_PCT,
     cap_rate_multiplier: float = 1.0,
     financing_kwargs: dict | None = None,
+    occupancy_override: float | None = None,
 ) -> dict:
     """
     Build a multi-year cash-flow-to-equity series for ONE scenario:
@@ -412,6 +416,11 @@ def build_cash_flows(
 
     Never raises. Returns a fixed-shape dict; `annual_cash_flows[i]["equity_cf"]`
     is the series solve_irr()/equity_multiple() should be called on directly.
+    Also returns `achieved_dscr_yr1`, `cash_on_cash_yr1`, and `yield_on_cost`
+    — Year-1 acquisition-analysis output metrics computed from values this
+    function already builds (None where not meaningful, e.g. condo sellout).
+    `occupancy_override` (0-1) substitutes for risk_level's default
+    occupancy, e.g. for a vacancy sensitivity lever in run_sensitivity().
     """
     financing_kwargs = financing_kwargs or {}
     acq_estimate = acquisition.get("estimate") or 0.0
@@ -458,6 +467,11 @@ def build_cash_flows(
             "unlevered_equity_multiple": equity_multiple([cf["unlevered_cf"] for cf in annual_cash_flows]),
             "total_equity_in": equity_in,
             "financing": financing,
+            # Not meaningful for a lump-sum sellout (no stabilized Year-1 NOI
+            # or amortizing debt service to divide by) — always None here.
+            "achieved_dscr_yr1": None,
+            "cash_on_cash_yr1": None,
+            "yield_on_cost": None,
             "assumptions": {
                 "hold_years": 1, "rent_growth_pct": None, "expense_growth_pct": None,
                 "exit_cap_spread_bps": None, "selling_cost_pct": selling_cost_pct,
@@ -467,7 +481,10 @@ def build_cash_flows(
 
     # ── Rental / mixed-use scenarios ────────────────────────────────────
     unit_mix = optimize_unit_mix(scenario["net_buildable_sf"], neighborhood=borough)
-    year1 = compute_revenue(unit_mix, avg_rents or {}, risk_level=risk_level, borough=borough)
+    year1 = compute_revenue(
+        unit_mix, avg_rents or {}, risk_level=risk_level, borough=borough,
+        occupancy_override=occupancy_override,
+    )
     egi_1, opex_1, noi_1 = year1["egi"], year1["opex"], year1["noi"]
 
     retail_egi_1 = scenario.get("net_retail_sf", 0.0) * DEFAULT_RETAIL_RENT_PSF_YR
@@ -524,6 +541,14 @@ def build_cash_flows(
     unlevered_series[0] = -total_dev_cost
     unlevered_series[-1] += exit_value * (1 - selling_cost_pct)
 
+    # Acquisition-analysis output metrics (Year-1, on-top-of the multi-year
+    # IRR above) — pure arithmetic on values already computed in this
+    # function; not a second financial model.
+    year1_debt_service = financing["annual_debt_service"]
+    achieved_dscr_yr1 = (noi_1 / year1_debt_service) if year1_debt_service > 0 else None
+    cash_on_cash_yr1 = ((noi_1 - year1_debt_service) / equity_in) if equity_in > 0 else None
+    yield_on_cost = (noi_1 / total_dev_cost) if total_dev_cost > 0 else None
+
     return {
         "scenario_id": scenario["scenario_id"], "scenario_label": scenario["label"],
         "annual_cash_flows": annual_cash_flows,
@@ -533,12 +558,94 @@ def build_cash_flows(
         "unlevered_equity_multiple": equity_multiple(unlevered_series),
         "total_equity_in": equity_in,
         "financing": financing,
+        "achieved_dscr_yr1": achieved_dscr_yr1,
+        "cash_on_cash_yr1": cash_on_cash_yr1,
+        "yield_on_cost": yield_on_cost,
         "assumptions": {
             "hold_years": hold_years, "rent_growth_pct": rent_growth_pct,
             "expense_growth_pct": expense_growth_pct, "exit_cap_spread_bps": exit_cap_spread_bps,
             "selling_cost_pct": selling_cost_pct, "going_in_cap_rate": cap_rate,
         },
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 4b. Land-residual solver
+# ═════════════════════════════════════════════════════════════════════════
+
+DEFAULT_LAND_RESIDUAL_TARGET_IRR = 0.15
+DEFAULT_LAND_RESIDUAL_MAX_ITER = 60
+DEFAULT_LAND_RESIDUAL_TOL_IRR = 0.0005
+
+
+def solve_land_residual_value(
+    scenario: dict,
+    acquisition: dict,
+    target_irr: float = DEFAULT_LAND_RESIDUAL_TARGET_IRR,
+    price_bounds: tuple[float, float] | None = None,
+    max_iter: int = DEFAULT_LAND_RESIDUAL_MAX_ITER,
+    tol_irr: float = DEFAULT_LAND_RESIDUAL_TOL_IRR,
+    **cash_flow_kwargs,
+) -> dict:
+    """
+    Reverse-solve for the maximum acquisition/land price this scenario can
+    pay and still hit `target_irr` — every other build_cash_flows()
+    assumption held fixed. Bisects on acquisition price directly (never
+    raises, no numpy/scipy) rather than reusing solve_irr()'s
+    rate-bisection: IRR is monotonically non-increasing in acquisition
+    price (a higher price only ever makes the deal's cash flows worse), so
+    the same bisection strategy applies to a different variable. Reuses
+    build_cash_flows()/simple_sponsor_returns() as black boxes — no
+    parallel cash-flow model.
+
+    `cash_flow_kwargs` are forwarded to build_cash_flows() exactly as in
+    run_sensitivity() (market_comps, avg_rents, risk_level, borough, etc).
+
+    Returns {"land_value", "achieved_irr", "note"} — never raises;
+    degrades to a best-effort estimate (with an explanatory `note`) if the
+    target IRR is unreachable within `price_bounds` or convergence stalls.
+    """
+    base_estimate = max(0.0, acquisition.get("estimate") or 0.0)
+    lo, hi = price_bounds or (0.0, max(base_estimate * 3.0, 1_000_000.0))
+
+    def _irr_at(price: float) -> float | None:
+        acq = dict(acquisition)
+        acq["estimate"] = max(0.0, price)
+        result = build_cash_flows(scenario, acq, **cash_flow_kwargs)
+        return simple_sponsor_returns(result["annual_cash_flows"])["irr"]
+
+    irr_at_zero = _irr_at(lo)
+    if irr_at_zero is None:
+        return {"land_value": None, "achieved_irr": None,
+                "note": "Could not solve — no valid IRR even at zero land cost."}
+    if irr_at_zero < target_irr:
+        return {"land_value": 0.0, "achieved_irr": irr_at_zero,
+                "note": f"Target IRR ({target_irr:.1%}) unreachable even at zero land cost "
+                        f"under these assumptions."}
+
+    irr_at_hi = _irr_at(hi)
+    if irr_at_hi is not None and irr_at_hi >= target_irr:
+        return {"land_value": hi, "achieved_irr": irr_at_hi,
+                "note": f"Target IRR still achievable at the upper price bound "
+                        f"(${hi:,.0f}) — raise price_bounds to solve further."}
+
+    mid = lo
+    irr_mid = irr_at_zero
+    for _ in range(max_iter):
+        mid = (lo + hi) / 2.0
+        irr_mid = _irr_at(mid)
+        if irr_mid is None:
+            hi = mid
+            continue
+        if abs(irr_mid - target_irr) < tol_irr:
+            return {"land_value": mid, "achieved_irr": irr_mid, "note": None}
+        if irr_mid > target_irr:
+            lo = mid
+        else:
+            hi = mid
+
+    return {"land_value": mid, "achieved_irr": irr_mid,
+            "note": "Max iterations reached — result is a close approximation, not exact."}
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -722,6 +829,7 @@ def run_sensitivity(
         for delta in deltas_pct:
             kwargs = dict(base_kwargs)
             scenario_for_run = scenario
+            acquisition_for_run = acquisition
 
             if lever == "rent":
                 kwargs["rent_growth_pct"] = base_kwargs.get("rent_growth_pct", DEFAULT_RENT_GROWTH_PCT) + delta
@@ -740,8 +848,32 @@ def run_sensitivity(
                 fin_kwargs["construction_rate"] = fin_kwargs.get("construction_rate", DEFAULT_CONSTRUCTION_RATE) + delta
                 fin_kwargs["perm_rate"] = fin_kwargs.get("perm_rate", DEFAULT_PERM_RATE) + delta
                 kwargs["financing_kwargs"] = fin_kwargs
+            elif lever == "hold_period":
+                base_hold = base_kwargs.get("hold_years", DEFAULT_HOLD_YEARS_POST_STAB)
+                kwargs["hold_years"] = max(1, round(base_hold * (1 + delta)))
+            elif lever == "vacancy":
+                # Stress the VACANCY rate itself (not occupancy) so a
+                # positive delta always means "more vacancy" — consistent
+                # with hard_cost/interest_rate's positive-delta-is-adverse
+                # convention, unlike rent's positive-delta-is-favorable one.
+                base_occ = base_kwargs.get("occupancy_override")
+                if base_occ is None:
+                    base_occ = RISK_PARAMS.get(base_kwargs.get("risk_level", "MED"), RISK_PARAMS["MED"])["occupancy"]
+                base_vacancy = 1.0 - base_occ
+                stressed_vacancy = max(0.0, min(0.95, base_vacancy * (1 + delta)))
+                kwargs["occupancy_override"] = 1.0 - stressed_vacancy
+            elif lever == "leverage":
+                fin_kwargs = dict(base_kwargs.get("financing_kwargs") or {})
+                fin_kwargs["construction_ltc"] = max(0.0, min(0.95, fin_kwargs.get("construction_ltc", DEFAULT_CONSTRUCTION_LTC) * (1 + delta)))
+                fin_kwargs["perm_ltv"] = max(0.0, min(0.95, fin_kwargs.get("perm_ltv", DEFAULT_PERM_LTV) * (1 + delta)))
+                kwargs["financing_kwargs"] = fin_kwargs
+            elif lever == "price":
+                acquisition_for_run = dict(acquisition)
+                acquisition_for_run["estimate"] = (acquisition.get("estimate") or 0.0) * (1 + delta)
+            elif lever == "opex":
+                kwargs["expense_growth_pct"] = base_kwargs.get("expense_growth_pct", DEFAULT_EXPENSE_GROWTH_PCT) + delta
 
-            result = build_cash_flows(scenario_for_run, acquisition, **kwargs)
+            result = build_cash_flows(scenario_for_run, acquisition_for_run, **kwargs)
             irr = _irr_for(result)
             em = simple_sponsor_returns(result["annual_cash_flows"])["equity_multiple"]
             rows.append({"delta_pct": delta, "irr": irr, "equity_multiple": em})

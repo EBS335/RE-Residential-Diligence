@@ -4355,6 +4355,7 @@ with tab_property:
                                 from modules.underwriting_engine import (
                                     build_cash_flows as _uw_build_cf, simple_sponsor_returns as _uw_simple_returns,
                                     lp_gp_waterfall as _uw_waterfall, run_sensitivity as _uw_run_sensitivity,
+                                    solve_land_residual_value as _uw_solve_land_residual,
                                     DEFAULT_HOLD_YEARS_POST_STAB as _UW_D_HOLD, DEFAULT_RENT_GROWTH_PCT as _UW_D_RENTG,
                                     DEFAULT_EXPENSE_GROWTH_PCT as _UW_D_EXPG, DEFAULT_EXIT_CAP_SPREAD_BPS as _UW_D_EXITSPREAD,
                                     DEFAULT_CONSTRUCTION_LTC as _UW_D_LTC, DEFAULT_CONSTRUCTION_RATE as _UW_D_CRATE,
@@ -4898,6 +4899,16 @@ with tab_property:
                                     um3.metric("Total Dev. Cost", f"${_uwd_cf_result['total_dev_cost']:,.0f}")
                                     um4.metric("Year 1 NOI", f"${_uwd_cf_result['year1_noi']:,.0f}" if _uwd_cf_result["year1_noi"] else "—")
 
+                                    # Acquisition-analysis output metrics — None for a condo
+                                    # sellout (no stabilized Year-1 NOI/debt service to divide by).
+                                    um5, um6, um7 = st.columns(3)
+                                    _uwd_dscr = _uwd_cf_result.get("achieved_dscr_yr1")
+                                    _uwd_coc = _uwd_cf_result.get("cash_on_cash_yr1")
+                                    _uwd_yoc = _uwd_cf_result.get("yield_on_cost")
+                                    um5.metric("Achieved DSCR (Yr 1)", f"{_uwd_dscr:.2f}x" if _uwd_dscr is not None else "N/A")
+                                    um6.metric("Cash-on-Cash (Yr 1)", f"{_uwd_coc:.1%}" if _uwd_coc is not None else "N/A")
+                                    um7.metric("Yield on Cost", f"{_uwd_yoc:.1%}" if _uwd_yoc is not None else "N/A")
+
                                     if _uwd_equity_structure == "waterfall":
                                         ug1, ug2 = st.columns(2)
                                         ug1.metric("GP IRR", f"{_uwd_returns['gp_irr']:.1%}" if _uwd_returns["gp_irr"] is not None else "N/A")
@@ -4923,6 +4934,26 @@ with tab_property:
                                             f"- Annual debt service: ${_uwd_fin['annual_debt_service']:,.0f}\n"
                                             f"- {_uwd_fin['note']}"
                                         )
+
+                                    with st.expander("🎯 Land Residual Solver", expanded=False):
+                                        st.caption(
+                                            "Reverse-solves the maximum land/acquisition price this scenario can "
+                                            "pay and still hit a target sponsor IRR — every other assumption above "
+                                            "held fixed."
+                                        )
+                                        _uwd_lr_target = _uwd_pct_input("Target IRR", 0.15, f"{_uwd_key_base}_lr_target")
+                                        if st.button("Solve for Max Land Value", key=f"{_uwd_key_base}_lr_btn"):
+                                            st.session_state[f"{_uwd_key_base}_lr_result"] = _uw_solve_land_residual(
+                                                _uwd_scenario, _uw_acq, target_irr=_uwd_lr_target, **_uwd_cf_kwargs,
+                                            )
+                                        _uwd_lr_cached = st.session_state.get(f"{_uwd_key_base}_lr_result")
+                                        if _uwd_lr_cached:
+                                            if _uwd_lr_cached["land_value"] is not None:
+                                                lr1, lr2 = st.columns(2)
+                                                lr1.metric("Max Supportable Land Value", f"${_uwd_lr_cached['land_value']:,.0f}")
+                                                lr2.metric("Achieved IRR", f"{_uwd_lr_cached['achieved_irr']:.1%}" if _uwd_lr_cached["achieved_irr"] is not None else "N/A")
+                                            if _uwd_lr_cached.get("note"):
+                                                st.caption(f"ℹ️ {_uwd_lr_cached['note']}")
 
                                     with st.expander("📉 Sensitivity / Stress Test", expanded=False):
                                         if st.button("Run Sensitivity", key=f"{_uwd_key_base}_sens_btn"):
@@ -4950,7 +4981,11 @@ with tab_property:
                                                 _uwd_grid_row = {f"{r['delta_pct']:+.0%}": (f"{r['irr']:.1%}" if r["irr"] is not None else "N/A") for r in rows}
                                                 st.dataframe(pd.DataFrame([_uwd_grid_row]), use_container_width=True, hide_index=True)
                                         else:
-                                            st.caption("Not yet run — click above to stress-test rent, hard cost, exit cap rate, and interest rate.")
+                                            st.caption(
+                                                "Not yet run — click above to stress-test rent, hard cost, exit cap "
+                                                "rate, interest rate, hold period, vacancy, leverage, acquisition "
+                                                "price, and operating expenses."
+                                            )
 
                                     # Stash a flattened summary for the "Export This Property" section below.
                                     st.session_state[f"_uw_deepdive_{_bbl_disp}"] = _uwd_flatten(

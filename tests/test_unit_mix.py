@@ -49,6 +49,15 @@ def test_compute_revenue_risk_tier_ordering():
     assert high["egi"] > med["egi"] > low["egi"]
 
 
+def test_compute_revenue_occupancy_override_takes_precedence():
+    unit_mix = optimize_unit_mix(30_000.0, "Manhattan")
+    avg_rents = {"Studio": 2800, "1 Bed": 3500, "2 Bed": 5000, "3 Bed": 7500, "4+ Bed": 11000}
+    default_med = compute_revenue(unit_mix, avg_rents, risk_level="MED")
+    overridden = compute_revenue(unit_mix, avg_rents, risk_level="MED", occupancy_override=0.5)
+    assert overridden["occupancy_used"] == 0.5
+    assert overridden["egi"] < default_med["egi"]
+
+
 def test_compute_revenue_shape():
     unit_mix = optimize_unit_mix(30_000.0, "Manhattan")
     result = compute_revenue(unit_mix, {}, risk_level="MED")

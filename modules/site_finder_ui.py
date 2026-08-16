@@ -29,7 +29,7 @@ from modules.site_finder_market import enrich_market_data, fetch_market_comps
 from modules.site_finder_valuation import estimate_acquisition_cost
 from modules.underwriting_engine import (
     build_scenarios, build_cash_flows, simple_sponsor_returns, lp_gp_waterfall,
-    run_sensitivity, DEFAULT_HOLD_YEARS_POST_STAB, DEFAULT_RENT_GROWTH_PCT,
+    run_sensitivity, solve_land_residual_value, DEFAULT_HOLD_YEARS_POST_STAB, DEFAULT_RENT_GROWTH_PCT,
     DEFAULT_EXPENSE_GROWTH_PCT, DEFAULT_EXIT_CAP_SPREAD_BPS, DEFAULT_SELLING_COST_PCT,
     DEFAULT_CONSTRUCTION_LTC, DEFAULT_CONSTRUCTION_RATE, DEFAULT_PERM_LTV,
     DEFAULT_PERM_DSCR_MIN, DEFAULT_PERM_RATE, DEFAULT_PERM_AMORT_YEARS,
@@ -1173,6 +1173,16 @@ def _render_underwriting_section(prop: dict) -> None:
     m3.metric("Total Dev. Cost", f"${cf_result['total_dev_cost']:,.0f}")
     m4.metric("Year 1 NOI", f"${cf_result['year1_noi']:,.0f}" if cf_result["year1_noi"] else "—")
 
+    # Acquisition-analysis output metrics — None for a condo sellout (no
+    # stabilized Year-1 NOI/debt service to divide by).
+    m5, m6, m7 = st.columns(3)
+    _dscr = cf_result.get("achieved_dscr_yr1")
+    _coc = cf_result.get("cash_on_cash_yr1")
+    _yoc = cf_result.get("yield_on_cost")
+    m5.metric("Achieved DSCR (Yr 1)", f"{_dscr:.2f}x" if _dscr is not None else "N/A")
+    m6.metric("Cash-on-Cash (Yr 1)", f"{_coc:.1%}" if _coc is not None else "N/A")
+    m7.metric("Yield on Cost", f"{_yoc:.1%}" if _yoc is not None else "N/A")
+
     if equity_structure == "waterfall":
         g1, g2 = st.columns(2)
         g1.metric("GP IRR", f"{returns['gp_irr']:.1%}" if returns["gp_irr"] is not None else "N/A")
@@ -1198,6 +1208,25 @@ def _render_underwriting_section(prop: dict) -> None:
             f"- Annual debt service: ${fin['annual_debt_service']:,.0f}\n"
             f"- {fin['note']}"
         )
+
+    with st.expander("🎯 Land Residual Solver", expanded=False):
+        st.caption(
+            "Reverse-solves the maximum land/acquisition price this scenario can "
+            "pay and still hit a target sponsor IRR — every other assumption above held fixed."
+        )
+        lr_target = _pct_input("Target IRR", 0.15, f"{_SF_PREFIX}uw_lr_target_{bbl}")
+        if st.button("Solve for Max Land Value", key=f"{_SF_PREFIX}uw_lr_btn_{bbl}"):
+            st.session_state[f"{_SF_PREFIX}uw_lr_result_{bbl}"] = solve_land_residual_value(
+                scenario, acq, target_irr=lr_target, **cf_kwargs,
+            )
+        lr_cached = st.session_state.get(f"{_SF_PREFIX}uw_lr_result_{bbl}")
+        if lr_cached:
+            if lr_cached["land_value"] is not None:
+                lr1, lr2 = st.columns(2)
+                lr1.metric("Max Supportable Land Value", f"${lr_cached['land_value']:,.0f}")
+                lr2.metric("Achieved IRR", f"{lr_cached['achieved_irr']:.1%}" if lr_cached["achieved_irr"] is not None else "N/A")
+            if lr_cached.get("note"):
+                st.caption(f"ℹ️ {lr_cached['note']}")
 
     with st.expander("📉 Sensitivity / Stress Test", expanded=False):
         if st.button("Run Sensitivity", key=f"{_SF_PREFIX}uw_sens_{bbl}"):
@@ -1230,7 +1259,10 @@ def _render_underwriting_section(prop: dict) -> None:
                 grid_row = {f"{r['delta_pct']:+.0%}": (f"{r['irr']:.1%}" if r["irr"] is not None else "N/A") for r in rows}
                 st.dataframe(pd.DataFrame([grid_row]), use_container_width=True, hide_index=True)
         else:
-            st.caption("Not yet run — click above to stress-test rent, hard cost, exit cap rate, and interest rate.")
+            st.caption(
+                "Not yet run — click above to stress-test rent, hard cost, exit cap rate, "
+                "interest rate, hold period, vacancy, leverage, acquisition price, and operating expenses."
+            )
 
     # Stash a flattened summary for the export section below.
     st.session_state[f"{_SF_PREFIX}uw_export_{bbl}"] = _flatten_underwriting_for_export(

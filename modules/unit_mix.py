@@ -342,6 +342,7 @@ def compute_revenue(
     avg_rents: dict[str, float],
     risk_level: str = "MED",
     borough: str = "Manhattan",
+    occupancy_override: float | None = None,
 ) -> dict:
     """
     Project annual revenue and estimated cap value for a given unit mix.
@@ -357,13 +358,17 @@ def compute_revenue(
         "LOW", "MED", or "HIGH" — drives occupancy and rent multiplier
     borough : str
         Used to select applicable cap rate
+    occupancy_override : float | None
+        If given, used instead of risk_level's default occupancy (e.g. for
+        a vacancy sensitivity lever) — rent_multiplier still comes from
+        risk_level either way.
 
     Returns
     -------
     dict with financial projection metrics
     """
     params      = RISK_PARAMS.get(risk_level, RISK_PARAMS["MED"])
-    occupancy   = params["occupancy"]
+    occupancy   = occupancy_override if occupancy_override is not None else params["occupancy"]
     rent_mult   = params["rent_multiplier"]
     cap_rate    = CAP_RATES.get(borough, CAP_RATES["Manhattan"])
 
