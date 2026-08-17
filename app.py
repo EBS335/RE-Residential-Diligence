@@ -4499,7 +4499,7 @@ with tab_property:
                                 _erow("Contextual Rules",  "Yes — street-wall + base/max" if _zrules.get("contextual") else "No") +
                                 _erow("Tower Rules",       "Yes — tower-on-base w/ open space" if _zrules.get("tower_rules") else "No") +
                                 _erow("Sky Exp. Plane",    "Yes — 2.7:1 slope" if _zrules.get("sky_exp_plane") else "No") +
-                                _erow("Use Regulations",   "ZR §" + ("22" if _primary_zone.startswith("R") else "32" if _primary_zone.startswith("C") else "42") + "-00",
+                                _erow("Use Regulations",   _zcite.get("use_citation", "ZR § Use Regulations"),
                                       link=_zcite.get("use_url")) +
                                 _erow("Off-Street Parking", _zcite.get("parking_citation", ""),
                                       link=_zcite.get("parking_url"))
@@ -4516,7 +4516,7 @@ with tab_property:
                                 f"<a href='{_zcite['article_url']}' target='_blank' style='color:#8B6914'>Bulk Regulations</a> · "
                                 f"<a href='{_zcite.get('use_url',_zcite['article_url'])}' target='_blank' style='color:#8B6914'>Use Regulations</a> · "
                                 f"<a href='{_zcite.get('parking_url',_zcite['article_url'])}' target='_blank' style='color:#8B6914'>Parking Regulations</a> · "
-                                f"<a href='{_zcite.get('zr_main_url','https://zr.planning.nyc.gov')}' target='_blank' style='color:#8B6914'>Full ZR Browser</a> · "
+                                f"<a href='{_zcite.get('zr_main_url','https://zoningresolution.planning.nyc.gov')}' target='_blank' style='color:#8B6914'>Full ZR Browser</a> · "
                                 f"<a href='{_zcite.get('zola_url','https://zola.planning.nyc.gov')}' target='_blank' style='color:#8B6914'>ZOLA Map</a>"
                                 f"</div>",
                                 unsafe_allow_html=True,
@@ -6060,20 +6060,25 @@ with tab_property:
                                 st.markdown(f"**Front Yard:** {_ddata.get('front_yard_ft', 0)} ft · **Rear Yard:** {_ddata.get('rear_yard_ft', 0)} ft · **Side Yard:** {_ddata.get('side_yard_ft', 0)} ft")
                                 st.markdown(f"**Max Lot Coverage:** {_ddata.get('lot_coverage_pct', 0) or '—'}%")
                                 st.markdown(f"**Contextual:** {'Yes' if _ddata.get('contextual') else 'No'} · **Sky Exp. Plane:** {'Yes' if _ddata.get('sky_exp_plane') else 'No'}")
-                            st.markdown(f"[NYC Zoning Text →](https://zoning.nyc.gov/) · [View on ZOLA →](https://zola.planning.nyc.gov/)")
+                            _dcite = get_zoning_citations(_dcode)
+                            st.markdown(
+                                f"[NYC Zoning Text →]({_dcite.get('article_url','https://zoningresolution.planning.nyc.gov')}) · "
+                                f"[View on ZOLA →]({_dcite.get('zola_url','https://zola.planning.nyc.gov')})"
+                            )
                     elif _dtype == "overlay" and _ddata:
                         with st.expander(f"🏪 Commercial Overlay {_dcode}", expanded=False):
                             st.markdown(f"**Permitted Uses:** {_ddata.get('uses', 'local retail and service')}")
                             st.markdown(f"**Commercial FAR:** {_ddata.get('comm_far', '—')}")
-                            st.markdown("[NYC Commercial Overlay Guide →](https://zoning.nyc.gov/)")
+                            _ocite = get_zoning_citations(_dcode)
+                            st.markdown(f"[NYC Commercial Overlay Guide →]({_ocite.get('article_url','https://zoningresolution.planning.nyc.gov')})")
                     elif _dtype == "special" and _ddata:
                         with st.expander(f"⭐ Special District {_dcode} — {_ddata.get('name', '')}", expanded=False):
                             st.markdown(_ddata.get("description", ""))
-                            st.markdown(f"[NYC Planning Special District Text →]({_ddata.get('url', 'https://zoning.nyc.gov/')})")
+                            st.markdown(f"[NYC Planning Special District Text →]({_ddata.get('url', 'https://zoningresolution.planning.nyc.gov')})")
                     elif _dtype == "limited_height":
                         with st.expander(f"📏 Limited Height District {_dcode}", expanded=False):
                             st.markdown(f"Limited height districts restrict building heights below the otherwise applicable zoning limits. Verify maximum height with NYC Planning for district **{_dcode}**.")
-                            st.markdown("[NYC Planning →](https://zoning.nyc.gov/)")
+                            st.markdown("[NYC Planning →](https://zoningresolution.planning.nyc.gov)")
                     elif _dtype == "historic":
                         with st.expander(f"🏛️ Historic District — {_dcode}", expanded=False):
                             st.markdown(f"**{_dcode}** is a designated NYC Landmark or Historic District under LPC jurisdiction. All exterior alterations, demolitions, and new construction require a Certificate of Appropriateness (CofA) from the Landmarks Preservation Commission.")

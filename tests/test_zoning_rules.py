@@ -1,4 +1,7 @@
-from modules.zoning_rules import get_zoning_rules, get_zoning_citations, all_districts, classify_street_type
+from modules.zoning_rules import (
+    get_zoning_rules, get_zoning_citations, all_districts, classify_street_type,
+    SPECIAL_DISTRICTS,
+)
 
 
 def test_exact_match():
@@ -58,6 +61,27 @@ def test_get_zoning_citations_required_keys():
 def test_get_zoning_citations_empty_district():
     assert get_zoning_citations("") == {}
     assert get_zoning_citations(None) == {}
+
+
+def test_get_zoning_citations_uses_real_nyc_domain():
+    # Confirmed live this session: https://zoningresolution.planning.nyc.gov
+    # is the real NYC Zoning Resolution site, at exactly the
+    # /article-N/chapter-N URL structure already built here — the OLD
+    # zr.planning.nyc.gov domain never resolved to the real site.
+    for district in ("R6A", "C4-4", "M1-2"):
+        citations = get_zoning_citations(district)
+        for key in ("far_url", "height_url", "use_url", "parking_url", "article_url", "zr_main_url"):
+            url = citations.get(key)
+            if not url:
+                continue
+            assert url.startswith("https://zoningresolution.planning.nyc.gov"), (district, key, url)
+            assert "zr.planning.nyc.gov" not in url
+
+
+def test_special_districts_use_real_nyc_domain():
+    for code, info in SPECIAL_DISTRICTS.items():
+        url = info.get("url", "")
+        assert url.startswith("https://zoningresolution.planning.nyc.gov/article-ix/"), (code, url)
 
 
 # ── Avenue vs. side-street classification ────────────────────────────────────

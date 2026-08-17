@@ -588,7 +588,12 @@ def all_districts() -> list[str]:
 
 
 # ── NYC Zoning Resolution URL constants ──────────────────────────────────────
-_ZR_BASE   = "https://zr.planning.nyc.gov"
+# Base domain confirmed live: https://zoningresolution.planning.nyc.gov is the
+# real NYC Zoning Resolution site, using exactly the /article-N/chapter-N URL
+# structure already built below (verified against a live page at
+# https://zoningresolution.planning.nyc.gov/article-ii/chapter-3, "Chapter 3 -
+# Residential Bulk Regulations in Residence Districts").
+_ZR_BASE   = "https://zoningresolution.planning.nyc.gov"
 _R_BULK    = f"{_ZR_BASE}/article-ii/chapter-3"    # ZR §23-00  Residence bulk
 _R_USE     = f"{_ZR_BASE}/article-ii/chapter-2"    # ZR §22-00  Residence uses
 _R_PARK    = f"{_ZR_BASE}/article-ii/chapter-5"    # ZR §25-00  Residence parking
@@ -730,7 +735,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "with Battery Park City Authority design guidelines. Strict height, setback, and "
             "ground-floor retail activation requirements."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-1",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-1",
     },
     "SCD": {
         "name": "Special Coney Island District",
@@ -739,7 +744,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "mandatory ground-floor entertainment uses and signage requirements along Surf Avenue. "
             "Mixed-use residential and entertainment development promoted."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-5",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-5",
     },
     "SCE": {
         "name": "Special Coastal Risk District",
@@ -748,7 +753,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "elevated mechanical systems, and limits certain ground-floor uses. Properties "
             "may require FEMA flood zone compliance for financing."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-4",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-4",
     },
     "SCI": {
         "name": "Special Clinton District",
@@ -757,7 +762,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "demolition of residential buildings, requires replacement housing, and limits "
             "commercial development on residential streets."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-9",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-9",
     },
     "SDI": {
         "name": "Special Downtown Jamaica District",
@@ -766,7 +771,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "Higher FARs near transit, ground-floor retail activation required on major corridors, "
             "and streamlined approval for mixed-income housing."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-32",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-32",
     },
     "SG": {
         "name": "Special Garment Center District",
@@ -775,7 +780,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "conversion of manufacturing loft space to non-industrial use. Floor area requirements "
             "for preserving production space in certain sub-areas."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-12",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-12",
     },
     "SHP": {
         "name": "Special Hunts Point District",
@@ -784,7 +789,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "Restrictions on residential development in core industrial areas. "
             "Focus on job retention in food supply chain facilities."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-43",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-43",
     },
     "SHY": {
         "name": "Special Hudson Yards District",
@@ -793,7 +798,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "space, mandatory ground-floor retail, phased development requirements, and "
             "transit improvements tied to the 7 train extension. Very high permitted densities."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-33",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-33",
     },
     "SL": {
         "name": "Special Lincoln Square District",
@@ -802,7 +807,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "higher densities near cultural institutions, requires theatrical/cultural uses "
             "on certain sites, and includes specific streetscape requirements."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-8",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-8",
     },
     "SLI": {
         "name": "Special Little Italy District",
@@ -811,7 +816,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "building heights, requires ground-floor retail consistent with the neighborhood's "
             "cultural character, and restricts certain modern commercial uses."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-15",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-15",
     },
     "SMD": {
         "name": "Special Midtown District",
@@ -821,7 +826,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "Sub-areas include Theater Sub-district, Fifth Avenue Sub-district, and "
             "Grand Central Sub-district with specific use and bulk controls."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-17",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-17",
     },
     "SMP": {
         "name": "Special Manhattan Parking District",
@@ -830,7 +835,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "reduce traffic congestion and encourage transit use. Limits on parking spaces "
             "per building."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-13",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-13",
     },
     "SN": {
         "name": "Special Natural Area District",
@@ -839,7 +844,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "shorelines, and vegetation. Development must minimize disturbance to natural "
             "topography and vegetation. Common in Staten Island and outer-borough hillside areas."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-16",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-16",
     },
     "SOC": {
         "name": "Special Ocean Parkway District",
@@ -848,7 +853,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "the parkway boulevard by restricting parking strips along the frontage and "
             "maintaining consistent setbacks and landscaping."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-10",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-10",
     },
     "SP": {
         "name": "Special Forest Hills Special District",
@@ -857,7 +862,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "Strict controls on demolition, additions, and new construction to maintain "
             "the neighborhood's English garden-style design."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-23",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-23",
     },
     "SRD": {
         "name": "Special Sheepshead Bay / Brighton Beach District",
@@ -866,7 +871,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "building heights and uses near the bay to maintain recreational and "
             "maritime character."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-11",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-11",
     },
     "SSQ": {
         "name": "Special Union Square District",
@@ -875,7 +880,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "Square in Manhattan. FAR bonuses for subway station improvements and "
             "public space activation."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-31",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-31",
     },
     "SWC": {
         "name": "Special West Chelsea District",
@@ -884,7 +889,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "development with ground-floor retail, arts-related uses, and High Line "
             "access improvements. Includes FAR transfer provisions for High Line bonus."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-34",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-34",
     },
     "SWSS": {
         "name": "Special West Side Sub-district",
@@ -893,7 +898,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "Avenue with specific height, setback, and use mix requirements tied to "
             "public open space improvements."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-33",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-33",
     },
     "S125": {
         "name": "Special 125th Street District",
@@ -902,7 +907,7 @@ SPECIAL_DISTRICTS: dict[str, dict] = {
             "main commercial corridor) in Manhattan. Requires ground-floor active uses, "
             "minimum commercial depths, and cultural facilities on certain sites."
         ),
-        "url": "https://zoning.nyc.gov/article-ix/chapter-37",
+        "url": "https://zoningresolution.planning.nyc.gov/article-ix/chapter-37",
     },
 }
 
