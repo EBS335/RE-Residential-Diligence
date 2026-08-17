@@ -2435,12 +2435,13 @@ with tab_property:
             for insight in insights:
                 st.markdown(f"• {insight}")
 
-            # ── Comparables Analysis (4 tabs) ─────────────────────────────────────
+            # ── Comparables Analysis (6 tabs) ─────────────────────────────────────
             _section_header("📊", "Comparables Analysis",
-                            "Residential · Commercial · Retail · Property Sales")
+                            "Residential Rental · Residential Condo · Commercial · Retail · Property Sales")
 
-            _tab_res, _tab_comm, _tab_retail, _tab_sales, _tab_cr = st.tabs([
-                "🏠 Residential", "🏢 Commercial", "🏪 Retail", "💰 Property Sales", "🏙️ CityRealty"
+            _tab_res, _tab_res_condo, _tab_comm, _tab_retail, _tab_sales, _tab_cr = st.tabs([
+                "🏠 Residential - Rental", "🏠 Residential - Condo", "🏢 Commercial",
+                "🏪 Retail", "💰 Property Sales", "🏙️ CityRealty",
             ])
 
             # ── Fetch shared datasets once ────────────────────────────────────────
@@ -2525,7 +2526,7 @@ with tab_property:
                     "implied cap rate / GRM (only one side is present for this property)."
                 )
 
-            # ── Tab 1: Residential ────────────────────────────────────────────────
+            # ── Tab 1: Residential - Rental ─────────────────────────────────────────
             with _tab_res:
                 # Rent Summary
                 st.markdown("#### 🏠 Rent Summary by Unit Type")
@@ -2562,58 +2563,6 @@ with tab_property:
                 with _rc2:
                     st.plotly_chart(build_range_chart(summary_df),
                                     use_container_width=True, config={"displayModeBar": False})
-
-                # Condo / Residential Sales
-                _condo_sales = [l for l in _sales_listings if "Residential" in str(l.get("asset_type",""))]
-                if _condo_sales:
-                    st.markdown("#### 🏢 Condo / Residential Sales")
-                    _cs_prices = [l["price"] for l in _condo_sales if l.get("price")]
-                    _cs_psf    = [l["price_psf"] for l in _condo_sales if l.get("price_psf")]
-                    _cs_m1, _cs_m2, _cs_m3 = st.columns(3)
-                    _cs_m1.metric("Sales Found",    len(_condo_sales))
-                    _cs_m2.metric("Avg Sale Price", f"${int(sum(_cs_prices)/len(_cs_prices)):,}" if _cs_prices else "—")
-                    _cs_m3.metric("Avg $/SF",       f"${sum(_cs_psf)/len(_cs_psf):.2f}" if _cs_psf else "—")
-
-                    # Condo sales by unit type chart
-                    _cs_rows_df = []
-                    for _csl in _condo_sales:
-                        _cs_rows_df.append({
-                            "Address":    (_csl.get("address") or "—")[:60],
-                            "Type":       _csl.get("asset_type","—"),
-                            "Sale Price": f"${_csl['price']:,.0f}" if _csl.get("price") else "—",
-                            "Sqft":       f"{_csl['sqft']:,}" if _csl.get("sqft") else "—",
-                            "$/SF":       f"${_csl['price_psf']:.2f}" if _csl.get("price_psf") else "—",
-                            "Date":       _csl.get("date","—"),
-                            "Source":     _csl.get("source","—"),
-                            "Reliability": _csl.get("reliability","—"),
-                        })
-                    # Condo sales bar chart (price by building_class_category)
-                    _cs_by_type: dict = {}
-                    for _csl in _condo_sales:
-                        _bcc = _csl.get("building_name","")[:30] or _csl.get("asset_type","—")
-                        _p   = _csl.get("price") or 0
-                        if _p:
-                            _cs_by_type.setdefault(_bcc, []).append(_p)
-                    if _cs_by_type:
-                        _cs_fig = go.Figure(go.Bar(
-                            x=list(_cs_by_type.keys()),
-                            y=[int(sum(v)/len(v)) for v in _cs_by_type.values()],
-                            marker_color="#8B6914",
-                        ))
-                        _cs_fig.update_layout(
-                            title="Avg Sale Price by Building Class",
-                            xaxis_title="Class", yaxis_title="Avg Sale Price ($)",
-                            height=300, margin=dict(l=40,r=20,t=40,b=60),
-                            font=dict(size=11),
-                        )
-                        st.plotly_chart(_cs_fig, use_container_width=True,
-                                        config={"displayModeBar": False})
-
-                    with st.expander(f"📋 Condo/Residential Sales ({len(_condo_sales)} found)", expanded=False):
-                        st.dataframe(pd.DataFrame(_cs_rows_df), use_container_width=True,
-                                     height=min(len(_cs_rows_df)*35+40, 340))
-                elif str(_sales_status).startswith("error"):
-                    st.warning(f"⚠️ NYC Rolling Sales fetch failed — condo/residential sales unavailable: {_sales_status}")
 
                 # AI Summary
                 with st.expander("🤖 AI Market Summary", expanded=False):
@@ -2662,7 +2611,69 @@ with tab_property:
                     st.write(pd.DataFrame(_res_display).to_html(escape=False, index=False),
                              unsafe_allow_html=True)
 
-            # ── Tab 2: Commercial ────────────────────────────────────────────────
+            # ── Tab 2: Residential - Condo ───────────────────────────────────────
+            with _tab_res_condo:
+                # Reuses the same _sales_listings/_sales_status already fetched
+                # once above for the whole Comparables Analysis section — no
+                # new fetch. Filters specifically to condo building classes
+                # (building_name holds the raw NYC Rolling Sales
+                # building_class_category text, e.g. "13 CONDOS"), which is
+                # narrower than the old "Residential" asset_type match that
+                # also matched co-ops and one/two/three-family homes.
+                _condo_sales = [l for l in _sales_listings if "CONDO" in str(l.get("building_name","")).upper()]
+                if _condo_sales:
+                    st.markdown("#### 🏢 Residential Condo Sale Comps")
+                    _cs_prices = [l["price"] for l in _condo_sales if l.get("price")]
+                    _cs_psf    = [l["price_psf"] for l in _condo_sales if l.get("price_psf")]
+                    _cs_m1, _cs_m2, _cs_m3 = st.columns(3)
+                    _cs_m1.metric("Sales Found",    len(_condo_sales))
+                    _cs_m2.metric("Avg Sale Price", f"${int(sum(_cs_prices)/len(_cs_prices)):,}" if _cs_prices else "—")
+                    _cs_m3.metric("Avg $/SF",       f"${sum(_cs_psf)/len(_cs_psf):.2f}" if _cs_psf else "—")
+
+                    # Condo sales by unit type chart
+                    _cs_rows_df = []
+                    for _csl in _condo_sales:
+                        _cs_rows_df.append({
+                            "Address":    (_csl.get("address") or "—")[:60],
+                            "Type":       _csl.get("asset_type","—"),
+                            "Sale Price": f"${_csl['price']:,.0f}" if _csl.get("price") else "—",
+                            "Sqft":       f"{_csl['sqft']:,}" if _csl.get("sqft") else "—",
+                            "$/SF":       f"${_csl['price_psf']:.2f}" if _csl.get("price_psf") else "—",
+                            "Date":       _csl.get("date","—"),
+                            "Source":     _csl.get("source","—"),
+                            "Reliability": _csl.get("reliability","—"),
+                        })
+                    # Condo sales bar chart (price by building_class_category)
+                    _cs_by_type: dict = {}
+                    for _csl in _condo_sales:
+                        _bcc = _csl.get("building_name","")[:30] or _csl.get("asset_type","—")
+                        _p   = _csl.get("price") or 0
+                        if _p:
+                            _cs_by_type.setdefault(_bcc, []).append(_p)
+                    if _cs_by_type:
+                        _cs_fig = go.Figure(go.Bar(
+                            x=list(_cs_by_type.keys()),
+                            y=[int(sum(v)/len(v)) for v in _cs_by_type.values()],
+                            marker_color="#8B6914",
+                        ))
+                        _cs_fig.update_layout(
+                            title="Avg Sale Price by Building Class",
+                            xaxis_title="Class", yaxis_title="Avg Sale Price ($)",
+                            height=300, margin=dict(l=40,r=20,t=40,b=60),
+                            font=dict(size=11),
+                        )
+                        st.plotly_chart(_cs_fig, use_container_width=True,
+                                        config={"displayModeBar": False})
+
+                    with st.expander(f"📋 Residential Condo Sales ({len(_condo_sales)} found)", expanded=False):
+                        st.dataframe(pd.DataFrame(_cs_rows_df), use_container_width=True,
+                                     height=min(len(_cs_rows_df)*35+40, 340))
+                elif str(_sales_status).startswith("error"):
+                    st.warning(f"⚠️ NYC Rolling Sales fetch failed — condo sales unavailable: {_sales_status}")
+                else:
+                    st.info("No residential condo sales found within this radius.")
+
+            # ── Tab 3: Commercial ────────────────────────────────────────────────
             with _tab_comm:
                 _office_lst = [l for l in _comm_listings
                                if "office" in str(l.get("use_type") or l.get("asset_type","")).lower()
@@ -2745,7 +2756,7 @@ with tab_property:
 
                 st.caption("Sources: Craigslist NYC · LoopNet · Crexi · No API key required")
 
-            # ── Tab 3: Retail ────────────────────────────────────────────────────
+            # ── Tab 4: Retail ────────────────────────────────────────────────────
             with _tab_retail:
                 _retail_lst = [l for l in _comm_listings
                                if "retail" in str(l.get("use_type") or l.get("asset_type","")).lower()]
@@ -2825,7 +2836,7 @@ with tab_property:
 
                 st.caption("Sources: Craigslist NYC · LoopNet · Crexi · No API key required")
 
-            # ── Tab 4: Property Sales ─────────────────────────────────────────────
+            # ── Tab 5: Property Sales ─────────────────────────────────────────────
             with _tab_sales:
                 if not _sales_listings:
                     st.info("No recent sales comps found. NYC Rolling Sales data may not cover this area/zip.")
@@ -2957,7 +2968,7 @@ with tab_property:
                                      height=min(len(_sp_rows)*35+40, 380))
                 st.caption("Source: NYC Rolling Sales (usep-8jbt) · NYC Open Data · No API key required")
 
-            # ── Tab 5: CityRealty Building Comparables ────────────────────────────
+            # ── Tab 6: CityRealty Building Comparables ────────────────────────────
             with _tab_cr:
                 st.markdown("#### 🏙️ CityRealty — Comparable Buildings")
                 st.caption(
