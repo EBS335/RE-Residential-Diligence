@@ -1867,6 +1867,11 @@ with tab_property:
                         tax_lien_data=_taxlien_dist,
                         weights={"acris": _dw_acris, "dob": _dw_dob, "hpd": _dw_hpd, "oath": _dw_oath, "tax_lien": _dw_lien},
                     )
+                    # Persist for the "Export This Property" section further
+                    # down the page (a different indentation scope), so it
+                    # can include this composite score in the PDF/PPTX/Excel
+                    # export without recomputing it.
+                    st.session_state[f"_composite_dist_{_ds_bbl}"] = _composite_dist
                     # Bucket the 0-100 composite into the 0/1/2 level Deal
                     # Score's distress component already expects — keeps
                     # compute_deal_score()'s signature (and Site Finder's
@@ -5655,6 +5660,9 @@ with tab_property:
                     _exp_sales_listings = st.session_state.get(_sales_key, {}).get("listings", [])
                     if _exp_sales_listings:
                         _exp_prop["market_comps"] = {"comps": _exp_sales_listings, "count": len(_exp_sales_listings)}
+                    _exp_composite_dist = st.session_state.get(f"_composite_dist_{_exp_bbl}")
+                    if _exp_composite_dist:
+                        _exp_prop["composite_distress"] = _exp_composite_dist
                     _exp_prop.setdefault("strategies", [])
 
                     # Auto-composed IC summary (no LLM required) — previously
@@ -5665,6 +5673,28 @@ with tab_property:
                         f"IC summary auto-composed from the signals above "
                         f"(recommendation: {_exp_ic_summary['recommendation']}) — not an LLM-generated memo."
                     )
+
+                    # ── Per-section export customization — all checked by
+                    # default so the export content matches today's output
+                    # exactly unless the user deliberately unchecks something.
+                    st.markdown("**Sections to include in the export:**")
+                    _sec_cols = st.columns(4)
+                    _included_sections = {}
+                    _section_labels = [
+                        ("thesis", "Investment Thesis / IC Summary"),
+                        ("zoning", "Zoning & Parcel Summary"),
+                        ("ownership", "Ownership"),
+                        ("business_plan", "Acquisition & Business Plan"),
+                        ("underwriting", "Underwriting Pro Forma"),
+                        ("distress", "Distress Signals"),
+                        ("tax_abatement_rent_stab", "Tax Abatement & Rent Stabilization"),
+                        ("market_comps", "Market Comps"),
+                    ]
+                    for _sec_i, (_sec_key, _sec_label) in enumerate(_section_labels):
+                        with _sec_cols[_sec_i % 4]:
+                            _included_sections[_sec_key] = st.checkbox(
+                                _sec_label, value=True, key=f"_exp_sec_{_sec_key}_{_exp_bbl}",
+                            )
 
                     if not _exp_score and not _exp_abate:
                         st.caption(
@@ -5682,7 +5712,9 @@ with tab_property:
                     with _exp1:
                         if st.button("📄 Build PDF report", key="pa_pdf_btn", use_container_width=True):
                             try:
-                                st.session_state["_pa_pdf_bytes"] = build_pdf_report(_exp_prop, _exp_ic_summary)
+                                st.session_state["_pa_pdf_bytes"] = build_pdf_report(
+                                    _exp_prop, _exp_ic_summary, included_sections=_included_sections,
+                                )
                             except ImportError as exc:
                                 st.error(str(exc))
                         if st.session_state.get("_pa_pdf_bytes"):
@@ -5694,7 +5726,9 @@ with tab_property:
                     with _exp2:
                         if st.button("📽️ Build PowerPoint pitch", key="pa_pptx_btn", use_container_width=True):
                             try:
-                                st.session_state["_pa_pptx_bytes"] = build_pptx_report(_exp_prop, _exp_ic_summary)
+                                st.session_state["_pa_pptx_bytes"] = build_pptx_report(
+                                    _exp_prop, _exp_ic_summary, included_sections=_included_sections,
+                                )
                             except ImportError as exc:
                                 st.error(str(exc))
                         if st.session_state.get("_pa_pptx_bytes"):
@@ -5707,7 +5741,9 @@ with tab_property:
                     with _exp3:
                         if st.button("📊 Build Excel workbook", key="pa_xlsx_btn", use_container_width=True):
                             try:
-                                st.session_state["_pa_xlsx_bytes"] = build_excel_workbook([_exp_prop])
+                                st.session_state["_pa_xlsx_bytes"] = build_excel_workbook(
+                                    [_exp_prop], included_sections=_included_sections,
+                                )
                             except ImportError as exc:
                                 st.error(str(exc))
                         if st.session_state.get("_pa_xlsx_bytes"):
