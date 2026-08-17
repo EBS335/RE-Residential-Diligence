@@ -304,3 +304,195 @@ def test_excel_workbook_comps_sheet_created_when_present():
     assert any("Comps" in n for n in wb.sheetnames)
     comps_sheet = next(wb[n] for n in wb.sheetnames if "Comps" in n)
     assert comps_sheet.cell(row=4, column=1).value == "1 Test Ave"
+
+
+# ── included_sections: backward compatibility + new sections ────────────────
+#
+# Content-based comparisons (not raw byte equality) are used throughout —
+# reportlab/openpyxl embed a creation timestamp that can differ by a second
+# between two calls in the same test, which would make raw byte-equality
+# assertions flaky without actually indicating a real content difference.
+
+def _pdf_text(pdf_bytes: bytes) -> str:
+    import pdfplumber
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        return "\n".join(p.extract_text() or "" for p in pdf.pages)
+
+
+def _pptx_text(pptx_bytes: bytes) -> str:
+    from pptx import Presentation
+    prs = Presentation(io.BytesIO(pptx_bytes))
+    lines = []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                lines.append(shape.text_frame.text)
+    return "\n".join(lines)
+
+
+def _xlsx_dump(xlsx_bytes: bytes) -> dict:
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    return {name: [[c.value for c in row] for row in wb[name].iter_rows()] for name in wb.sheetnames}
+
+
+def _composite_distress() -> dict:
+    return {
+        "score": 62, "tier": "Elevated",
+        "breakdown": {
+            "acris": {"score": 20, "max": 25, "weight": 0.25,
+                      "reasoning": "1 foreclosure/lis pendens filing(s), 2 open lien(s)"},
+            "hpd": {"score": 10, "max": 20, "weight": 0.20, "reasoning": "3 open HPD violation(s)"},
+        },
+        "components_with_data": ["acris", "hpd"],
+    }
+
+
+def test_pdf_report_included_sections_none_matches_default_behavior():
+    prop = _prop()
+    ic = _ic_summary()
+    baseline = _pdf_text(build_pdf_report(prop, ic))
+    explicit_none = _pdf_text(build_pdf_report(prop, ic, included_sections=None))
+    assert baseline == explicit_none
+
+
+def test_pptx_report_included_sections_none_matches_default_behavior():
+    prop = _prop()
+    ic = _ic_summary()
+    baseline = _pptx_text(build_pptx_report(prop, ic))
+    explicit_none = _pptx_text(build_pptx_report(prop, ic, included_sections=None))
+    assert baseline == explicit_none
+
+
+def test_excel_workbook_included_sections_none_matches_default_behavior():
+    props = [_prop()]
+    baseline = _xlsx_dump(build_excel_workbook(props))
+    explicit_none = _xlsx_dump(build_excel_workbook(props, included_sections=None))
+    assert baseline == explicit_none
+
+
+def test_pdf_report_included_sections_excludes_thesis_when_false():
+    prop = _prop()
+    ic = _ic_summary()
+    included = build_pdf_report(prop, ic, included_sections={"thesis": True})
+    excluded = build_pdf_report(prop, ic, included_sections={"thesis": False})
+    assert "Investment Thesis" in _pdf_text(included)
+    assert "Investment Thesis" not in _pdf_text(excluded)
+
+
+def test_pdf_report_included_sections_excludes_ownership_when_false():
+    prop = _prop()
+    included = build_pdf_report(prop, None, included_sections={"ownership": True})
+    excluded = build_pdf_report(prop, None, included_sections={"ownership": False})
+    assert "123 Main St LLC" in _pdf_text(included)
+    assert "123 Main St LLC" not in _pdf_text(excluded)
+
+
+def test_pptx_report_included_sections_excludes_business_plan_when_false():
+    prop = _prop()
+    included = build_pptx_report(prop, None, included_sections={"business_plan": True})
+    excluded = build_pptx_report(prop, None, included_sections={"business_plan": False})
+    assert "Preliminary Acquisition Estimate" in _pptx_text(included)
+    assert "Preliminary Acquisition Estimate" not in _pptx_text(excluded)
+
+
+def test_pdf_report_new_distress_section_renders_when_present():
+    prop = _prop(composite_distress=_composite_distress())
+    text = _pdf_text(build_pdf_report(prop, None, included_sections={"distress": True}))
+    assert "Distress Signals" in text
+    assert "62/100" in text
+    assert "ACRIS" in text.upper()
+
+
+def test_pdf_report_new_tax_abatement_rent_stab_section_renders_when_present():
+    prop = _prop(
+        tax_abatement={"program": "421-a", "summary": "Partial exemption"},
+        rent_stab_signal={"likely_stabilized": True, "confidence": 0.97},
+    )
+    text = _pdf_text(build_pdf_report(prop, None, included_sections={"tax_abatement_rent_stab": True}))
+    assert "Tax Abatement & Rent Stabilization" in text
+    assert "421-a" in text
+    assert "Likely Rent Stabilized" in text
+
+
+def test_pdf_report_new_market_comps_section_renders_when_present():
+    prop = _prop(market_comps={
+        "median_price_psf": 850, "count": 1,
+        "comps": [{"address": "1 Test Ave", "price": 3_000_000, "sqft": 5000, "price_psf": 600.0}],
+    })
+    text = _pdf_text(build_pdf_report(prop, None, included_sections={"market_comps": True}))
+    assert "Market Comps" in text
+    assert "1 Test Ave" in text
+
+
+def test_pptx_report_new_sections_render_when_included_sections_provided():
+    prop = _prop(
+        composite_distress=_composite_distress(),
+        tax_abatement={"program": "421-a", "summary": "Partial exemption"},
+        rent_stab_signal={"likely_stabilized": True, "confidence": 0.97},
+    )
+    text = _pptx_text(build_pptx_report(prop, None, included_sections={
+        "distress": True, "tax_abatement_rent_stab": True, "market_comps": True,
+    }))
+    assert "Distress Signals" in text
+    assert "Tax Abatement & Rent Stabilization" in text
+
+
+def test_excel_workbook_included_sections_excludes_ownership_when_false():
+    prop = _prop()
+    included = _xlsx_dump(build_excel_workbook([prop], included_sections={"ownership": True}))
+    excluded = _xlsx_dump(build_excel_workbook([prop], included_sections={"ownership": False}))
+    detail_sheet_name = next(n for n in included if n not in ("Summary",))
+    included_text = " ".join(str(c) for row in included[detail_sheet_name] for c in row)
+    excluded_text = " ".join(str(c) for row in excluded[detail_sheet_name] for c in row)
+    assert "123 Main St LLC" in included_text
+    assert "123 Main St LLC" not in excluded_text
+
+
+# ── Backward-compatibility regression: the Site Finder call site ────────────
+#
+# modules/site_finder_ui.py calls build_pdf_report(prop, ic) / build_pptx_report(prop, ic)
+# with exactly two positional args, never included_sections. These tests lock
+# in that exact calling convention and prove the new sections never appear
+# there — regardless of what extra keys (composite_distress, market_comps)
+# happen to be present on its `prop` dict — since Site Finder's own
+# `distress` key (a *different* shape, from modules/ownership_research.py)
+# and `market_comps` key are already populated on every property it exports.
+
+def test_pdf_report_backward_compatible_with_site_finder_call_signature():
+    prop = _prop(
+        composite_distress=_composite_distress(),
+        tax_abatement={"program": "421-a", "summary": "Partial exemption"},
+        # Site Finder's own differently-shaped "distress" key (never read by
+        # the new composite-distress section, which reads "composite_distress").
+        distress={"level": "Moderate", "score": 6, "evidence": ["1 open lien"]},
+    )
+    ic = _ic_summary()
+    pdf_bytes = build_pdf_report(prop, ic)  # exact Site Finder call signature
+    assert pdf_bytes.startswith(b"%PDF")
+    text = _pdf_text(pdf_bytes)
+    assert "Distress Signals" not in text
+    assert "Tax Abatement & Rent Stabilization" not in text
+
+
+def test_pptx_report_backward_compatible_with_site_finder_call_signature():
+    prop = _prop(
+        composite_distress=_composite_distress(),
+        tax_abatement={"program": "421-a", "summary": "Partial exemption"},
+        distress={"level": "Moderate", "score": 6, "evidence": ["1 open lien"]},
+    )
+    ic = _ic_summary()
+    pptx_bytes = build_pptx_report(prop, ic)  # exact Site Finder call signature
+    assert pptx_bytes[:2] == b"PK"
+    text = _pptx_text(pptx_bytes)
+    assert "Distress Signals" not in text
+    assert "Tax Abatement & Rent Stabilization" not in text
+
+
+def test_excel_workbook_backward_compatible_with_site_finder_call_signature():
+    prop = _prop(
+        composite_distress=_composite_distress(),
+        distress={"level": "Moderate", "score": 6, "evidence": ["1 open lien"]},
+    )
+    xlsx_bytes = build_excel_workbook([prop])  # exact Site Finder call signature
+    assert xlsx_bytes[:2] == b"PK"

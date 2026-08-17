@@ -26,6 +26,8 @@ from datetime import datetime
 _NAVY_HEX = "1A3A6B"      # openpyxl/pptx use hex without '#'
 _NAVY_DARK_HEX = "0D1B2A"
 _GRAY_HEX = "6B7280"
+_LIGHT_GRAY_HEX = "F3F4F6"
+_BORDER_HEX = "D1D5DB"
 
 
 def _generated_stamp() -> str:
@@ -34,7 +36,8 @@ def _generated_stamp() -> str:
 
 # ── Excel: full results workbook ────────────────────────────────────────────
 
-def build_excel_workbook(properties: list[dict], top_n_detail: int = 20) -> bytes:
+def build_excel_workbook(properties: list[dict], top_n_detail: int = 20,
+                          included_sections: dict[str, bool] | None = None) -> bytes:
     """
     Build an Excel workbook with:
       - "Summary" sheet: a title/date banner, then all ranked properties
@@ -42,6 +45,12 @@ def build_excel_workbook(properties: list[dict], top_n_detail: int = 20) -> byte
         column for quick visual scanning
       - One sheet per property (up to top_n_detail) with zoning/ownership/
         market detail, for whichever properties carry that enrichment data
+
+    included_sections: optional dict of section-key -> bool controlling
+        which optional sections render (keys: "ownership", "underwriting",
+        "market_comps"). None (the default) means "include everything" —
+        100% backward compatible with every existing caller that doesn't
+        pass this argument (e.g. modules/site_finder_ui.py).
 
     Returns raw .xlsx bytes.
     """
@@ -137,21 +146,23 @@ def build_excel_workbook(properties: list[dict], top_n_detail: int = 20) -> byte
     ws.freeze_panes = f"A{header_row + 1}"
 
     # Per-property detail sheets for the top N
+    _uw_included = included_sections is None or included_sections.get("underwriting", True)
+    _comps_included = included_sections is None or included_sections.get("market_comps", True)
     for i, p in enumerate(properties[:top_n_detail], start=1):
         sheet_name = f"{i}. {p.get('bbl', '')}"[:31]  # Excel sheet name limit
         sh = wb.create_sheet(sheet_name)
-        _write_property_detail_sheet(sh, p, header_fill, header_font)
+        _write_property_detail_sheet(sh, p, header_fill, header_font, included_sections)
 
         # Optional per-property sheets — only created when the source data
         # is actually present (underwriting/comps aren't always computed
         # for every property before export).
         uw = p.get("underwriting") or {}
-        if uw.get("annual_cash_flows"):
+        if uw.get("annual_cash_flows") and _uw_included:
             _write_pro_forma_sheet(wb, i, p, uw, header_fill, header_font)
-        if uw.get("cost_breakdown"):
+        if uw.get("cost_breakdown") and _uw_included:
             _write_construction_budget_sheet(wb, i, p, uw, header_fill, header_font)
         comps = (p.get("market_comps") or {}).get("comps") or []
-        if comps:
+        if comps and _comps_included:
             _write_comps_sheet(wb, i, p, comps, header_fill, header_font)
 
     buf = io.BytesIO()
@@ -258,7 +269,8 @@ def _write_comps_sheet(wb, i: int, p: dict, comps: list[dict], header_fill, head
         sh.column_dimensions[chr(64 + c)].width = w
 
 
-def _write_property_detail_sheet(sh, p: dict, header_fill, header_font) -> None:
+def _write_property_detail_sheet(sh, p: dict, header_fill, header_font,
+                                  included_sections: dict[str, bool] | None = None) -> None:
     from openpyxl.styles import Font as _Font
 
     bold = _Font(bold=True)
@@ -290,7 +302,7 @@ def _write_property_detail_sheet(sh, p: dict, header_fill, header_font) -> None:
     _kv("Strategies", ", ".join(p.get("strategies", [])))
     row += 1
 
-    if p.get("owner"):
+    if p.get("owner") and (included_sections is None or included_sections.get("ownership", True)):
         _kv("Owner", p.get("owner", ""))
         _kv("Owner Type", p.get("owner_type", ""))
         _kv("Last Sale Price", p.get("last_sale_price") or "—")
@@ -301,7 +313,7 @@ def _write_property_detail_sheet(sh, p: dict, header_fill, header_font) -> None:
         row += 1
 
     mc = p.get("market_comps")
-    if mc:
+    if mc and (included_sections is None or included_sections.get("market_comps", True)):
         _kv("Market Median $/SF", mc.get("median_price_psf") or "—")
         _kv("Market Comp Count", mc.get("count", 0))
         row += 1
@@ -313,7 +325,7 @@ def _write_property_detail_sheet(sh, p: dict, header_fill, header_font) -> None:
         row += 1
 
     uw = p.get("underwriting")
-    if uw:
+    if uw and (included_sections is None or included_sections.get("underwriting", True)):
         _kv("Underwriting Scenario", uw.get("scenario_label", ""))
         _kv("Total Dev. Cost", uw.get("total_dev_cost", ""))
         _kv("Year 1 NOI", uw.get("year1_noi", ""))
@@ -412,12 +424,26 @@ def compose_fallback_ic_summary(prop: dict) -> dict:
 
 # ── PDF: single-property investment report ──────────────────────────────────
 
-def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
+def build_pdf_report(prop: dict, ic_summary: dict | None = None,
+                      included_sections: dict[str, bool] | None = None) -> bytes:
     """
     Build a single-property PDF investment screening report with an
     institutional-memo layout: a letterhead-style header band repeated on
     every page, a cover metrics strip, ruled section dividers, and a
     running footer with page numbers and the generation date.
+
+    included_sections: optional dict of section-key -> bool controlling
+        which sections render (keys: "thesis", "zoning", "ownership",
+        "business_plan", "underwriting", plus the newer "distress",
+        "tax_abatement_rent_stab", "market_comps"). None (the default)
+        means "include everything already present on `prop`" — 100%
+        backward compatible with every existing caller that doesn't pass
+        this argument (e.g. modules/site_finder_ui.py). The three newer
+        section keys only ever render when included_sections is
+        explicitly provided (not None), so callers that never opt into
+        this parameter see byte-identical output to before this feature
+        existed, regardless of what extra keys happen to be present on
+        their `prop` dict.
 
     Returns raw .pdf bytes.
     """
@@ -433,11 +459,11 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
     except ImportError as exc:
         raise ImportError("Install `reportlab` to enable PDF export: pip install reportlab") from exc
 
-    NAVY = colors.HexColor("#1A3A6B")
-    NAVY_DARK = colors.HexColor("#0D1B2A")
-    GRAY = colors.HexColor("#6B7280")
-    LIGHT_GRAY = colors.HexColor("#F3F4F6")
-    BORDER = colors.HexColor("#D1D5DB")
+    NAVY = colors.HexColor(f"#{_NAVY_HEX}")
+    NAVY_DARK = colors.HexColor(f"#{_NAVY_DARK_HEX}")
+    GRAY = colors.HexColor(f"#{_GRAY_HEX}")
+    LIGHT_GRAY = colors.HexColor(f"#{_LIGHT_GRAY_HEX}")
+    BORDER = colors.HexColor(f"#{_BORDER_HEX}")
 
     address = prop.get("address", "Property")
     generated = _generated_stamp()
@@ -528,7 +554,9 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
     ))
     story.append(_divider())
 
-    if ic_summary:
+    _sec = lambda key: included_sections is None or included_sections.get(key, True)
+
+    if ic_summary and _sec("thesis"):
         story.append(Paragraph("INVESTMENT THESIS", kicker))
         story.append(Paragraph("Investment Thesis", h2))
         for bullet in ic_summary.get("thesis", []):
@@ -545,17 +573,18 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
             story.append(Paragraph(f"• {u}", body))
         story.append(_divider())
 
-    story.append(Paragraph("ZONING & ENTITLEMENT", kicker))
-    story.append(Paragraph("Zoning Summary", h2))
-    zdist = prop.get("zoning_dist", "—")
-    story.append(Paragraph(
-        f"District: {zdist} &nbsp;·&nbsp; Built FAR: {prop.get('far_built', 0):.2f} "
-        f"&nbsp;·&nbsp; Max FAR (PLUTO): {prop.get('far_max', 0):.2f}",
-        body,
-    ))
-    story.append(Spacer(1, 10))
+    if _sec("zoning"):
+        story.append(Paragraph("ZONING & ENTITLEMENT", kicker))
+        story.append(Paragraph("Zoning Summary", h2))
+        zdist = prop.get("zoning_dist", "—")
+        story.append(Paragraph(
+            f"District: {zdist} &nbsp;·&nbsp; Built FAR: {prop.get('far_built', 0):.2f} "
+            f"&nbsp;·&nbsp; Max FAR (PLUTO): {prop.get('far_max', 0):.2f}",
+            body,
+        ))
+        story.append(Spacer(1, 10))
 
-    if prop.get("owner"):
+    if prop.get("owner") and _sec("ownership"):
         story.append(Paragraph("Ownership", h2))
         story.append(Paragraph(
             f"Owner: {prop.get('owner', '—')} ({prop.get('owner_type', 'Unknown')}) &nbsp;·&nbsp; "
@@ -565,7 +594,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
         ))
         story.append(_divider())
 
-    if plan:
+    if plan and _sec("business_plan"):
         story.append(Paragraph("ACQUISITION & DEVELOPMENT ECONOMICS", kicker))
         profit_str = f"${plan['profit']:,.0f}" if plan["profit"] is not None else "—"
         margin_str = f"{plan['margin_pct']:.0f}%" if plan["margin_pct"] is not None else "—"
@@ -585,7 +614,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
         story.append(_divider())
 
     uw = prop.get("underwriting")
-    if uw:
+    if uw and _sec("underwriting"):
         story.append(Paragraph("UNDERWRITING", kicker))
         story.append(Paragraph("Underwriting Pro Forma", h2))
         story.append(Paragraph(f"Scenario: {uw.get('scenario_label', '—')}", body))
@@ -625,18 +654,96 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None) -> bytes:
             "not a lender-grade or GP-facing underwriting package.", italic_caption,
         ))
 
+    # ── New sections below: only ever render when a caller explicitly opts
+    # into included_sections (i.e. is not None) — this keeps every existing
+    # caller's output byte-for-byte identical regardless of what extra keys
+    # happen to be present on their `prop` dict (see build_pdf_report's
+    # docstring for the full compatibility contract). ──────────────────────
+
+    cd = prop.get("composite_distress")
+    if cd and included_sections is not None and included_sections.get("distress", True):
+        story.append(_divider())
+        story.append(Paragraph("DISTRESS SIGNALS", kicker))
+        story.append(Paragraph("Distress Signals", h2))
+        story.append(Paragraph(
+            f"Composite Distress Score: {cd.get('score', '—')}/100 ({cd.get('tier', '—')})", body,
+        ))
+        for comp, comp_detail in (cd.get("breakdown") or {}).items():
+            story.append(Paragraph(f"• {comp.upper()}: {comp_detail.get('reasoning', '—')}", body))
+
+    ta = prop.get("tax_abatement")
+    rs = prop.get("rent_stab_signal")
+    if (ta or rs) and included_sections is not None and included_sections.get("tax_abatement_rent_stab", True):
+        story.append(_divider())
+        story.append(Paragraph("TAX ABATEMENT & RENT STABILIZATION", kicker))
+        story.append(Paragraph("Tax Abatement & Rent Stabilization", h2))
+        if ta:
+            story.append(Paragraph(
+                f"Tax Abatement: {ta.get('program', ta.get('label', '—'))} "
+                f"&nbsp;·&nbsp; {ta.get('summary', ta.get('notes', '—'))}", body,
+            ))
+        if rs:
+            likely = "Likely Rent Stabilized" if rs.get("likely_stabilized") else "Unlikely Rent Stabilized"
+            conf = rs.get("confidence")
+            story.append(Paragraph(
+                f"Rent Stabilization: {likely}" + (f" ({conf:.0%} confidence)" if conf is not None else ""),
+                body,
+            ))
+
+    mkt = prop.get("market_comps")
+    if mkt and included_sections is not None and included_sections.get("market_comps", True):
+        story.append(_divider())
+        story.append(Paragraph("MARKET COMPARABLES", kicker))
+        story.append(Paragraph("Market Comps", h2))
+        comps_list = mkt.get("comps") or []
+        if comps_list:
+            comp_rows = [["Address", "Price", "SF", "$/SF"]]
+            for c in comps_list[:8]:
+                comp_rows.append([
+                    str(c.get("address", "—"))[:30],
+                    f"${c['price']:,.0f}" if c.get("price") else "—",
+                    f"{c['sqft']:,.0f}" if c.get("sqft") else "—",
+                    f"${c['price_psf']:,.0f}" if c.get("price_psf") else "—",
+                ])
+            comp_table = Table(comp_rows, colWidths=[2.6 * inch, 1.2 * inch, 1.0 * inch, 1.0 * inch])
+            comp_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_GRAY]),
+                ("BOX", (0, 0), (-1, -1), 0.75, BORDER),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            story.append(comp_table)
+        else:
+            story.append(Paragraph(
+                f"{mkt.get('count', 0)} comparable(s) found &nbsp;·&nbsp; "
+                f"Median $/SF: {mkt.get('median_price_psf', '—')}", body,
+            ))
+
     doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
     return buf.getvalue()
 
 
 # ── PowerPoint: single-property pitch deck ──────────────────────────────────
 
-def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
+def build_pptx_report(prop: dict, ic_summary: dict | None = None,
+                       included_sections: dict[str, bool] | None = None) -> bytes:
     """
     Build a single-property PowerPoint investment pitch deck with an
     institutional design: a full-bleed navy cover band, rounded metric
     tiles, consistent footers/slide numbers on every slide, and a closing
     disclaimer slide.
+
+    included_sections: same contract as build_pdf_report()'s parameter of
+        the same name — None (default) means "include everything already
+        present on `prop`," fully backward compatible with every existing
+        caller. The newer "distress"/"tax_abatement_rent_stab"/
+        "market_comps" slides only ever render when included_sections is
+        explicitly provided (not None).
 
     Returns raw .pptx bytes.
     """
@@ -650,10 +757,11 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
     except ImportError as exc:
         raise ImportError("Install `python-pptx` to enable PowerPoint export: pip install python-pptx") from exc
 
-    NAVY = RGBColor(0x1A, 0x3A, 0x6B)
-    NAVY_DARK = RGBColor(0x0D, 0x1B, 0x2A)
-    GRAY = RGBColor(0x6B, 0x72, 0x80)
-    LIGHT_GRAY = RGBColor(0xF3, 0xF4, 0xF6)
+    NAVY = RGBColor.from_string(_NAVY_HEX)
+    NAVY_DARK = RGBColor.from_string(_NAVY_DARK_HEX)
+    GRAY = RGBColor.from_string(_GRAY_HEX)
+    LIGHT_GRAY = RGBColor.from_string(_LIGHT_GRAY_HEX)
+    BORDER = RGBColor.from_string(_BORDER_HEX)
     WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 
     prs = Presentation()
@@ -779,8 +887,10 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
     disclaimer.text_frame.paragraphs[0].font.italic = True
     disclaimer.text_frame.paragraphs[0].font.color.rgb = GRAY
 
+    _sec = lambda key: included_sections is None or included_sections.get(key, True)
+
     # ── Slide 2: Investment thesis / risks / next steps ─────────────────────
-    if ic_summary:
+    if ic_summary and _sec("thesis"):
         slide2 = prs.slides.add_slide(blank)
         title = slide2.shapes.add_textbox(Inches(0.6), Inches(0.35), Inches(12), Inches(0.6))
         title.text_frame.text = "Investment Thesis & Risks"
@@ -817,7 +927,7 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
         _add_footer(slide2, "INVESTMENT THESIS & RISKS")
 
     # ── Slide 3: Preliminary Acquisition Estimate & Business Plan ───────────
-    if plan:
+    if plan and _sec("business_plan"):
         slide3 = prs.slides.add_slide(blank)
         title3 = slide3.shapes.add_textbox(Inches(0.6), Inches(0.35), Inches(12), Inches(0.6))
         title3.text_frame.text = "Preliminary Acquisition Estimate & Business Plan"
@@ -862,7 +972,7 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
 
     # ── Slide 4: Underwriting Pro Forma ──────────────────────────────────────
     uw = prop.get("underwriting")
-    if uw:
+    if uw and _sec("underwriting"):
         slide4 = prs.slides.add_slide(blank)
         title4 = slide4.shapes.add_textbox(Inches(0.6), Inches(0.35), Inches(12), Inches(0.6))
         title4.text_frame.text = "Underwriting Pro Forma"
@@ -916,6 +1026,69 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None) -> bytes:
         note4.text_frame.paragraphs[0].font.color.rgb = GRAY
 
         _add_footer(slide4, "UNDERWRITING PRO FORMA")
+
+    # ── New slides below: only ever render when a caller explicitly opts
+    # into included_sections (i.e. is not None) — same compatibility
+    # contract as the new PDF sections above. ───────────────────────────────
+
+    def _add_bullet_slide(title_text: str, footer_label: str, lines: list[str]):
+        """Shared layout for the three new slides below — title + navy
+        rule (matching the existing slide2/3/4 pattern exactly) + a bullet
+        list body + footer."""
+        slide = prs.slides.add_slide(blank)
+        title = slide.shapes.add_textbox(Inches(0.6), Inches(0.35), Inches(12), Inches(0.6))
+        title.text_frame.text = title_text
+        title.text_frame.paragraphs[0].font.size = Pt(24)
+        title.text_frame.paragraphs[0].font.bold = True
+        title.text_frame.paragraphs[0].font.color.rgb = NAVY
+        rule = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.6), Inches(0.98), Inches(2.2), Pt(3))
+        rule.fill.solid(); rule.fill.fore_color.rgb = NAVY; _no_line(rule); rule.shadow.inherit = False
+
+        body_box = slide.shapes.add_textbox(Inches(0.6), Inches(1.35), Inches(12), Inches(5.5))
+        fb = body_box.text_frame
+        fb.word_wrap = True
+        if lines:
+            fb.text = f"• {lines[0]}"
+            fb.paragraphs[0].font.size = Pt(14)
+            for line in lines[1:]:
+                p = fb.add_paragraph()
+                p.text = f"• {line}"
+                p.font.size = Pt(14)
+        _add_footer(slide, footer_label)
+        return slide
+
+    cd = prop.get("composite_distress")
+    if cd and included_sections is not None and included_sections.get("distress", True):
+        lines = [f"Composite Distress Score: {cd.get('score', '—')}/100 ({cd.get('tier', '—')})"]
+        for comp, comp_detail in (cd.get("breakdown") or {}).items():
+            lines.append(f"{comp.upper()}: {comp_detail.get('reasoning', '—')}")
+        _add_bullet_slide("Distress Signals", "DISTRESS SIGNALS", lines)
+
+    ta = prop.get("tax_abatement")
+    rs = prop.get("rent_stab_signal")
+    if (ta or rs) and included_sections is not None and included_sections.get("tax_abatement_rent_stab", True):
+        lines = []
+        if ta:
+            lines.append(f"Tax Abatement: {ta.get('program', ta.get('label', '—'))} — {ta.get('summary', ta.get('notes', '—'))}")
+        if rs:
+            likely = "Likely Rent Stabilized" if rs.get("likely_stabilized") else "Unlikely Rent Stabilized"
+            conf = rs.get("confidence")
+            lines.append(f"Rent Stabilization: {likely}" + (f" ({conf:.0%} confidence)" if conf is not None else ""))
+        _add_bullet_slide("Tax Abatement & Rent Stabilization", "TAX ABATEMENT & RENT STABILIZATION", lines)
+
+    mkt = prop.get("market_comps")
+    if mkt and included_sections is not None and included_sections.get("market_comps", True):
+        comps_list = mkt.get("comps") or []
+        if comps_list:
+            lines = [
+                f"{c.get('address', '—')} — "
+                f"{('$' + format(c['price'], ',.0f')) if c.get('price') else '—'} "
+                f"({('$' + format(c['price_psf'], ',.0f') + '/SF') if c.get('price_psf') else '—'})"
+                for c in comps_list[:8]
+            ]
+        else:
+            lines = [f"{mkt.get('count', 0)} comparable(s) found", f"Median $/SF: {mkt.get('median_price_psf', '—')}"]
+        _add_bullet_slide("Market Comps", "MARKET COMPARABLES", lines)
 
     # ── Closing slide ─────────────────────────────────────────────────────
     slide5 = prs.slides.add_slide(blank)
