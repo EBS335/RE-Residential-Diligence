@@ -106,6 +106,15 @@ def _section_header(icon: str, title: str, subtitle: str = "") -> None:
     )
 
 
+def _status_chip(label: str, is_positive: bool) -> None:
+    """A compact, deliberately-styled yes/no status indicator — used for
+    binary checks (landmark status, historic district, rent stabilization)
+    so a "No"/"Not found" result reads as a clear, calm status the same
+    way a "Yes" result reads as a flag, instead of unstyled plain text."""
+    cls = "opportunity-flag" if is_positive else "status-clear"
+    st.markdown(f'<div class="{cls}">{label}</div>', unsafe_allow_html=True)
+
+
 # ── Lot adjacency helper ──────────────────────────────────────────────────────
 
 def _is_adjacent(bbl_a: str, bbl_b: str) -> bool:
@@ -551,6 +560,16 @@ html, body, [data-testid="stAppViewContainer"] {
     border-radius: 10px;
     padding: 12px 16px;
     color: var(--success-fg);
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 12px;
+}
+.status-clear {
+    background: #F1F2F4;
+    border: 1px solid rgba(107,114,128,0.25);
+    border-radius: 10px;
+    padding: 12px 16px;
+    color: #6B7280;
     font-weight: 600;
     font-size: 0.9rem;
     margin-bottom: 12px;
@@ -1600,51 +1619,54 @@ with tab_property:
                     st.markdown(_p_html + "</table>", unsafe_allow_html=True)
                     st.caption("NYC PLUTO · NYC Planning GeoSearch")
 
-                    # LPC Individual Landmarks + ULURP applications — both are
-                    # additional live NYC Open Data checks, opt-in (matches the
-                    # existing "Fetch ACRIS ownership & distress" button
-                    # pattern below) rather than automatic on every page load,
-                    # so a slow/rate-limited response here never competes with
-                    # or delays the core parcel-data/zoning-lookup fetch above.
+                    # LPC Individual Landmarks + historic-district status, and
+                    # Rent Stabilization, are automatic checks (no button) —
+                    # each is check-cache-then-fetch, so a given BBL is only
+                    # ever fetched once per session. ULURP stays its own
+                    # smaller opt-in button below (a 3rd live NYC Open Data
+                    # call — keeping it opt-in limits how many automatic
+                    # fetches CELL 1 makes on every page load).
                     _cd = _ds_zi.get("community_board", "")
                     if _ds_bbl and len(str(_ds_bbl)) == 10:
-                        if st.button("🏛️ Check landmark & entitlement signals", key=f"_lpc_ulurp_btn_{_ds_bbl}"):
-                            with st.spinner("Checking LPC landmarks + ULURP applications…"):
-                                st.session_state[f"_lpc_{_ds_bbl}"] = fetch_lpc_landmark_status(_ds_bbl)
-                                st.session_state[f"_lpc_hist_{_ds_bbl}"] = fetch_lpc_designation_status(_ds_bbl)
-                                if _cd:
-                                    st.session_state[f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}"] = (
-                                        fetch_ulurp_applications(_ds_zi.get("borough_code", ""), _cd)
-                                    )
+                        _lpc_key = f"_lpc_{_ds_bbl}"
+                        if _lpc_key not in st.session_state:
+                            st.session_state[_lpc_key] = fetch_lpc_landmark_status(_ds_bbl)
+                        _lpc_hist_key = f"_lpc_hist_{_ds_bbl}"
+                        if _lpc_hist_key not in st.session_state:
+                            st.session_state[_lpc_hist_key] = fetch_lpc_designation_status(_ds_bbl)
 
-                        _lpc = st.session_state.get(f"_lpc_{_ds_bbl}", {})
+                        _lpc = st.session_state.get(_lpc_key, {})
                         if _lpc.get("is_individual_landmark"):
-                            st.markdown(
-                                f'<div class="opportunity-flag">🏛️ LPC-designated individual landmark'
-                                f'{" — " + _lpc["landmark_name"] if _lpc.get("landmark_name") else ""}'
-                                f'{" (designated " + _lpc["designation_date"] + ")" if _lpc.get("designation_date") else ""}'
-                                f'</div>', unsafe_allow_html=True,
+                            _status_chip(
+                                "🏛️ LPC-designated individual landmark"
+                                + (" — " + _lpc["landmark_name"] if _lpc.get("landmark_name") else "")
+                                + (" (designated " + _lpc["designation_date"] + ")" if _lpc.get("designation_date") else ""),
+                                is_positive=True,
                             )
                         elif _lpc.get("verified") and not _ds_zi.get("landmark"):
-                            st.caption("✅ Not on the LPC Individual Landmarks list (corroborates PLUTO)")
+                            _status_chip("✅ Not on the LPC Individual Landmarks list (corroborates PLUTO)", is_positive=False)
                         elif _lpc and not _lpc.get("verified"):
                             st.caption("ℹ️ Could not confirm LPC individual-landmark status this time.")
 
                         # ── Historic district (LPC "Discover NYC Landmarks" dataset —
                         # a superset covering historic-district membership, which the
                         # px3f-pupb individual-landmarks dataset above does not) ──
-                        _lpc_hist = st.session_state.get(f"_lpc_hist_{_ds_bbl}", {})
+                        _lpc_hist = st.session_state.get(_lpc_hist_key, {})
                         if _lpc_hist.get("is_in_historic_district"):
-                            st.markdown(
-                                f'<div class="opportunity-flag">🏘️ In LPC historic district'
-                                f'{" — " + _lpc_hist["historic_district_name"] if _lpc_hist.get("historic_district_name") else ""}'
-                                f'</div>', unsafe_allow_html=True,
+                            _status_chip(
+                                "🏘️ In LPC historic district"
+                                + (" — " + _lpc_hist["historic_district_name"] if _lpc_hist.get("historic_district_name") else ""),
+                                is_positive=True,
                             )
                         elif _lpc_hist.get("verified") and not _lpc_hist.get("is_in_historic_district") and not _lpc_hist.get("is_individual_landmark"):
-                            st.caption("✅ Not in an LPC historic district (LPC Discover NYC Landmarks dataset)")
+                            _status_chip("✅ Not in an LPC historic district (LPC Discover NYC Landmarks dataset)", is_positive=False)
                         elif _lpc_hist and not _lpc_hist.get("verified"):
                             st.caption("ℹ️ Could not confirm historic-district status this time.")
 
+                        if _cd and st.button("📜 Check ULURP applications", key=f"_ulurp_btn_{_ds_bbl}"):
+                            st.session_state[f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}"] = (
+                                fetch_ulurp_applications(_ds_zi.get("borough_code", ""), _cd)
+                            )
                         _ulurp = st.session_state.get(f"_ulurp_{_ds_zi.get('borough_code','')}_{_cd}", {})
                         if _ulurp.get("count"):
                             with st.expander(f"📜 ULURP Applications in this Community District ({_ulurp['count']})", expanded=False):
@@ -1663,12 +1685,9 @@ with tab_property:
                             )
                         _rentstab_registry_cell1 = st.session_state.get(_rentstab_reg_key, {})
                         if _rentstab_registry_cell1.get("status") == "confirmed":
-                            st.markdown(
-                                '<div class="opportunity-flag">🏠 Rent-Stabilized (confirmed — NYC RGB list)</div>',
-                                unsafe_allow_html=True,
-                            )
+                            _status_chip("🏠 Rent-Stabilized (confirmed — NYC RGB list)", is_positive=True)
                         elif _rentstab_registry_cell1.get("status") == "not_found":
-                            st.caption("Not found on NYC Rent Guidelines Board building list.")
+                            _status_chip("Not found on NYC Rent Guidelines Board building list.", is_positive=False)
                         # "unavailable" status renders nothing here — the fuller
                         # Tax Abatement, Rent Stabilization & Transit section
                         # further down the page already surfaces the error text;

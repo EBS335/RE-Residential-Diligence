@@ -19,10 +19,30 @@ listings found").
 """
 
 import os
+from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
 _APP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
+
+# CELL 1's LPC individual-landmark + historic-district checks became
+# automatic (no button) in this session's Property Analysis enhancement
+# round — every _run_with_geo() call below now exercises that code path
+# for any valid-BBL fixture, so these two live NYC Open Data calls are
+# mocked out here to keep this test file fast and network-independent
+# (matching this repo's established fetcher-mocking convention). Once
+# fetched, the result is cached in session_state under a BBL-keyed key, so
+# only the FIRST .run() in a given test needs the mock active — any
+# subsequent .run() (e.g. after a button click) hits the cache instead.
+_FAKE_LPC = {
+    "is_individual_landmark": False, "landmark_name": None, "designation_date": None,
+    "map_url": "", "source": "NYC LPC Individual Landmarks", "verified": True, "error": None,
+}
+_FAKE_LPC_HIST = {
+    "is_individual_landmark": False, "is_in_historic_district": False,
+    "historic_district_name": None, "landmark_name": None, "designation_date": None,
+    "borough": None, "map_url": "", "source": "NYC LPC — Discover NYC Landmarks", "verified": True, "error": None,
+}
 
 _LAT, _LON = 40.6892, -73.9908
 _RADIUS_MILES = 0.25
@@ -73,18 +93,20 @@ _GOOD_ZINFO = {
 
 
 def _run_with_geo(extra_state=None):
-    at = AppTest.from_file(_APP_PATH, default_timeout=90)
-    at.run()
-    at.session_state["geo"] = _FAKE_GEO
-    at.session_state["radius_miles"] = _RADIUS_MILES
-    at.session_state["radius_choice"] = "5 blocks  (~0.25 mi)"
-    at.session_state["underbuilt_threshold_pct"] = 20
-    at.session_state["address_raw"] = _FAKE_GEO["formatted_address"]
-    at.session_state[_LISTINGS_KEY] = {"listings": _FAKE_LISTINGS, "status": _FAKE_STATUS}
-    if extra_state:
-        for k, v in extra_state.items():
-            at.session_state[k] = v
-    at.run()
+    with patch("modules.lpc_landmarks_fetcher.fetch_lpc_landmark_status", return_value=_FAKE_LPC), \
+         patch("modules.lpc_landmarks_fetcher.fetch_lpc_designation_status", return_value=_FAKE_LPC_HIST):
+        at = AppTest.from_file(_APP_PATH, default_timeout=90)
+        at.run()
+        at.session_state["geo"] = _FAKE_GEO
+        at.session_state["radius_miles"] = _RADIUS_MILES
+        at.session_state["radius_choice"] = "5 blocks  (~0.25 mi)"
+        at.session_state["underbuilt_threshold_pct"] = 20
+        at.session_state["address_raw"] = _FAKE_GEO["formatted_address"]
+        at.session_state[_LISTINGS_KEY] = {"listings": _FAKE_LISTINGS, "status": _FAKE_STATUS}
+        if extra_state:
+            for k, v in extra_state.items():
+                at.session_state[k] = v
+        at.run()
     return at
 
 
@@ -151,25 +173,39 @@ def test_no_geo_search_yet_shows_no_exception():
     assert not at.exception
 
 
-# ── Fix 2: new Batch B signals (LPC/ULURP/OATH/Tax Lien) are opt-in ─────────
+# ── Fix 2: OATH/Tax Lien are opt-in; ULURP is opt-in; LPC landmarks +
+# historic-district + rent-stabilization are automatic (no button) ────────
 
-def test_lpc_ulurp_not_fetched_until_button_clicked():
+def test_lpc_landmarks_and_historic_district_fetched_automatically():
+    # Landmark + historic-district checks no longer require a button click
+    # (Property Analysis enhancement round 2) — verify both are populated
+    # on the very first render, and that the old combined button is gone.
     at = _run_with_geo({_ZOLA_KEY: _GOOD_ZINFO})
     assert not at.exception
-    assert f"_lpc_{_GOOD_ZINFO['bbl']}" not in at.session_state
+    assert f"_lpc_{_GOOD_ZINFO['bbl']}" in at.session_state
+    assert f"_lpc_hist_{_GOOD_ZINFO['bbl']}" in at.session_state
+
+    button_labels = [b.label for b in at.button]
+    assert "🏛️ Check landmark & entitlement signals" not in button_labels
+
+
+def test_ulurp_not_fetched_until_its_own_button_clicked():
+    # ULURP remains its own small opt-in button (a 3rd live NYC Open Data
+    # call), separate from the now-automatic landmark checks.
+    at = _run_with_geo({_ZOLA_KEY: _GOOD_ZINFO})
+    assert not at.exception
     assert f"_ulurp_{_GOOD_ZINFO['borough_code']}_{_GOOD_ZINFO['community_board']}" not in at.session_state
 
     button_labels = [b.label for b in at.button]
-    assert "🏛️ Check landmark & entitlement signals" in button_labels
+    assert "📜 Check ULURP applications" in button_labels
 
 
-def test_lpc_ulurp_fetched_after_button_click():
+def test_ulurp_fetched_after_its_own_button_click():
     at = _run_with_geo({_ZOLA_KEY: _GOOD_ZINFO})
-    btn = next(b for b in at.button if b.label == "🏛️ Check landmark & entitlement signals")
+    btn = next(b for b in at.button if b.label == "📜 Check ULURP applications")
     btn.click()
     at.run()
     assert not at.exception
-    assert f"_lpc_{_GOOD_ZINFO['bbl']}" in at.session_state
     assert f"_ulurp_{_GOOD_ZINFO['borough_code']}_{_GOOD_ZINFO['community_board']}" in at.session_state
 
 
