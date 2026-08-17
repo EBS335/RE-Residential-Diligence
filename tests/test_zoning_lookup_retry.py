@@ -229,6 +229,34 @@ def test_oath_taxlien_fetched_after_button_click():
     assert f"_taxlien_{_GOOD_ZINFO['bbl']}" in at.session_state
 
 
+# ── Fix 3: "Add Adjacent Lots" relocated under Assemblage Detection ────────
+
+def test_adjacent_lots_expander_relocated_under_assemblage_detection():
+    # Property Analysis enhancement round 2: "Add Adjacent Lots" moved from
+    # deep inside "Zoning & Property Data" to sit directly under Assemblage
+    # Detection (CELL 5), near the top of the page.
+    at = _run_with_geo({_ZOLA_KEY: _GOOD_ZINFO})
+    assert not at.exception
+    expander_labels = [e.label for e in at.expander]
+    assert "🏘️ Add Adjacent Lots" in expander_labels
+
+
+def test_adjacent_lots_seeded_valid_still_feeds_downstream_without_exception():
+    # Confirms the relocation didn't break the downstream consumers (Zoning
+    # Summary lot tabs, Design & Massing Scenarios combined-lot logic) —
+    # both read purely from session_state and must keep working unchanged
+    # regardless of where the input widget itself now lives on the page.
+    at = _run_with_geo({
+        _ZOLA_KEY: _GOOD_ZINFO,
+        "_adj_lots_valid": [{
+            **_GOOD_ZINFO, "bbl": "3001234568",
+            "lot_frontage_ft": "25", "lot_depth_ft": "100", "lot_area_sqft": "2,500",
+        }],
+        "_adj_lots_use_combined": True,
+    })
+    assert not at.exception
+
+
 def test_cell3_does_not_call_fetch_property_history_directly():
     # CELL 3's composite-distress-score block must read _pip_{bbl} from
     # cache only — fetch_property_history() should be called from exactly

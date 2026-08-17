@@ -2148,6 +2148,88 @@ with tab_property:
                     st.info("BBL required for assemblage analysis.")
                 st.caption("NYC PLUTO · Adjacent = within 100 ft radius")
 
+                # ── Adjacent Lot Aggregation ──────────────────────────────
+                with st.expander("🏘️ Add Adjacent Lots", expanded=False):
+                    st.caption(
+                        "Enter addresses of neighboring lots on the same block. "
+                        "Adjacent lots will be merged into a combined parcel for massing analysis."
+                    )
+                    # Input rows for up to 3 additional lots
+                    _adj_addrs = st.session_state.get("_adj_lots_inputs", ["", "", ""])
+                    _new_addrs = []
+                    for _ai in range(3):
+                        _ac1, _ac2 = st.columns([4, 1])
+                        with _ac1:
+                            _ainput = st.text_input(
+                                f"Adjacent Lot {_ai + 1}",
+                                value=_adj_addrs[_ai] if _ai < len(_adj_addrs) else "",
+                                key=f"_adj_lot_input_{_ai}",
+                                placeholder="e.g. 123 Main St, Brooklyn, NY",
+                                label_visibility="collapsed",
+                            )
+                        with _ac2:
+                            _alookup = st.button("Look Up", key=f"_adj_lot_btn_{_ai}")
+                        _new_addrs.append(_ainput)
+
+                        if _alookup and _ainput.strip():
+                            _adj_cache_key = f"_adj_lot_{_ainput.strip().lower()}"
+                            if _adj_cache_key not in st.session_state:
+                                with st.spinner(f"Looking up lot {_ai + 1}…"):
+                                    st.session_state[_adj_cache_key] = fetch_zoning_info(
+                                        _ainput.strip(), lat=lat, lon=lon
+                                    )
+
+                        # Show result if cached
+                        _adj_ck = f"_adj_lot_{_ainput.strip().lower()}" if _ainput.strip() else None
+                        if _adj_ck and _adj_ck in st.session_state:
+                            _adj_res = st.session_state[_adj_ck]
+                            if _adj_res and "error" not in _adj_res:
+                                _adj_bbl = _adj_res.get("bbl", "")
+                                _adj_lf  = _adj_res.get("lot_frontage_ft", "—")
+                                _adj_ld  = _adj_res.get("lot_depth_ft", "—")
+                                _adj_la  = _adj_res.get("lot_area_sqft", "—")
+                                _adj_ok  = _is_adjacent(_ds_bbl, _adj_bbl)
+                                _status  = "✅ Adjacent (same block)" if _adj_ok else "⚠️ Different block — won't be merged"
+                                st.markdown(
+                                    f"<div style='font-size:0.78rem;padding:4px 8px;"
+                                    f"background:#FCFAF3;border-radius:6px;border:1px solid #DCD5C2;margin-bottom:4px'>"
+                                    f"BBL: <b>{_adj_bbl}</b> &nbsp;·&nbsp; "
+                                    f"{_adj_lf} ft × {_adj_ld} ft = {_adj_la} SF &nbsp;·&nbsp; {_status}"
+                                    f"</div>",
+                                    unsafe_allow_html=True,
+                                )
+                            elif _adj_res and "error" in _adj_res:
+                                st.warning(f"Lot {_ai + 1}: {_adj_res['error']}")
+                            else:
+                                st.warning(f"Lot {_ai + 1}: Not found.")
+
+                    st.session_state["_adj_lots_inputs"] = _new_addrs
+
+                    # Collect all valid adjacent lots
+                    _valid_adj = []
+                    for _ainput in _new_addrs:
+                        if not _ainput.strip():
+                            continue
+                        _adj_ck = f"_adj_lot_{_ainput.strip().lower()}"
+                        _adj_res = st.session_state.get(_adj_ck)
+                        if _adj_res and "error" not in _adj_res:
+                            _adj_bbl = _adj_res.get("bbl", "")
+                            if _is_adjacent(_ds_bbl, _adj_bbl):
+                                _valid_adj.append(_adj_res)
+
+                    if _valid_adj:
+                        st.success(f"{len(_valid_adj)} adjacent lot(s) found — will be merged with subject parcel.")
+                        st.session_state["_adj_lots_use_combined"] = st.checkbox(
+                            "Use combined lot for massing analysis",
+                            value=st.session_state.get("_adj_lots_use_combined", True),
+                            key="_adj_lots_use_combined_cb",
+                        )
+                        st.session_state["_adj_lots_valid"] = _valid_adj
+                    else:
+                        st.session_state["_adj_lots_valid"] = []
+                        if any(a.strip() for a in _new_addrs):
+                            st.info("No adjacent lots found on the same block yet. Use 'Look Up' for each address.")
+
             # ─── CELL 6: Deal Score ──────────────────────────────────────────────
             with _ds_r3b:
                 st.markdown("**🏆 Deal Score**")
@@ -4058,89 +4140,6 @@ with tab_property:
                                 unsafe_allow_html=True,
                             )
                             st.caption(f"[Search official DEC spills database for this address ↗]({_dec.get('search_tool_url', '')})")
-
-                    # ── Adjacent Lot Aggregation ──────────────────────────────
-                    _subj_bbl = _zinfo.get("bbl", "")
-                    with st.expander("🏘️ Add Adjacent Lots", expanded=False):
-                        st.caption(
-                            "Enter addresses of neighboring lots on the same block. "
-                            "Adjacent lots will be merged into a combined parcel for massing analysis."
-                        )
-                        # Input rows for up to 3 additional lots
-                        _adj_addrs = st.session_state.get("_adj_lots_inputs", ["", "", ""])
-                        _new_addrs = []
-                        for _ai in range(3):
-                            _ac1, _ac2 = st.columns([4, 1])
-                            with _ac1:
-                                _ainput = st.text_input(
-                                    f"Adjacent Lot {_ai + 1}",
-                                    value=_adj_addrs[_ai] if _ai < len(_adj_addrs) else "",
-                                    key=f"_adj_lot_input_{_ai}",
-                                    placeholder="e.g. 123 Main St, Brooklyn, NY",
-                                    label_visibility="collapsed",
-                                )
-                            with _ac2:
-                                _alookup = st.button("Look Up", key=f"_adj_lot_btn_{_ai}")
-                            _new_addrs.append(_ainput)
-
-                            if _alookup and _ainput.strip():
-                                _adj_cache_key = f"_adj_lot_{_ainput.strip().lower()}"
-                                if _adj_cache_key not in st.session_state:
-                                    with st.spinner(f"Looking up lot {_ai + 1}…"):
-                                        st.session_state[_adj_cache_key] = fetch_zoning_info(
-                                            _ainput.strip(), lat=lat, lon=lon
-                                        )
-
-                            # Show result if cached
-                            _adj_ck = f"_adj_lot_{_ainput.strip().lower()}" if _ainput.strip() else None
-                            if _adj_ck and _adj_ck in st.session_state:
-                                _adj_res = st.session_state[_adj_ck]
-                                if _adj_res and "error" not in _adj_res:
-                                    _adj_bbl = _adj_res.get("bbl", "")
-                                    _adj_lf  = _adj_res.get("lot_frontage_ft", "—")
-                                    _adj_ld  = _adj_res.get("lot_depth_ft", "—")
-                                    _adj_la  = _adj_res.get("lot_area_sqft", "—")
-                                    _adj_ok  = _is_adjacent(_subj_bbl, _adj_bbl)
-                                    _status  = "✅ Adjacent (same block)" if _adj_ok else "⚠️ Different block — won't be merged"
-                                    st.markdown(
-                                        f"<div style='font-size:0.78rem;padding:4px 8px;"
-                                        f"background:#FCFAF3;border-radius:6px;border:1px solid #DCD5C2;margin-bottom:4px'>"
-                                        f"BBL: <b>{_adj_bbl}</b> &nbsp;·&nbsp; "
-                                        f"{_adj_lf} ft × {_adj_ld} ft = {_adj_la} SF &nbsp;·&nbsp; {_status}"
-                                        f"</div>",
-                                        unsafe_allow_html=True,
-                                    )
-                                elif _adj_res and "error" in _adj_res:
-                                    st.warning(f"Lot {_ai + 1}: {_adj_res['error']}")
-                                else:
-                                    st.warning(f"Lot {_ai + 1}: Not found.")
-
-                        st.session_state["_adj_lots_inputs"] = _new_addrs
-
-                        # Collect all valid adjacent lots
-                        _valid_adj = []
-                        for _ainput in _new_addrs:
-                            if not _ainput.strip():
-                                continue
-                            _adj_ck = f"_adj_lot_{_ainput.strip().lower()}"
-                            _adj_res = st.session_state.get(_adj_ck)
-                            if _adj_res and "error" not in _adj_res:
-                                _adj_bbl = _adj_res.get("bbl", "")
-                                if _is_adjacent(_subj_bbl, _adj_bbl):
-                                    _valid_adj.append(_adj_res)
-
-                        if _valid_adj:
-                            st.success(f"{len(_valid_adj)} adjacent lot(s) found — will be merged with subject parcel.")
-                            st.session_state["_adj_lots_use_combined"] = st.checkbox(
-                                "Use combined lot for massing analysis",
-                                value=st.session_state.get("_adj_lots_use_combined", True),
-                                key="_adj_lots_use_combined_cb",
-                            )
-                            st.session_state["_adj_lots_valid"] = _valid_adj
-                        else:
-                            st.session_state["_adj_lots_valid"] = []
-                            if any(a.strip() for a in _new_addrs):
-                                st.info("No adjacent lots found on the same block yet. Use 'Look Up' for each address.")
 
                     def _zrow(label, val, width="160px"):
                         v = str(val) if val and str(val) != "—" else None
