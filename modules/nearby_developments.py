@@ -274,7 +274,7 @@ _GNEWS_URL = "https://news.google.com/rss/search"
 
 def _fetch_google_news(
     lat: float, lon: float, radius_miles: float,
-    address: str = "", neighborhood: str = "",
+    address: str = "", neighborhood: str = "", zip_code: str = "",
 ) -> tuple[list, str]:
     """Search Google News RSS for recent development articles near the address."""
     # Use street address first, then neighborhood, then a bare NYC query
@@ -283,18 +283,22 @@ def _fetch_google_news(
     if not loc:
         return [], "no_results"
 
-    # Build two queries — one hyper-local, one neighborhood-level
+    # Build up to three queries — hyper-local (address), neighborhood-level,
+    # and zip-code-level — so a development-news mention that only names the
+    # zip code (common in trade-press coverage) isn't missed.
     queries = []
     if addr_part:
         queries.append(f'"{addr_part}" NYC development construction')
     if neighborhood and neighborhood != addr_part:
         queries.append(f'"{neighborhood}" NYC real estate development')
+    if zip_code:
+        queries.append(f'"{zip_code}" NYC development construction')
 
     cutoff = _cutoff_date(36)
     out: list[dict] = []
     status = "no_results"
 
-    for query in queries[:2]:
+    for query in queries[:3]:
         params = {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
         content, fetch_status = fetch_rss_content(_GNEWS_URL, params=params)
         if fetch_status != "ok":
@@ -402,6 +406,7 @@ def fetch_nearby_developments(
     radius_miles: float,
     address: str = "",
     neighborhood: str = "",
+    zip_code: str = "",
     proxy_key: Optional[str] = None,
 ) -> tuple[list, dict]:
     """
@@ -409,7 +414,7 @@ def fetch_nearby_developments(
 
     Sources:
       1. NYC DOB Permits (NB, A1, DM filings — last 36 months)
-      2. Google News RSS (keyword search by address + neighborhood)
+      2. Google News RSS (keyword search by address + neighborhood + zip code)
       3. The Real Deal RSS
       4. Commercial Observer RSS
       5. Bisnow NYC RSS
@@ -434,7 +439,7 @@ def fetch_nearby_developments(
     all_devs.extend(dob_devs)
 
     # Source 2 — Google News RSS
-    gn_devs, gn_status = _fetch_google_news(lat, lon, radius_miles, address, neighborhood)
+    gn_devs, gn_status = _fetch_google_news(lat, lon, radius_miles, address, neighborhood, zip_code)
     status["google_news"] = gn_status
     all_devs.extend(gn_devs)
     time.sleep(0.2)

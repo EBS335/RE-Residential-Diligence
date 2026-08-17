@@ -1959,13 +1959,9 @@ with tab_property:
                             lat, lon, radius_miles,
                             address=address_input,
                             neighborhood=neighborhood if neighborhood != "—" else "",
+                            zip_code=zip_code if zip_code != "—" else "",
                         )
                 _nd_devs, _nd_status = st.session_state[_nd_key]
-                _nd_overall = _nd_status.get("overall", "")
-                if _nd_overall == "error":
-                    st.warning("⚠️ Nearby-developments search failed across all sources — results below may be incomplete.")
-                elif _nd_overall == "blocked":
-                    st.warning("⚠️ One or more nearby-developments sources rate-limited this request.")
 
                 _nd_total_units = sum(d.get("units") or 0 for d in _nd_devs)
                 _nd_total_sf    = sum(d.get("sqft")  or 0 for d in _nd_devs)
@@ -2000,11 +1996,7 @@ with tab_property:
                     )
                 else:
                     st.info("No recent developments found within this radius.")
-                st.caption(
-                    f"Sources: NYC DOB · Google News · The Real Deal  "
-                    f"(DOB: {_nd_status.get('dob','—')} · "
-                    f"News: {_nd_status.get('google_news','—')})"
-                )
+                st.caption("Sources: NYC DOB · Google News · The Real Deal · Commercial Observer · Bisnow")
 
             _ds_r3a, _ds_r3b = st.columns(2)
 
