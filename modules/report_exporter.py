@@ -507,6 +507,20 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
     def _divider():
         return HRFlowable(width="100%", thickness=0.75, color=BORDER, spaceBefore=4, spaceAfter=12)
 
+    def _section_header(title_text: str):
+        """A section heading with a thin navy left-rule bar, for the
+        scannable, IC-memo look of a real section divider rather than
+        plain running text — applied to every primary section (existing
+        and new) for visual consistency."""
+        t = Table([[Paragraph(title_text, h2)]], colWidths=[6.83 * inch])
+        t.setStyle(TableStyle([
+            ("LINEBEFORE", (0, 0), (0, 0), 3, NAVY),
+            ("LEFTPADDING", (0, 0), (0, 0), 8),
+            ("TOPPADDING", (0, 0), (0, 0), 1),
+            ("BOTTOMPADDING", (0, 0), (0, 0), 1),
+        ]))
+        return t
+
     story = []
     story.append(Paragraph("INVESTMENT SCREENING MEMORANDUM", kicker))
     story.append(Paragraph(address, title_style))
@@ -558,7 +572,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
 
     if ic_summary and _sec("thesis"):
         story.append(Paragraph("INVESTMENT THESIS", kicker))
-        story.append(Paragraph("Investment Thesis", h2))
+        story.append(_section_header("Investment Thesis"))
         for bullet in ic_summary.get("thesis", []):
             story.append(Paragraph(f"• {bullet}", body))
         story.append(Spacer(1, 10))
@@ -575,7 +589,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
 
     if _sec("zoning"):
         story.append(Paragraph("ZONING & ENTITLEMENT", kicker))
-        story.append(Paragraph("Zoning Summary", h2))
+        story.append(_section_header("Zoning Summary"))
         zdist = prop.get("zoning_dist", "—")
         story.append(Paragraph(
             f"District: {zdist} &nbsp;·&nbsp; Built FAR: {prop.get('far_built', 0):.2f} "
@@ -585,7 +599,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
         story.append(Spacer(1, 10))
 
     if prop.get("owner") and _sec("ownership"):
-        story.append(Paragraph("Ownership", h2))
+        story.append(_section_header("Ownership"))
         story.append(Paragraph(
             f"Owner: {prop.get('owner', '—')} ({prop.get('owner_type', 'Unknown')}) &nbsp;·&nbsp; "
             f"Last Sale: {prop.get('last_sale_price') or '—'} on {prop.get('last_sale_date') or '—'} "
@@ -598,7 +612,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
         story.append(Paragraph("ACQUISITION & DEVELOPMENT ECONOMICS", kicker))
         profit_str = f"${plan['profit']:,.0f}" if plan["profit"] is not None else "—"
         margin_str = f"{plan['margin_pct']:.0f}%" if plan["margin_pct"] is not None else "—"
-        story.append(Paragraph("Preliminary Acquisition Estimate & Business Plan", h2))
+        story.append(_section_header("Preliminary Acquisition Estimate & Business Plan"))
         story.append(Paragraph(f"Basis: {plan['acquisition']['basis']}", body))
         story.append(Paragraph(
             f"Est. total development cost: ${plan['total_dev_cost']:,.0f} &nbsp;·&nbsp; "
@@ -616,7 +630,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
     uw = prop.get("underwriting")
     if uw and _sec("underwriting"):
         story.append(Paragraph("UNDERWRITING", kicker))
-        story.append(Paragraph("Underwriting Pro Forma", h2))
+        story.append(_section_header("Underwriting Pro Forma"))
         story.append(Paragraph(f"Scenario: {uw.get('scenario_label', '—')}", body))
         irr_str = f"{uw['irr']:.1%}" if uw.get("irr") is not None else "N/A"
         em_str = f"{uw['equity_multiple']:.2f}x" if uw.get("equity_multiple") is not None else "N/A"
@@ -664,7 +678,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
     if cd and included_sections is not None and included_sections.get("distress", True):
         story.append(_divider())
         story.append(Paragraph("DISTRESS SIGNALS", kicker))
-        story.append(Paragraph("Distress Signals", h2))
+        story.append(_section_header("Distress Signals"))
         story.append(Paragraph(
             f"Composite Distress Score: {cd.get('score', '—')}/100 ({cd.get('tier', '—')})", body,
         ))
@@ -676,7 +690,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
     if (ta or rs) and included_sections is not None and included_sections.get("tax_abatement_rent_stab", True):
         story.append(_divider())
         story.append(Paragraph("TAX ABATEMENT & RENT STABILIZATION", kicker))
-        story.append(Paragraph("Tax Abatement & Rent Stabilization", h2))
+        story.append(_section_header("Tax Abatement & Rent Stabilization"))
         if ta:
             story.append(Paragraph(
                 f"Tax Abatement: {ta.get('program', ta.get('label', '—'))} "
@@ -694,7 +708,7 @@ def build_pdf_report(prop: dict, ic_summary: dict | None = None,
     if mkt and included_sections is not None and included_sections.get("market_comps", True):
         story.append(_divider())
         story.append(Paragraph("MARKET COMPARABLES", kicker))
-        story.append(Paragraph("Market Comps", h2))
+        story.append(_section_header("Market Comps"))
         comps_list = mkt.get("comps") or []
         if comps_list:
             comp_rows = [["Address", "Price", "SF", "$/SF"]]
