@@ -331,3 +331,103 @@ def _normalize_row(r: dict) -> dict:
         "latitude":         f_any(["latitude", "lat"], None),
         "longitude":        f_any(["longitude", "lon", "lng"], None),
     }
+
+
+def find_similar_properties(
+    reference: dict, max_rows: int = 200, lot_sf_tolerance_pct: float = 25.0
+) -> tuple[list[dict], dict]:
+    """
+    "More Like This" — a NEW, standalone city-wide PLUTO $where builder
+    driven by a reference property's OWN fields (not a user-entered
+    criteria dict), so it is deliberately separate from
+    _build_where_clause()/search_properties(), which it does not call or
+    modify:
+
+      - lot-SF tolerance band:  lotarea BETWEEN lo AND hi
+        (reference["lot_sf"] +/- lot_sf_tolerance_pct%)
+      - exact zoning match:     zonedist1 = '<reference zoning_dist>'
+      - building-class family:  starts_with(bldgclass, '<first letter>')
+      - excludes the reference's own BBL
+
+    Any reference field that's missing/falsy is simply omitted from the
+    $where clause (never produces an invalid clause like `zonedist1 = ''`).
+
+    Candidates are paginated via the same _get_page()/_PAGE_SIZE pattern
+    search_properties() uses (capped at max_rows raw rows), normalized via
+    _normalize_row(), then client-side sorted by ascending
+    abs(candidate["unused_far_pct"] - reference["unused_far_pct"]) — the
+    "FAR gap" similarity no single PLUTO column represents directly.
+
+    Never raises — same defensive convention as search_properties().
+    Returns (rows, status) in the same shape as search_properties()/
+    fetch_properties_by_bbls().
+    """
+    reference = reference or {}
+    rows: list[dict] = []
+    truncated = False
+    error = None
+    where_clause = ""
+
+    try:
+        clauses: list[str] = []
+
+        lot_sf = _num(reference.get("lot_sf"), 0.0)
+        if lot_sf > 0:
+            tol = lot_sf * (_num(lot_sf_tolerance_pct, 25.0) / 100.0)
+            lo = max(0.0, lot_sf - tol)
+            hi = lot_sf + tol
+            clauses.append(f"lotarea BETWEEN {lo:.0f} AND {hi:.0f}")
+
+        zoning_dist = str(reference.get("zoning_dist") or "").strip()
+        if zoning_dist:
+            clauses.append(f"zonedist1 = '{zoning_dist.replace(chr(39), chr(39)*2)}'")
+
+        bldg_class = str(reference.get("bldg_class") or "").strip()
+        if bldg_class:
+            first_letter = bldg_class[0].replace("'", "''")
+            clauses.append(f"starts_with(bldgclass, '{first_letter}')")
+
+        ref_bbl = str(reference.get("bbl") or "").strip()
+        if ref_bbl:
+            clauses.append(f"bbl != '{ref_bbl.replace(chr(39), chr(39)*2)}'")
+
+        clauses.append("bbl IS NOT NULL")
+        where_clause = " AND ".join(clauses)
+
+        offset = 0
+        while len(rows) < max_rows:
+            page = _get_page(where_clause, offset, _PAGE_SIZE)
+            if not page:
+                break
+            rows.extend(page)
+            offset += _PAGE_SIZE
+            if len(page) < _PAGE_SIZE:
+                break   # last page
+        if len(rows) >= max_rows:
+            truncated = True
+            rows = rows[:max_rows]
+    except Exception as exc:
+        error = str(exc)
+
+    normalized = [_normalize_row(r) for r in rows]
+    normalized = [r for r in normalized if r["bbl"] and r["address"]]
+    # Belt-and-suspenders: the reference's own BBL is already excluded
+    # server-side via the $where clause above, but a candidate matching it
+    # is filtered out here too in case the upstream dataset ever fails to
+    # honor that clause.
+    ref_bbl = str(reference.get("bbl") or "").strip()
+    if ref_bbl:
+        normalized = [r for r in normalized if r["bbl"] != ref_bbl]
+
+    ref_far_gap = _num(reference.get("unused_far_pct"), 0.0)
+    normalized.sort(key=lambda r: abs(_num(r.get("unused_far_pct"), 0.0) - ref_far_gap))
+
+    status = {
+        "total_fetched": len(normalized),
+        "truncated":     truncated,
+        "where_clause":  where_clause,
+        "error":         error,
+        "coords_missing_pct": None,
+        "raw_field_sample_if_no_coords": None,
+    }
+    return normalized, status

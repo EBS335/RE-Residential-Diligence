@@ -8,7 +8,7 @@ expansion, and "more like this").
 
 from unittest.mock import patch
 
-from modules.property_search import _normalize_row, fetch_properties_by_bbls
+from modules.property_search import _normalize_row, fetch_properties_by_bbls, find_similar_properties
 
 
 def _raw_row(**overrides):
@@ -103,5 +103,97 @@ def test_fetch_properties_by_bbls_mocked_returns_normalized_rows():
 def test_fetch_properties_by_bbls_propagates_fetch_errors_without_raising():
     with patch("modules.property_search._get_page", side_effect=RuntimeError("boom")):
         rows, status = fetch_properties_by_bbls(["1000010001"])
+    assert rows == []
+    assert status["error"] == "boom"
+
+
+# ── find_similar_properties() ───────────────────────────────────────────────
+
+_REFERENCE = {
+    "bbl": "1000010001",
+    "lot_sf": 5000.0,
+    "zoning_dist": "R6",
+    "bldg_class": "C1",
+    "unused_far_pct": 33.33,  # builtfar 2.0 of far_max 3.0
+}
+
+
+def test_find_similar_properties_where_clause_has_tolerance_band_zoning_and_class():
+    with patch("modules.property_search._get_page", return_value=[]) as mock_get:
+        rows, status = find_similar_properties(_REFERENCE)
+    assert rows == []
+    where = status["where_clause"]
+    assert "lotarea BETWEEN 3750 AND 6250" in where   # 5000 +/- 25%
+    assert "zonedist1 = 'R6'" in where
+    assert "starts_with(bldgclass, 'C')" in where
+    assert "bbl != '1000010001'" in where
+    mock_get.assert_called_once()
+
+
+def test_find_similar_properties_excludes_reference_bbl_from_results():
+    # Even if the upstream dataset ever fails to honor the `bbl !=` clause,
+    # a candidate matching the reference's own BBL must not come back.
+    def _fake_get_page(where_clause, offset, limit):
+        if offset > 0:
+            return []
+        return [
+            _raw_row(bbl="1000010001", address="REF ADDR"),   # same as reference
+            _raw_row(bbl="2000020002", address="OTHER ADDR"),
+        ]
+
+    with patch("modules.property_search._get_page", side_effect=_fake_get_page):
+        rows, status = find_similar_properties(_REFERENCE)
+
+    assert status["error"] is None
+    bbls = [r["bbl"] for r in rows]
+    assert "1000010001" not in bbls
+    assert "2000020002" in bbls
+
+
+def test_find_similar_properties_sorts_by_ascending_far_gap():
+    # Reference unused_far_pct ~= 33.33 (builtfar 2.0 of far_max 3.0).
+    # Candidate A: far_max 3.0, builtfar 2.9 -> unused_far_pct ~3.33  (gap ~30)
+    # Candidate B: far_max 3.0, builtfar 2.0 -> unused_far_pct ~33.33 (gap ~0, closest)
+    # Candidate C: far_max 3.0, builtfar 0.5 -> unused_far_pct ~83.33 (gap ~50, farthest)
+    cand_a = _raw_row(bbl="3000030003", address="A ST", builtfar="2.9", residfar="3.0", commfar="0")
+    cand_b = _raw_row(bbl="4000040004", address="B ST", builtfar="2.0", residfar="3.0", commfar="0")
+    cand_c = _raw_row(bbl="5000050005", address="C ST", builtfar="0.5", residfar="3.0", commfar="0")
+
+    def _fake_get_page(where_clause, offset, limit):
+        if offset > 0:
+            return []
+        return [cand_c, cand_a, cand_b]   # deliberately scrambled
+
+    with patch("modules.property_search._get_page", side_effect=_fake_get_page):
+        rows, status = find_similar_properties(_REFERENCE)
+
+    assert status["error"] is None
+    assert [r["bbl"] for r in rows] == ["4000040004", "3000030003", "5000050005"]
+
+
+def test_find_similar_properties_missing_zoning_and_bldg_class_omits_those_clauses():
+    reference = {"bbl": "1000010001", "lot_sf": 5000.0, "unused_far_pct": 10.0}
+    with patch("modules.property_search._get_page", return_value=[]) as mock_get:
+        rows, status = find_similar_properties(reference)
+    assert status["error"] is None
+    where = status["where_clause"]
+    assert "zonedist1 =" not in where
+    assert "starts_with(bldgclass" not in where
+    assert "lotarea BETWEEN" in where
+    mock_get.assert_called_once()
+
+
+def test_find_similar_properties_empty_reference_does_not_raise():
+    with patch("modules.property_search._get_page", return_value=[]):
+        rows, status = find_similar_properties({})
+    assert rows == []
+    assert status["error"] is None
+    assert "lotarea BETWEEN" not in status["where_clause"]
+    assert "zonedist1 =" not in status["where_clause"]
+
+
+def test_find_similar_properties_propagates_fetch_errors_without_raising():
+    with patch("modules.property_search._get_page", side_effect=RuntimeError("boom")):
+        rows, status = find_similar_properties(_REFERENCE)
     assert rows == []
     assert status["error"] == "boom"

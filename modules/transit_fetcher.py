@@ -161,3 +161,92 @@ def fetch_transit_proximity(lat: float, lon: float) -> dict:
     except Exception as exc:
         log.warning("fetch_transit_proximity failed: %s", exc)
         return {**base, "error": str(exc)}
+
+
+def _line_tokens(line_field) -> list[str]:
+    """Split a raw station 'line' field into individual line letter/number
+    tokens — the exact same '/'-and-'-'-splitting logic fetch_transit_
+    proximity() already applies when building `nearest_lines`, extracted
+    here so stations_for_line()/list_available_lines() reuse it instead of
+    duplicating the parsing rule."""
+    if not line_field:
+        return []
+    return [ln.strip() for ln in str(line_field).replace("/", "-").split("-") if ln.strip()]
+
+
+def stations_for_line(line: str) -> list[dict]:
+    """
+    All stations (from the same cached station index fetch_transit_
+    proximity() uses) whose line field includes the given line letter/
+    number — a case-insensitive token match against the same '/'-and-'-'
+    split fetch_transit_proximity() already applies to `nearest_lines`.
+
+    Never raises; returns [] if the station index is unavailable or
+    `line` is blank.
+    """
+    if not line or not str(line).strip():
+        return []
+    wanted = str(line).strip().upper()
+    try:
+        stations = _load_station_index()
+    except Exception as exc:
+        log.warning("stations_for_line failed: %s", exc)
+        return []
+    if not stations:
+        return []
+
+    matches = []
+    for s in stations:
+        tokens = [t.upper() for t in _line_tokens(s.get("line", ""))]
+        if wanted in tokens:
+            matches.append(s)
+    return matches
+
+
+def is_near_line(lat: float, lon: float, line: str, buffer_miles: float = 0.5) -> bool:
+    """
+    True if (lat, lon) is within `buffer_miles` of ANY station on `line`
+    (a buffer around each individual station — not a continuous corridor
+    polyline, since no NYC subway-line geometry/GTFS-shapes dataset is
+    available anywhere in this app). Reuses _haversine_miles(), the same
+    distance helper fetch_transit_proximity() uses internally.
+
+    Never raises; returns False on missing coordinates, an unavailable
+    station index, or any other error.
+    """
+    try:
+        if lat is None or lon is None:
+            return False
+        lat, lon = float(lat), float(lon)
+        candidates = stations_for_line(line)
+        if not candidates:
+            return False
+        return any(
+            _haversine_miles(lat, lon, s["lat"], s["lon"]) <= buffer_miles
+            for s in candidates
+        )
+    except Exception as exc:
+        log.warning("is_near_line failed: %s", exc)
+        return False
+
+
+def list_available_lines() -> list[str]:
+    """
+    The distinct, sorted set of line tokens across the full station index
+    — parsed with the exact same _line_tokens() split fetch_transit_
+    proximity() already applies to `nearest_lines`.
+
+    Never raises; returns [] if the station index is unavailable.
+    """
+    try:
+        stations = _load_station_index()
+    except Exception as exc:
+        log.warning("list_available_lines failed: %s", exc)
+        return []
+    if not stations:
+        return []
+
+    lines: set[str] = set()
+    for s in stations:
+        lines.update(_line_tokens(s.get("line", "")))
+    return sorted(lines)

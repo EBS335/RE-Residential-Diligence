@@ -18,7 +18,7 @@ import streamlit as st
 import pydeck as pdk
 from pydeck.data_utils import compute_view
 
-from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE, fetch_properties_by_bbls
+from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE, fetch_properties_by_bbls, find_similar_properties
 from modules.site_sourcing import enrich_property, flag_assemblage_candidates, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
 from modules.deal_scorer import compute_bulk_deal_scores
 from modules.zoning_rules import get_zoning_rules, get_zoning_citations, classify_street_type
@@ -26,6 +26,7 @@ from modules.zola_fetcher import bbl_to_zola_url
 from modules.acris_fetcher import fetch_acris, fetch_owner_portfolio
 from modules.ownership_research import enrich_ownership_batch, DEFAULT_BATCH_SIZE
 from modules.bulk_list_upload import parse_uploaded_list, resolve_addresses_to_bbls
+from modules.transit_fetcher import is_near_line, list_available_lines
 from modules.site_finder_market import enrich_market_data, fetch_market_comps
 from modules.site_finder_valuation import estimate_acquisition_cost
 from modules.underwriting_engine import (
@@ -110,6 +111,23 @@ def _render_criteria_form() -> dict | None:
                 key=f"{_SF_PREFIX}risk",
             )
 
+        with st.expander("🚇 Transit Corridor (optional)", expanded=False):
+            st.caption(
+                "Buffers around each station on this line — not a continuous "
+                "corridor polygon (no NYC subway-line geometry dataset is available)."
+            )
+            t1, t2 = st.columns(2)
+            with t1:
+                transit_line = st.selectbox(
+                    "Subway line", options=["Any"] + list_available_lines(),
+                    key=f"{_SF_PREFIX}transitline",
+                )
+            with t2:
+                transit_buffer = st.select_slider(
+                    "Buffer around stations (miles)", options=[0.25, 0.5, 1.0], value=0.5,
+                    key=f"{_SF_PREFIX}transitbuffer",
+                )
+
         sv1, sv2 = st.columns([1, 2])
         with sv1:
             save_this = st.checkbox("💾 Save this search", key=f"{_SF_PREFIX}save_search_cb")
@@ -140,6 +158,8 @@ def _render_criteria_form() -> dict | None:
         "property_types":      [p for p in property_types if p != "Any"],
         "strategies":          strategies,
         "risk":                risk,
+        "transit_line":        transit_line if transit_line != "Any" else None,
+        "transit_buffer_miles": transit_buffer,
     }
 
     if save_this and search_name.strip():
@@ -175,6 +195,8 @@ def load_saved_criteria_into_widgets(criteria: dict) -> None:
     st.session_state[f"{_SF_PREFIX}ptypes"] = criteria.get("property_types") or ["Any"]
     st.session_state[f"{_SF_PREFIX}strategies"] = criteria.get("strategies") or []
     st.session_state[f"{_SF_PREFIX}risk"] = criteria.get("risk") or "Moderate"
+    st.session_state[f"{_SF_PREFIX}transitline"] = criteria.get("transit_line") or "Any"
+    st.session_state[f"{_SF_PREFIX}transitbuffer"] = criteria.get("transit_buffer_miles") or 0.5
 
 
 # ── Search execution + scoring ──────────────────────────────────────────────
@@ -227,6 +249,11 @@ def _run_search(criteria: dict) -> tuple[list[dict], dict]:
         min_price=criteria.get("min_price"),
         max_price=criteria.get("max_price"),
     )
+    if criteria.get("transit_line"):
+        scored = [
+            p for p in scored
+            if is_near_line(p.get("latitude"), p.get("longitude"), criteria["transit_line"], criteria.get("transit_buffer_miles", 0.5))
+        ]
     return scored, status
 
 
@@ -1071,6 +1098,47 @@ def _render_property_detail(prop: dict) -> None:
                     st.session_state[f"{_SF_PREFIX}last_results"] = ownerport["results"]
                     st.session_state[f"{_SF_PREFIX}last_status"] = ownerport.get("status") or {
                         "total_fetched": len(ownerport["results"]), "truncated": False, "error": None,
+                    }
+                    st.session_state[f"{_SF_PREFIX}last_criteria"] = None
+                    st.session_state.pop(f"{_SF_PREFIX}selected_bbl", None)
+                    st.session_state.pop(f"{_SF_PREFIX}selected_prop", None)
+                    st.rerun()
+
+    with st.expander("🔎 More Like This", expanded=False):
+        st.caption(
+            "Searches citywide PLUTO for other properties with a similar lot "
+            "size, the same zoning district, and a related building class, "
+            "ranked by how close each candidate's own unused-FAR gap is to "
+            "this property's."
+        )
+        similar_key = f"{_SF_PREFIX}similar_results_{prop['bbl']}"
+        if st.button("Find similar properties", key=f"{_SF_PREFIX}similar_btn_{prop['bbl']}"):
+            with st.spinner("Searching NYC PLUTO for similar properties…"):
+                raw_rows, fetch_status = find_similar_properties(prop)
+                if fetch_status.get("error"):
+                    st.session_state[similar_key] = {"error": fetch_status["error"], "results": [], "status": None}
+                else:
+                    scored = _enrich_and_score(raw_rows)
+                    st.session_state[similar_key] = {"error": None, "results": scored, "status": fetch_status}
+            st.rerun()
+
+        similar = st.session_state.get(similar_key)
+        if similar is not None:
+            if similar.get("error"):
+                st.error(f"Similarity search failed: {similar['error']}")
+            elif not similar.get("results"):
+                st.info("No similar properties found via PLUTO.")
+            else:
+                sim_rows = [{
+                    "Address":    p.get("address", ""),
+                    "Borough":    p.get("borough", ""),
+                    "Deal Score": p.get("deal_score", {}).get("score", "—"),
+                } for p in similar["results"]]
+                st.dataframe(pd.DataFrame(sim_rows), use_container_width=True, hide_index=True)
+                if st.button("Load these as new search results", key=f"{_SF_PREFIX}similar_load_{prop['bbl']}"):
+                    st.session_state[f"{_SF_PREFIX}last_results"] = similar["results"]
+                    st.session_state[f"{_SF_PREFIX}last_status"] = similar.get("status") or {
+                        "total_fetched": len(similar["results"]), "truncated": False, "error": None,
                     }
                     st.session_state[f"{_SF_PREFIX}last_criteria"] = None
                     st.session_state.pop(f"{_SF_PREFIX}selected_bbl", None)

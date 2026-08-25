@@ -220,3 +220,77 @@ def test_owner_portfolio_expander_renders_error_state_without_exception():
     assert not at.exception
     errors = [e.value for e in at.error]
     assert any("Owner portfolio search failed" in e for e in errors)
+
+
+# ── Batch B: "More Like This" similarity search ─────────────────────────────
+# AppTest-based coverage proving the new session-state-driven UI block
+# renders without exceptions — no live network calls (mirrors the Owner
+# Portfolio AppTest cases above; the "Find similar properties"/"Load
+# these..." buttons are not clicked, since clicking them would exercise
+# the live-fetch code path this sandbox has no network access for).
+
+def test_more_like_this_expander_renders_without_exception_no_results_yet():
+    results = _synthetic_results(1)
+    prop = results[0]
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_selected_bbl"] = prop["bbl"]
+    at.session_state["_sf_selected_prop"] = prop
+    at.run()
+
+    assert not at.exception
+    button_labels = [b.label for b in at.button]
+    assert "Find similar properties" in button_labels
+
+
+def test_more_like_this_expander_renders_seeded_results_table_and_load_button():
+    results = _synthetic_results(2)
+    prop = results[0]
+    other = results[1]
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_selected_bbl"] = prop["bbl"]
+    at.session_state["_sf_selected_prop"] = prop
+    at.session_state[f"_sf_similar_results_{prop['bbl']}"] = {
+        "error": None,
+        "results": [other],
+        "status": {"total_fetched": 1, "truncated": False, "error": None},
+    }
+    at.run()
+
+    assert not at.exception
+    button_labels = [b.label for b in at.button]
+    assert "Load these as new search results" in button_labels
+
+    dataframes = [el.value for el in at.dataframe]
+    sim_dfs = [df for df in dataframes if "Deal Score" in df.columns and "Borough" in df.columns and len(df) == 1]
+    assert sim_dfs, "expected the more-like-this results dataframe to be rendered"
+    assert sim_dfs[0]["Address"].iloc[0] == other["address"]
+
+
+def test_more_like_this_expander_renders_error_state_without_exception():
+    results = _synthetic_results(1)
+    prop = results[0]
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_selected_bbl"] = prop["bbl"]
+    at.session_state["_sf_selected_prop"] = prop
+    at.session_state[f"_sf_similar_results_{prop['bbl']}"] = {
+        "error": "One or more PLUTO requests failed or timed out — this result may be incomplete.",
+        "results": [],
+        "status": None,
+    }
+    at.run()
+
+    assert not at.exception
+    errors = [e.value for e in at.error]
+    assert any("Similarity search failed" in e for e in errors)
