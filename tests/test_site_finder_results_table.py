@@ -135,3 +135,88 @@ def test_rent_stab_label_pure_unit():
     assert _rent_stab_label({"likely_stabilized": True, "verified": True}) == "✅ Confirmed"
     assert _rent_stab_label({"likely_stabilized": True, "verified": False}) == "🟡 Likely (est.)"
     assert _rent_stab_label({"likely_stabilized": False}) == "—"
+
+
+# ── Batch A: "Bring Your Own List" + Owner Portfolio expansion ─────────────
+# AppTest-based coverage proving the new session-state-driven UI blocks
+# render without exceptions — no live network calls (nothing is triggered
+# here except a seeded st.session_state and a plain rerun; the "Run My
+# List"/"Search ACRIS..."/"Load these..." buttons are not clicked, since
+# clicking them would exercise the live-fetch code paths this sandbox
+# has no network access for).
+
+def test_bring_your_own_list_expander_renders_without_exception():
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    assert not at.exception
+
+    button_labels = [b.label for b in at.button]
+    assert "▶ Run My List" in button_labels
+    assert len(at.file_uploader) >= 1
+
+
+def test_owner_portfolio_expander_renders_without_exception_no_results_yet():
+    results = _synthetic_results(1)
+    prop = results[0]
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_selected_bbl"] = prop["bbl"]
+    at.session_state["_sf_selected_prop"] = prop
+    at.run()
+
+    assert not at.exception
+    button_labels = [b.label for b in at.button]
+    assert "Search ACRIS for other properties by this owner" in button_labels
+
+
+def test_owner_portfolio_expander_renders_seeded_results_table_and_load_button():
+    results = _synthetic_results(2)
+    prop = results[0]
+    other = results[1]
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_selected_bbl"] = prop["bbl"]
+    at.session_state["_sf_selected_prop"] = prop
+    at.session_state[f"_sf_ownerport_results_{prop['bbl']}"] = {
+        "error": None,
+        "results": [other],
+        "status": {"total_fetched": 1, "truncated": False, "error": None},
+    }
+    at.run()
+
+    assert not at.exception
+    button_labels = [b.label for b in at.button]
+    assert "Load these as new search results" in button_labels
+
+    dataframes = [el.value for el in at.dataframe]
+    op_dfs = [df for df in dataframes if "Deal Score" in df.columns and "Borough" in df.columns and len(df) == 1]
+    assert op_dfs, "expected the owner-portfolio results dataframe to be rendered"
+    assert op_dfs[0]["Address"].iloc[0] == other["address"]
+
+
+def test_owner_portfolio_expander_renders_error_state_without_exception():
+    results = _synthetic_results(1)
+    prop = results[0]
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_selected_bbl"] = prop["bbl"]
+    at.session_state["_sf_selected_prop"] = prop
+    at.session_state[f"_sf_ownerport_results_{prop['bbl']}"] = {
+        "error": "One or more ACRIS requests failed or timed out — this result may be incomplete.",
+        "results": [],
+        "status": None,
+    }
+    at.run()
+
+    assert not at.exception
+    errors = [e.value for e in at.error]
+    assert any("Owner portfolio search failed" in e for e in errors)

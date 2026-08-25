@@ -462,3 +462,93 @@ def _fetch_acris_impl(bbl: str) -> dict:
             "match_method": "No documents found after all fallbacks (with fetch errors)",
         }
     return {**_empty, "error": None, "match_method": "No documents found after all fallbacks"}
+
+
+def fetch_owner_portfolio(owner_name: str, exclude_bbl: str = "", max_docs: int = 200) -> dict:
+    """
+    Search ACRIS Parties by owner/entity NAME for other properties the
+    same owner/entity has bought — a genuinely new query shape vs. every
+    other function in this file, which always starts from a known BBL
+    and queries by document_id/borough-block-lot instead.
+
+    Uses the SAME party_type == "2" (Grantee / Buyer) role convention
+    _fetch_parties() already uses elsewhere in this file to identify a
+    document's buyer, then joins the matching document_ids to this
+    file's existing Legals dataset (_LEGALS_URL) to resolve each
+    document's borough/block/lot, and builds each BBL with the same
+    zero-padded formula used throughout this file
+    (borough + block.zfill(5) + lot.zfill(4) — see _parse_bbl()).
+
+    Name matching is a case-insensitive substring match
+    (UPPER(name) LIKE UPPER('%<owner_name>%')), so this can produce
+    false positives for common/near-duplicate entity names — it is a
+    sourcing lead, not a verified single-entity portfolio.
+
+    NEVER raises — every underlying fetch goes through this file's own
+    _get() helper (which already never raises), and the whole function
+    body is additionally wrapped so a failure degrades to an empty
+    result with `error` set, matching the defensive convention used by
+    fetch_acris()/_fetch_parties() and every other function in this file.
+
+    Returns:
+      {
+        "owner_name": str,
+        "bbls":       list[str],  # deduped, sorted; exclude_bbl removed if given
+        "count":      int,
+        "verified":   bool,       # True only if every underlying fetch succeeded
+        "error":      str | None,
+      }
+    """
+    clean_name = (owner_name or "").strip()
+    if not clean_name:
+        return {
+            "owner_name": owner_name or "", "bbls": [], "count": 0,
+            "verified": False, "error": "No owner name provided.",
+        }
+
+    try:
+        escaped = clean_name.replace("'", "''")
+        party_rows, party_ok = _get(_PARTY_URL, {
+            "$where": f"party_type='2' AND UPPER(name) LIKE UPPER('%{escaped}%')",
+            "$select": "document_id",
+            "$limit": max_docs,
+        })
+        any_error = not party_ok
+
+        doc_ids = list({r["document_id"] for r in party_rows if r.get("document_id")})
+
+        bbls: set[str] = set()
+        for i in range(0, len(doc_ids), 200):
+            chunk = doc_ids[i:i + 200]
+            id_clause = ",".join(f"'{d}'" for d in chunk)
+            leg_rows, leg_ok = _get(_LEGALS_URL, {
+                "$where": f"document_id in ({id_clause})",
+                "$select": "borough,block,lot",
+                "$limit": 500,
+            })
+            any_error = any_error or not leg_ok
+            for lr in leg_rows:
+                borough = str(lr.get("borough") or "").strip()
+                block   = str(lr.get("block") or "").strip()
+                lot     = str(lr.get("lot") or "").strip()
+                if not (borough and block and lot):
+                    continue
+                bbls.add(f"{borough}{block.zfill(5)}{lot.zfill(4)}")
+
+        exclude = re.sub(r"\D", "", str(exclude_bbl)) if exclude_bbl else ""
+        if exclude:
+            bbls.discard(exclude)
+
+        return {
+            "owner_name": clean_name,
+            "bbls":       sorted(bbls),
+            "count":      len(bbls),
+            "verified":   not any_error,
+            "error": (
+                None if not any_error else
+                "One or more ACRIS requests failed or timed out — this result may be incomplete."
+            ),
+        }
+    except Exception as exc:
+        log.warning("fetch_owner_portfolio failed for %r: %s", owner_name, exc)
+        return {"owner_name": clean_name, "bbls": [], "count": 0, "verified": False, "error": str(exc)}

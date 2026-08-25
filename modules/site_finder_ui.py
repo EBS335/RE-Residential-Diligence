@@ -18,13 +18,14 @@ import streamlit as st
 import pydeck as pdk
 from pydeck.data_utils import compute_view
 
-from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE
+from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE, fetch_properties_by_bbls
 from modules.site_sourcing import enrich_property, flag_assemblage_candidates, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
 from modules.deal_scorer import compute_bulk_deal_scores
 from modules.zoning_rules import get_zoning_rules, get_zoning_citations, classify_street_type
 from modules.zola_fetcher import bbl_to_zola_url
-from modules.acris_fetcher import fetch_acris
+from modules.acris_fetcher import fetch_acris, fetch_owner_portfolio
 from modules.ownership_research import enrich_ownership_batch, DEFAULT_BATCH_SIZE
+from modules.bulk_list_upload import parse_uploaded_list, resolve_addresses_to_bbls
 from modules.site_finder_market import enrich_market_data, fetch_market_comps
 from modules.site_finder_valuation import estimate_acquisition_cost
 from modules.underwriting_engine import (
@@ -1029,6 +1030,53 @@ def _render_property_detail(prop: dict) -> None:
 
     _render_ai_diligence_section(prop)
 
+    with st.expander("🏢 Owner Portfolio — Other Holdings", expanded=False):
+        st.caption(
+            "Searches ACRIS Parties by this property's owner/entity name for other "
+            "properties they've bought. Name-based matching — common or "
+            "near-duplicate entity names can produce false positives, so treat "
+            "this as a sourcing lead, not a verified single-owner portfolio."
+        )
+        ownerport_key = f"{_SF_PREFIX}ownerport_results_{prop['bbl']}"
+        if st.button("Search ACRIS for other properties by this owner", key=f"{_SF_PREFIX}ownerport_btn_{prop['bbl']}"):
+            with st.spinner(f"Searching ACRIS for other properties owned by {prop.get('owner') or 'this owner'}…"):
+                portfolio = fetch_owner_portfolio(prop.get("owner", ""), exclude_bbl=prop["bbl"])
+                if portfolio.get("error"):
+                    st.session_state[ownerport_key] = {"error": portfolio["error"], "results": [], "status": None}
+                elif not portfolio.get("bbls"):
+                    st.session_state[ownerport_key] = {"error": None, "results": [], "status": None}
+                else:
+                    raw_rows, fetch_status = fetch_properties_by_bbls(portfolio["bbls"])
+                    if fetch_status.get("error"):
+                        st.session_state[ownerport_key] = {"error": fetch_status["error"], "results": [], "status": None}
+                    else:
+                        scored = _enrich_and_score(raw_rows)
+                        st.session_state[ownerport_key] = {"error": None, "results": scored, "status": fetch_status}
+            st.rerun()
+
+        ownerport = st.session_state.get(ownerport_key)
+        if ownerport is not None:
+            if ownerport.get("error"):
+                st.error(f"Owner portfolio search failed: {ownerport['error']}")
+            elif not ownerport.get("results"):
+                st.info("No other properties found for this owner via ACRIS.")
+            else:
+                op_rows = [{
+                    "Address":    p.get("address", ""),
+                    "Borough":    p.get("borough", ""),
+                    "Deal Score": p.get("deal_score", {}).get("score", "—"),
+                } for p in ownerport["results"]]
+                st.dataframe(pd.DataFrame(op_rows), use_container_width=True, hide_index=True)
+                if st.button("Load these as new search results", key=f"{_SF_PREFIX}ownerport_load_{prop['bbl']}"):
+                    st.session_state[f"{_SF_PREFIX}last_results"] = ownerport["results"]
+                    st.session_state[f"{_SF_PREFIX}last_status"] = ownerport.get("status") or {
+                        "total_fetched": len(ownerport["results"]), "truncated": False, "error": None,
+                    }
+                    st.session_state[f"{_SF_PREFIX}last_criteria"] = None
+                    st.session_state.pop(f"{_SF_PREFIX}selected_bbl", None)
+                    st.session_state.pop(f"{_SF_PREFIX}selected_prop", None)
+                    st.rerun()
+
     with st.expander("⬇️ Export This Property", expanded=False):
         ic = prop.get("ic_summary")
         uw_for_export = st.session_state.get(f"{_SF_PREFIX}uw_export_{prop['bbl']}")
@@ -1444,6 +1492,50 @@ def render_site_finder(anthropic_key: str = "") -> None:
     if selected_prop:
         _render_property_detail(selected_prop)
         return
+
+    with st.expander("📤 Bring Your Own List", expanded=False):
+        st.caption(
+            "Already have a shortlist? Upload a CSV with a `bbl` column, or an "
+            "`address` column (geocoded automatically), and it runs through the "
+            "same enrichment, Deal Score, and results table as a live search below."
+        )
+        uploaded_list = st.file_uploader("CSV file", type=["csv"], key=f"{_SF_PREFIX}upload_list")
+        if st.button("▶ Run My List", key=f"{_SF_PREFIX}run_upload_btn"):
+            if uploaded_list is None:
+                st.error("Upload a CSV file first.")
+            else:
+                bbls, addresses, parse_status = parse_uploaded_list(uploaded_list.getvalue())
+                if parse_status.get("error"):
+                    st.error(f"Couldn't parse that CSV: {parse_status['error']}")
+                else:
+                    resolved_bbls = list(bbls)
+                    if addresses:
+                        progress = st.progress(0.0, text="Resolving addresses to BBLs…")
+
+                        def _geo_cb(i, n):
+                            progress.progress(i / n, text=f"Resolving addresses to BBLs… ({i}/{n})")
+
+                        with st.spinner(f"Geocoding {len(addresses)} address(es)…"):
+                            geocoded, unresolved = resolve_addresses_to_bbls(addresses, progress_callback=_geo_cb)
+                        progress.empty()
+                        resolved_bbls.extend(geocoded)
+                        if unresolved:
+                            _shown = ", ".join(unresolved[:10]) + (" …" if len(unresolved) > 10 else "")
+                            st.warning(f"Could not resolve {len(unresolved)} address(es) to a BBL: {_shown}")
+
+                    if not resolved_bbls:
+                        st.error("No usable BBLs found in that CSV.")
+                    else:
+                        with st.spinner(f"Fetching & scoring {len(resolved_bbls)} propert(y/ies)…"):
+                            raw_rows, fetch_status = fetch_properties_by_bbls(resolved_bbls)
+                        if fetch_status.get("error"):
+                            st.error(f"Property fetch failed: {fetch_status['error']}")
+                        else:
+                            scored = _enrich_and_score(raw_rows)
+                            st.session_state[f"{_SF_PREFIX}last_results"] = scored
+                            st.session_state[f"{_SF_PREFIX}last_status"] = fetch_status
+                            st.session_state[f"{_SF_PREFIX}last_criteria"] = None
+                            st.rerun()
 
     criteria = _render_criteria_form()
 
