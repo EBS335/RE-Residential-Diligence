@@ -20,7 +20,7 @@ from pydeck.data_utils import compute_view
 
 from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE, fetch_properties_by_bbls, find_similar_properties
 from modules.site_sourcing import enrich_property, flag_assemblage_candidates, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
-from modules.deal_scorer import compute_bulk_deal_scores
+from modules.deal_scorer import compute_bulk_deal_scores, compute_bulk_seller_propensity, recompute_display_score
 from modules.zoning_rules import get_zoning_rules, get_zoning_citations, classify_street_type
 from modules.zola_fetcher import bbl_to_zola_url
 from modules.acris_fetcher import fetch_acris, fetch_owner_portfolio
@@ -229,6 +229,7 @@ def _enrich_and_score(
         enriched = [p for p in enriched if p.get("assess_total", 0) <= max_price]
 
     scored = compute_bulk_deal_scores(enriched)
+    scored = compute_bulk_seller_propensity(scored)
     # Flag same-block/near-lot-number pairs WITHIN this result set as
     # assemblage candidates — run once over the full scored list here so
     # it's cached alongside `scored` itself (not recomputed on every rerun).
@@ -650,6 +651,69 @@ def _render_filter_panel(properties: list[dict]) -> list[dict]:
     return filtered
 
 
+_DEAL_SCORE_WEIGHT_COMPONENTS = [
+    "Unused FAR", "Distress Signals", "Location Demand",
+    "Zoning Flexibility", "Listing Activity",
+]
+
+
+def _render_weight_adjuster(properties: list[dict]) -> list[dict]:
+    """
+    Feature 13 — Adjustable Deal Score Weights (display-only re-rank).
+
+    Lets the user nudge each Deal Score component's relative weight for
+    THIS VIEW ONLY, via deal_scorer.recompute_display_score(). Never
+    touches `prop["deal_score"]` itself — that canonical score keeps
+    flowing unchanged to the "Deal Score"/"Tier" columns, the map, CSV/
+    Excel export, and Save-to-Portfolio.
+
+    Default-off invariant (the load-bearing constraint here): when every
+    slider is left at its default of 1.0, this function is a PROVABLE
+    NO-OP — it returns `properties` completely unchanged (same list
+    object, no `_display_score` key added to any dict, no re-sort).
+    """
+    if not properties:
+        return properties
+
+    with st.expander("⚙️ Adjust Deal Score Weights (this view only)", expanded=False):
+        st.caption(
+            "Re-weights each Deal Score component for this view only. The "
+            "Deal Score column/tier itself is unchanged, and export/portfolio "
+            "always use the original score."
+        )
+        if st.button("↺ Reset weights", key=f"{_SF_PREFIX}weights_reset_btn"):
+            for component in _DEAL_SCORE_WEIGHT_COMPONENTS:
+                st.session_state.pop(f"{_SF_PREFIX}weight_{component}", None)
+            st.rerun()
+
+        weights: dict[str, float] = {}
+        slider_cols = st.columns(len(_DEAL_SCORE_WEIGHT_COMPONENTS))
+        for col, component in zip(slider_cols, _DEAL_SCORE_WEIGHT_COMPONENTS):
+            with col:
+                weights[component] = st.slider(
+                    component, 0.5, 2.0, 1.0, 0.1,
+                    key=f"{_SF_PREFIX}weight_{component}",
+                )
+
+        if any(v != 1.0 for v in weights.values()):
+            st.caption(
+                "↳ Results below are re-sorted by the adjusted score. The "
+                "Deal Score column/tier is still the original, unweighted "
+                "score — export and portfolio always use that original score."
+            )
+            reweighted = []
+            for p in properties:
+                p = dict(p)
+                p["_display_score"] = recompute_display_score(
+                    p["deal_score"]["breakdown"], weights
+                )["score"]
+                reweighted.append(p)
+            reweighted.sort(key=lambda p: p["_display_score"], reverse=True)
+            return reweighted
+
+    return properties
+
+
 def _render_results_table(properties: list[dict], criteria: dict | None = None) -> None:
     if not properties:
         st.info("No properties matched your criteria. Try widening the search (fewer filters, larger area).")
@@ -665,6 +729,8 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
     # affect assemblage flagging, which stays computed over the full
     # unfiltered set (see _render_filter_panel()'s docstring).
     results_full = _render_filter_panel(results_full)
+
+    results_full = _render_weight_adjuster(results_full)
 
     _render_summary_cards(results_full)
     st.markdown("---")
@@ -742,6 +808,7 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
         row["Assemblage"] = ("🔗 " + "; ".join(assemblage)) if assemblage else "—"
         row["Deal Score"] = ds["score"]
         row["Tier"] = ds["tier"]
+        row["Seller Propensity"] = p.get("seller_propensity", {}).get("score", "—")
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -753,6 +820,9 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
         column_config={
             "Deal Score": st.column_config.ProgressColumn(
                 "Deal Score", min_value=0, max_value=100, format="%d"
+            ),
+            "Seller Propensity": st.column_config.ProgressColumn(
+                "Seller Propensity", min_value=0, max_value=100, format="%d"
             ),
         },
         on_select="rerun",
@@ -856,6 +926,28 @@ def _render_site_building_summary(prop: dict) -> None:
         )
         st.markdown(f"- Owner: {prop.get('owner') or '—'} ({prop.get('owner_type') or 'Unknown type'})")
 
+
+def _render_deal_score_explainer(prop: dict) -> None:
+    """
+    "Explain This Score" — renders the Deal Score's own per-component
+    breakdown (already computed by deal_scorer.compute_deal_score(), just
+    never displayed anywhere before). Mirrors the exact visual idiom of the
+    "⚖️ Composite Distress Breakdown" expander above: st.progress(score/max)
+    + st.caption(reasoning) per component. Silent no-op — renders nothing —
+    when there's no breakdown to show, rather than erroring.
+    """
+    ds = prop.get("deal_score", {})
+    breakdown = ds.get("breakdown", {})
+    if not breakdown:
+        return
+    with st.expander(f"🧮 Explain This Score — {ds.get('score', 0)}/100 ({ds.get('tier', '—')})", expanded=False):
+        for component, detail in breakdown.items():
+            score = detail.get("score", 0)
+            maxv = detail.get("max", 0) or 1
+            st.progress(min(1.0, score / maxv), text=f"{component.upper()} — {score}/{detail.get('max', 0)}")
+            st.caption(detail.get("reasoning", ""))
+
+
 def _render_property_detail(prop: dict) -> None:
     if st.button("← Back to Results"):
         st.session_state.pop(f"{_SF_PREFIX}selected_bbl", None)
@@ -885,6 +977,8 @@ def _render_property_detail(prop: dict) -> None:
     m2.metric("Opportunity Score", f"{opp['score']}/100", opp["tier"])
     m3.metric("Lot SF", f"{prop['lot_sf']:,.0f}")
     m4.metric("Unused FAR", f"{prop['unused_far_pct']:.0f}%")
+
+    _render_deal_score_explainer(prop)
 
     st.markdown("#### 🎯 Development Strategy Signals")
     for s in prop.get("strategies", []):

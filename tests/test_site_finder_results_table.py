@@ -12,7 +12,7 @@ import os
 from streamlit.testing.v1 import AppTest
 
 from modules.site_sourcing import enrich_property, flag_assemblage_candidates
-from modules.deal_scorer import compute_deal_score
+from modules.deal_scorer import compute_deal_score, compute_seller_propensity
 from modules.site_finder_ui import _landmark_label, _rent_stab_label
 
 _APP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
@@ -339,3 +339,131 @@ def test_tax_lien_absent_row_renders_fine_without_error():
     # added for this render (row-dict builder only adds it conditionally).
     assert "Tax Lien" not in results_df.columns
     assert len(results_df) == 3
+
+
+# ── Batch D: seller propensity + adjustable Deal Score weights ─────────────
+
+def _synthetic_results_varied_scores(n: int) -> list[dict]:
+    """Like _synthetic_results(), but each property gets a DISTINCT
+    unused_far_pct (and thus a distinct real deal_score, in descending
+    order as constructed) so table-order regressions are actually
+    detectable, plus a real compute_seller_propensity() result."""
+    props = []
+    for i in range(n):
+        unused_far_pct = 90.0 - i * 20.0
+        raw = {
+            "bbl": f"301234{i:04d}", "borough": "Brooklyn", "borough_code": "3",
+            "block": "1234", "lot": str(i + 1), "address": f"{100 + i} Test St",
+            "zip_code": "11201", "community_district": "302",
+            "zoning_dist": "R6A", "landuse_code": "02", "landuse_label": "Multi-Family Walk-Up",
+            "bldg_class": "C1", "owner": "TEST OWNER", "owner_type": "",
+            "lot_sf": 5000.0, "bldg_sf": 8000.0, "year_built": "1930", "num_floors": 4.0,
+            "units_res": 12.0, "units_total": 12.0, "far_built": 1.6, "far_residential": 3.0,
+            "far_commercial": 0.0, "far_max": 3.0, "unused_far": 1.4, "unused_far_pct": unused_far_pct,
+            "assess_land": 400000.0, "assess_total": 800000.0, "exempt_land": 0.0, "exempt_total": 0.0,
+            "is_vacant": (i % 2 == 0), "historic_dist": "", "landmark": "",
+            "latitude": 40.69 + i * 0.0001, "longitude": -73.99, "lot_type": "Interior",
+        }
+        prop = enrich_property(raw)
+        prop["deal_score"] = compute_deal_score(unused_far_pct=unused_far_pct, zoning_dist="R6A")
+        prop["seller_propensity"] = compute_seller_propensity(
+            tenure_years=5.0 + i, distress_level=0, is_vacant=prop["is_vacant"],
+        )
+        props.append(prop)
+    return flag_assemblage_candidates(props)
+
+
+def test_default_weight_sliders_are_a_no_op_row_order_and_deal_score_unchanged():
+    """The single most important regression guard for Feature 13: with the
+    weight-adjuster expander present but its sliders left untouched (all at
+    the default 1.0), the table's row order and "Deal Score" column values
+    must be byte-identical to what they'd be if the expander did not exist
+    at all — i.e. still exactly the order/values compute_deal_score()
+    produced, descending by score, with no re-sort by any "_display_score"."""
+    n = 5
+    results = _synthetic_results_varied_scores(n)
+    expected_addresses = [p["address"] for p in results]
+    expected_scores = [p["deal_score"]["score"] for p in results]
+    # Sanity: the synthetic fixture really does produce distinct, already-
+    # descending scores, otherwise this test couldn't catch a reordering bug.
+    assert expected_scores == sorted(expected_scores, reverse=True)
+    assert len(set(expected_scores)) == n
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+
+    assert not at.exception
+
+    dataframes = [el.value for el in at.dataframe]
+    results_df = max(dataframes, key=lambda df: len(df))
+
+    assert list(results_df["Address"]) == expected_addresses
+    assert list(results_df["Deal Score"]) == expected_scores
+
+
+def test_seller_propensity_column_appears_and_is_populated():
+    results = _synthetic_results_varied_scores(3)
+    expected = [p["seller_propensity"]["score"] for p in results]
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+
+    assert not at.exception
+    dataframes = [el.value for el in at.dataframe]
+    results_df = max(dataframes, key=lambda df: len(df))
+
+    assert "Seller Propensity" in results_df.columns
+    assert list(results_df["Seller Propensity"]) == expected
+    assert all(isinstance(v, int) for v in results_df["Seller Propensity"])
+
+
+def test_weight_adjuster_expander_and_sliders_render_without_exception():
+    results = _synthetic_results_varied_scores(3)
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+
+    assert not at.exception
+    slider_labels = [s.label for s in at.slider]
+    for component in ("Unused FAR", "Distress Signals", "Location Demand",
+                       "Zoning Flexibility", "Listing Activity"):
+        assert component in slider_labels
+    button_labels = [b.label for b in at.button]
+    assert "↺ Reset weights" in button_labels
+
+
+def test_weight_adjuster_boosting_a_slider_resorts_display_only():
+    """Moving one weight slider away from 1.0 re-sorts the table by the
+    adjusted score, but must NOT change the underlying deal_score values
+    shown in the "Deal Score" column (still the original, unweighted score)."""
+    results = _synthetic_results_varied_scores(3)
+    original_scores_by_address = {p["address"]: p["deal_score"]["score"] for p in results}
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+    assert not at.exception
+
+    # Push one component's weight away from 1.0.
+    at.slider(key="_sf_weight_Distress Signals").set_value(2.0)
+    at.run()
+    assert not at.exception
+
+    dataframes = [el.value for el in at.dataframe]
+    results_df = max(dataframes, key=lambda df: len(df))
+
+    # Deal Score column always reflects the ORIGINAL, unweighted score —
+    # never the reweighted display score — regardless of row order.
+    for _, row in results_df.iterrows():
+        assert row["Deal Score"] == original_scores_by_address[row["Address"]]
