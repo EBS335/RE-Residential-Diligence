@@ -734,6 +734,8 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
             )
         else:
             row["Distress"] = f"{p.get('distress_signal', 'No Signal')} (not yet checked)"
+        if p.get("tax_lien"):
+            row["Tax Lien"] = "⚠️ On DOF list" if p["tax_lien"].get("on_lien_list") else "—"
         row["Rent Stab."] = _rent_stab_label(p.get("rent_stab_signal", {}))
         row["Landmark"] = _landmark_label(p)
         assemblage = p.get("assemblage_with") or []
@@ -980,6 +982,24 @@ def _render_property_detail(prop: dict) -> None:
                 a3.metric("Open Liens", str(summ.get("open_liens", 0)))
                 if acris.get("acris_url"):
                     st.caption(f"[Full ACRIS history ↗]({acris['acris_url']})")
+
+    if prop.get("composite_distress"):
+        with st.expander("⚖️ Composite Distress Breakdown", expanded=False):
+            cd = prop["composite_distress"]
+            st.markdown(f"**Composite Distress Score:** {cd.get('score', 0)}/100 — {cd.get('tier', 'Minimal')}")
+            for component, detail in (cd.get("breakdown") or {}).items():
+                score = detail.get("score", 0)
+                maxv = detail.get("max", 0) or 1
+                st.progress(min(1.0, score / maxv), text=f"{component.upper()} — {score}/{detail.get('max', 0)}")
+                st.caption(detail.get("reasoning", ""))
+            if prop.get("tax_lien", {}).get("on_lien_list"):
+                st.warning("⚠️ This property appears on the current NYC DOF Tax Lien Sale List.")
+            if prop.get("tax_lien", {}).get("info_url"):
+                st.caption(f"[NYC DOF Tax Lien Sale info ↗]({prop['tax_lien']['info_url']})")
+            st.caption(
+                "These signals (ACRIS filings, DOF tax-lien list, DOB/HPD violations) are "
+                "document-recorded public facts as of the last fetch — not a live auction-calendar feed."
+            )
 
     with st.expander("📐 Assessment (PLUTO)", expanded=False):
         st.markdown(

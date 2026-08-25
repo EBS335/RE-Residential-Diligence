@@ -294,3 +294,48 @@ def test_more_like_this_expander_renders_error_state_without_exception():
     assert not at.exception
     errors = [e.value for e in at.error]
     assert any("Similarity search failed" in e for e in errors)
+
+
+# ── Batch C: tax-lien + composite distress score fusion ────────────────────
+
+def test_tax_lien_column_appears_and_shows_on_lien_list_when_present():
+    overrides = {
+        0: {
+            "owner_type": "Corporate Entity",
+            "tax_lien": {"on_lien_list": True, "verified": True, "count": 1},
+        },
+    }
+    results = _synthetic_results(2, overrides)
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+
+    assert not at.exception
+    dataframes = [el.value for el in at.dataframe]
+    results_df = max(dataframes, key=lambda df: len(df))
+
+    assert "Tax Lien" in results_df.columns
+    assert results_df["Tax Lien"].iloc[0] == "⚠️ On DOF list"
+
+
+def test_tax_lien_absent_row_renders_fine_without_error():
+    # No property carries a "tax_lien" key at all — a normal un-enriched
+    # search result — the table must still render without exception.
+    results = _synthetic_results(3)
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+
+    assert not at.exception
+    dataframes = [el.value for el in at.dataframe]
+    results_df = max(dataframes, key=lambda df: len(df))
+    # None of the synthetic rows have tax_lien set, so the column is never
+    # added for this render (row-dict builder only adds it conditionally).
+    assert "Tax Lien" not in results_df.columns
+    assert len(results_df) == 3

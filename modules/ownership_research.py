@@ -18,6 +18,8 @@ import time
 
 from modules.acris_fetcher import fetch_acris
 from modules.pip_fetcher import fetch_property_history
+from modules.tax_lien_fetcher import fetch_tax_lien_status
+from modules.distress_scorer import compute_composite_distress_score
 from modules.app_logging import record_source_status
 
 # Batch size cap — ACRIS + DOB/HPD are live network calls per property,
@@ -160,6 +162,13 @@ def enrich_ownership(prop: dict, borough_name: str = "") -> dict:
                                   failed/timed out (distinct from a
                                   confirmed-clean "no records found" result)
         pip_error               — str | None, same for the DOB/HPD fetch
+        tax_lien               — modules.tax_lien_fetcher.fetch_tax_lien_status()'s
+                                  return dict, or {} if bbl/borough_code/
+                                  block/lot were unusable or the fetch raised
+        composite_distress      — modules.distress_scorer.compute_composite_distress_score()'s
+                                  return dict — a fourth, additive distress
+                                  signal alongside `distress`/`distress_signal`,
+                                  not a replacement for either
     """
     out = dict(prop)
     bbl = prop.get("bbl", "")
@@ -171,6 +180,29 @@ def enrich_ownership(prop: dict, borough_name: str = "") -> dict:
     pip = fetch_property_history(bbl, borough_name=boro, address=prop.get("address", "")) if bbl else {}
     p_summ = pip.get("summary", {}) if pip else {}
     hpd_bld = pip.get("hpd_building", {}) if pip else {}
+
+    # ── Tax-lien + composite distress score fusion (additive; never raises) ──
+    tax_lien_result: dict = {}
+    try:
+        boro_code = prop.get("borough_code", "")
+        block = prop.get("block", "")
+        lot = prop.get("lot", "")
+        if boro_code and block and lot:
+            tax_lien_result = fetch_tax_lien_status(boro_code, block, lot) or {}
+    except Exception as exc:
+        tax_lien_result = {"error": str(exc)}
+
+    try:
+        composite_distress_result = compute_composite_distress_score(
+            acris_summary=a_summ,
+            dob_open_violations=p_summ.get("open_dob_viol", 0),
+            dob_open_complaints=p_summ.get("open_complaints", 0),
+            hpd_open_violations=0,
+            oath_data={},
+            tax_lien_data=tax_lien_result,
+        )
+    except Exception:
+        composite_distress_result = {}
 
     owner_name = prop.get("owner") or a_summ.get("latest_buyer") or ""
     distress = classify_distress(a_summ, p_summ, prop.get("year_built", ""))
@@ -191,6 +223,8 @@ def enrich_ownership(prop: dict, borough_name: str = "") -> dict:
         "pip_url":              pip.get("pip_url", ""),
         "acris_error":          acris.get("error"),
         "pip_error":            pip.get("error"),
+        "tax_lien":             tax_lien_result,
+        "composite_distress":   composite_distress_result,
     })
     return out
 
