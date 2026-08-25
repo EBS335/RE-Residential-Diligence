@@ -467,6 +467,25 @@ def _rent_stab_label(signal: dict) -> str:
     return "—"
 
 
+def _landmark_label(prop: dict) -> str:
+    """
+    Free bulk signal from PLUTO's own `landmark`/`histdist` fields (already
+    extracted for every row in property_search._normalize_row() at zero
+    extra fetch cost) — mirrors _rent_stab_label()'s style. `historic_dist`
+    is treated as a display-ready district name, consistent with
+    zola_fetcher.py's existing precedent for the same PLUTO field.
+    """
+    landmark = (prop.get("landmark") or "").strip()
+    hist_dist = (prop.get("historic_dist") or "").strip()
+    if landmark and hist_dist:
+        return f"🏛️ Landmark + {hist_dist}"
+    if landmark:
+        return "🏛️ Landmark"
+    if hist_dist:
+        return f"🏛️ {hist_dist} District"
+    return "—"
+
+
 def _render_filter_panel(properties: list[dict]) -> list[dict]:
     """
     Client-side filter panel narrowing the already-fetched results list
@@ -528,6 +547,13 @@ def _render_filter_panel(properties: list[dict]) -> list[dict]:
                 key=f"{_SF_PREFIX}filter_rentstab",
             )
 
+        r3c1, _r3c2, _r3c3, _r3c4 = st.columns(4)
+        with r3c1:
+            landmark_sel = st.selectbox(
+                "Landmark Status", options=["Any", "Landmarked", "Historic District", "Either", "Neither"],
+                key=f"{_SF_PREFIX}filter_landmark",
+            )
+
         filtered = []
         for p in properties:
             if street_query and street_query.strip().lower() not in (p.get("address", "") or "").lower():
@@ -555,6 +581,17 @@ def _render_filter_panel(properties: list[dict]) -> list[dict]:
                 elif rent_stab_sel == "Confirmed or Likely":
                     if not rs.get("likely_stabilized"):
                         continue
+            if landmark_sel != "Any":
+                is_landmark = bool((p.get("landmark") or "").strip())
+                is_hist_dist = bool((p.get("historic_dist") or "").strip())
+                if landmark_sel == "Landmarked" and not is_landmark:
+                    continue
+                if landmark_sel == "Historic District" and not is_hist_dist:
+                    continue
+                if landmark_sel == "Either" and not (is_landmark or is_hist_dist):
+                    continue
+                if landmark_sel == "Neither" and (is_landmark or is_hist_dist):
+                    continue
             filtered.append(p)
 
         st.caption(f"Showing {len(filtered):,} of {len(properties):,} results")
@@ -647,6 +684,7 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
         else:
             row["Distress"] = f"{p.get('distress_signal', 'No Signal')} (not yet checked)"
         row["Rent Stab."] = _rent_stab_label(p.get("rent_stab_signal", {}))
+        row["Landmark"] = _landmark_label(p)
         assemblage = p.get("assemblage_with") or []
         row["Assemblage"] = ("🔗 " + "; ".join(assemblage)) if assemblage else "—"
         row["Deal Score"] = ds["score"]

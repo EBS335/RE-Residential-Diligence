@@ -1,8 +1,8 @@
 """
 AppTest-driven checks for the Site Finder results-table changes:
   - the BBL column is no longer shown
-  - "Current Conditions", "Location", "Assemblage", "Rent Stab." columns
-    are present
+  - "Current Conditions", "Location", "Assemblage", "Rent Stab.", "Landmark"
+    columns are present
   - the full (unsliced) result set reaches the table — no more hardcoded
     top-50 display cap
 """
@@ -13,13 +13,16 @@ from streamlit.testing.v1 import AppTest
 
 from modules.site_sourcing import enrich_property, flag_assemblage_candidates
 from modules.deal_scorer import compute_deal_score
+from modules.site_finder_ui import _landmark_label, _rent_stab_label
 
 _APP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 
 
-def _synthetic_results(n: int) -> list[dict]:
+def _synthetic_results(n: int, landmark_overrides: dict | None = None) -> list[dict]:
+    landmark_overrides = landmark_overrides or {}
     props = []
     for i in range(n):
+        overrides = landmark_overrides.get(i, {})
         raw = {
             "bbl": f"301234{i:04d}", "borough": "Brooklyn", "borough_code": "3",
             "block": "1234", "lot": str(i + 1), "address": f"{100 + i} Test St",
@@ -33,6 +36,7 @@ def _synthetic_results(n: int) -> list[dict]:
             "is_vacant": False, "historic_dist": "", "landmark": "",
             "latitude": 40.69 + i * 0.0001, "longitude": -73.99, "lot_type": "Corner" if i == 0 else "Interior",
         }
+        raw.update(overrides)
         prop = enrich_property(raw)
         prop["deal_score"] = compute_deal_score(unused_far_pct=46.7, zoning_dist="R6A")
         props.append(prop)
@@ -60,6 +64,7 @@ def test_results_table_full_set_no_bbl_column_new_columns_present():
     assert "Location" in results_df.columns
     assert "Assemblage" in results_df.columns
     assert "Rent Stab." in results_df.columns
+    assert "Landmark" in results_df.columns
     assert len(results_df) == n  # full set, not capped at 50
 
 
@@ -90,3 +95,43 @@ def test_corner_and_mid_block_labels():
     results_df = max(dataframes, key=lambda df: len(df))
     assert results_df["Location"].iloc[0] == "Corner"
     assert results_df["Location"].iloc[1] == "Mid-Block"
+
+
+def test_landmark_column_labels_all_four_cases():
+    # index 0: landmark only, 1: historic district only, 2: both, 3: neither
+    overrides = {
+        0: {"landmark": "Individual Landmark"},
+        1: {"historic_dist": "Brooklyn Heights"},
+        2: {"landmark": "Individual Landmark", "historic_dist": "Brooklyn Heights"},
+        3: {},
+    }
+    results = _synthetic_results(4, overrides)
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+
+    assert not at.exception
+    dataframes = [el.value for el in at.dataframe]
+    results_df = max(dataframes, key=lambda df: len(df))
+    assert results_df["Landmark"].iloc[0] == "🏛️ Landmark"
+    assert results_df["Landmark"].iloc[1] == "🏛️ Brooklyn Heights District"
+    assert results_df["Landmark"].iloc[2] == "🏛️ Landmark + Brooklyn Heights"
+    assert results_df["Landmark"].iloc[3] == "—"
+
+
+def test_landmark_label_pure_unit():
+    assert _landmark_label({"landmark": "", "historic_dist": ""}) == "—"
+    assert _landmark_label({"landmark": "X", "historic_dist": ""}) == "🏛️ Landmark"
+    assert _landmark_label({"landmark": "", "historic_dist": "SoHo"}) == "🏛️ SoHo District"
+    assert _landmark_label({"landmark": "X", "historic_dist": "SoHo"}) == "🏛️ Landmark + SoHo"
+    assert _landmark_label({}) == "—"
+
+
+def test_rent_stab_label_pure_unit():
+    assert _rent_stab_label({}) == "—"
+    assert _rent_stab_label(None) == "—"
+    assert _rent_stab_label({"likely_stabilized": True, "verified": True}) == "✅ Confirmed"
+    assert _rent_stab_label({"likely_stabilized": True, "verified": False}) == "🟡 Likely (est.)"
+    assert _rent_stab_label({"likely_stabilized": False}) == "—"
