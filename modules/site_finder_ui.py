@@ -178,6 +178,41 @@ def load_saved_criteria_into_widgets(criteria: dict) -> None:
 
 # ── Search execution + scoring ──────────────────────────────────────────────
 
+def _enrich_and_score(
+    raw_rows: list[dict],
+    strategies_filter: list[str] | None = None,
+    min_price: float | None = None,
+    max_price: float | None = None,
+) -> list[dict]:
+    """
+    Fetch -> enrich -> strategy/price filter -> score -> assemblage-flag.
+    Extracted verbatim from _run_search()'s prior inline body so that raw
+    rows coming from sources OTHER than a live PLUTO criteria search (e.g.
+    a CSV upload, an owner-portfolio lookup, a similarity search) can run
+    through the exact same downstream pipeline as a normal search, instead
+    of duplicating this logic at each new call site.
+    """
+    enriched = [enrich_property(r) for r in raw_rows]
+
+    # Apply strategy filter (post-search, since it's a derived heuristic)
+    if strategies_filter:
+        wanted = set(strategies_filter)
+        enriched = [p for p in enriched if wanted & set(p.get("strategies", []))]
+
+    # Assessed value as a rough acquisition-price proxy for min/max price filters
+    if min_price:
+        enriched = [p for p in enriched if p.get("assess_total", 0) >= min_price]
+    if max_price:
+        enriched = [p for p in enriched if p.get("assess_total", 0) <= max_price]
+
+    scored = compute_bulk_deal_scores(enriched)
+    # Flag same-block/near-lot-number pairs WITHIN this result set as
+    # assemblage candidates — run once over the full scored list here so
+    # it's cached alongside `scored` itself (not recomputed on every rerun).
+    scored = flag_assemblage_candidates(scored)
+    return scored
+
+
 def _run_search(criteria: dict) -> tuple[list[dict], dict]:
     with st.spinner("Searching NYC PLUTO for matching parcels…"):
         raw_rows, status = search_properties(criteria)
@@ -185,24 +220,12 @@ def _run_search(criteria: dict) -> tuple[list[dict], dict]:
     if status.get("error"):
         return [], status
 
-    enriched = [enrich_property(r) for r in raw_rows]
-
-    # Apply strategy filter (post-search, since it's a derived heuristic)
-    if criteria.get("strategies"):
-        wanted = set(criteria["strategies"])
-        enriched = [p for p in enriched if wanted & set(p.get("strategies", []))]
-
-    # Assessed value as a rough acquisition-price proxy for min/max price filters
-    if criteria.get("min_price"):
-        enriched = [p for p in enriched if p.get("assess_total", 0) >= criteria["min_price"]]
-    if criteria.get("max_price"):
-        enriched = [p for p in enriched if p.get("assess_total", 0) <= criteria["max_price"]]
-
-    scored = compute_bulk_deal_scores(enriched)
-    # Flag same-block/near-lot-number pairs WITHIN this result set as
-    # assemblage candidates — run once over the full scored list here so
-    # it's cached alongside `scored` itself (not recomputed on every rerun).
-    scored = flag_assemblage_candidates(scored)
+    scored = _enrich_and_score(
+        raw_rows,
+        strategies_filter=criteria.get("strategies"),
+        min_price=criteria.get("min_price"),
+        max_price=criteria.get("max_price"),
+    )
     return scored, status
 
 

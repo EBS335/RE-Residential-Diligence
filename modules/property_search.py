@@ -215,6 +215,47 @@ def search_properties(criteria: dict, max_rows: int = _MAX_ROWS) -> tuple[list[d
     return normalized, status
 
 
+def fetch_properties_by_bbls(bbls: list[str], max_rows: int = 500) -> tuple[list[dict], dict]:
+    """
+    Fetch PLUTO rows for an explicit list of BBLs (bbl IN(...)), reusing
+    the same _get_page()/_normalize_row() pipeline as search_properties()
+    so results carry an identical schema. A new, standalone entry point —
+    not called by search_properties() and does not alter it. Powers
+    "bring your own list" (CSV/BBL upload), owner-portfolio expansion,
+    and "more like this" (once candidate BBLs are known).
+    """
+    clean = sorted({re.sub(r"\D", "", str(b)) for b in (bbls or []) if b})
+    clean = [b for b in clean if b][:max_rows]
+
+    if not clean:
+        return [], {
+            "total_fetched": 0, "truncated": False, "where_clause": "",
+            "error": None, "coords_missing_pct": None, "raw_field_sample_if_no_coords": None,
+        }
+
+    rows: list[dict] = []
+    error = None
+    try:
+        for i in range(0, len(clean), _PAGE_SIZE):
+            chunk = clean[i:i + _PAGE_SIZE]
+            in_list = ",".join(f"'{b}'" for b in chunk)
+            rows.extend(_get_page(f"bbl IN({in_list})", 0, _PAGE_SIZE))
+    except Exception as exc:
+        error = str(exc)
+
+    normalized = [_normalize_row(r) for r in rows]
+    normalized = [r for r in normalized if r["bbl"] and r["address"]]
+
+    return normalized, {
+        "total_fetched": len(normalized),
+        "truncated":     len(bbls or []) > max_rows,
+        "where_clause":  f"bbl IN(...) [{len(clean)} BBLs]",
+        "error":         error,
+        "coords_missing_pct": None,
+        "raw_field_sample_if_no_coords": None,
+    }
+
+
 def _normalize_row(r: dict) -> dict:
     """Convert a raw PLUTO row into the common Site Finder property schema."""
     def f(key, default=0.0):

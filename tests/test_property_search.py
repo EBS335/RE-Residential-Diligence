@@ -1,11 +1,14 @@
 """
-Tests for modules/property_search.py — currently just the `lot_type`
-(corner/mid-block) field extraction added for the Site Finder tab
-improvements (reuses modules/zola_fetcher.LOT_TYPE_LABELS rather than
-duplicating the mapping).
+Tests for modules/property_search.py — the `lot_type` (corner/mid-block)
+field extraction, and `fetch_properties_by_bbls()` (Batch 0 of the
+Site Finder Finding/Sourcing/Organizing/Viewing feature set — a new
+BBL-list fetch primitive shared by "bring your own list", owner-portfolio
+expansion, and "more like this").
 """
 
-from modules.property_search import _normalize_row
+from unittest.mock import patch
+
+from modules.property_search import _normalize_row, fetch_properties_by_bbls
 
 
 def _raw_row(**overrides):
@@ -57,3 +60,48 @@ def test_lot_type_missing_defaults_to_dash():
 def test_lot_type_unrecognized_code_degrades_gracefully():
     row = _normalize_row(_raw_row(lottype="9"))
     assert row["lot_type"] == "9"  # falls back to the raw code, doesn't raise
+
+
+# ── fetch_properties_by_bbls() ──────────────────────────────────────────────
+
+def test_fetch_properties_by_bbls_empty_list_returns_empty_no_fetch():
+    with patch("modules.property_search._get_page") as mock_get:
+        rows, status = fetch_properties_by_bbls([])
+    assert rows == []
+    assert status["total_fetched"] == 0
+    assert status["error"] is None
+    mock_get.assert_not_called()
+
+
+def test_fetch_properties_by_bbls_dedups_and_sanitizes_malformed_input():
+    seen_where = {}
+
+    def _fake_get_page(where_clause, offset, limit):
+        seen_where["clause"] = where_clause
+        return [_raw_row(bbl="1000010001")]
+
+    with patch("modules.property_search._get_page", side_effect=_fake_get_page):
+        rows, status = fetch_properties_by_bbls(["1000010001", "1000010001", "BBL 1000010001", None, ""])
+
+    assert status["error"] is None
+    assert status["total_fetched"] == 1
+    assert rows[0]["bbl"] == "1000010001"
+    # Only one distinct sanitized BBL should have reached the $where clause.
+    assert seen_where["clause"].count("1000010001") == 1
+
+
+def test_fetch_properties_by_bbls_mocked_returns_normalized_rows():
+    with patch("modules.property_search._get_page", return_value=[_raw_row(bbl="2000020002", address="1 A AVE")]):
+        rows, status = fetch_properties_by_bbls(["2000020002"])
+    assert len(rows) == 1
+    assert rows[0]["bbl"] == "2000020002"
+    assert rows[0]["address"]  # normalized (title-cased) but present
+    assert status["total_fetched"] == 1
+    assert status["truncated"] is False
+
+
+def test_fetch_properties_by_bbls_propagates_fetch_errors_without_raising():
+    with patch("modules.property_search._get_page", side_effect=RuntimeError("boom")):
+        rows, status = fetch_properties_by_bbls(["1000010001"])
+    assert rows == []
+    assert status["error"] == "boom"
