@@ -33,6 +33,7 @@ DB_DIR = os.path.join(os.path.dirname(_HERE), "data")
 DB_PATH = os.path.join(DB_DIR, "portfolio.db")
 
 STATUSES = ["Watching", "Under Diligence", "Offer Out", "Under Contract", "Passed", "Closed"]
+OUTREACH_STATUSES = ["Not Contacted", "Contacted", "Responded", "Passed"]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS portfolio (
@@ -67,6 +68,16 @@ CREATE TABLE IF NOT EXISTS diligence_items (
     updated_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_diligence_items_bbl ON diligence_items(bbl);
+
+CREATE TABLE IF NOT EXISTS outreach (
+    bbl               TEXT PRIMARY KEY,
+    status            TEXT NOT NULL DEFAULT 'Not Contacted',
+    last_contacted_at TEXT,
+    follow_up_date    TEXT,
+    notes             TEXT DEFAULT '',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
 """
 
 # Starter checklist seeded for a BBL the first time its tracker is opened —
@@ -414,6 +425,81 @@ def seed_default_checklist(bbl: str, conn: sqlite3.Connection | None = None) -> 
         for category, item in DEFAULT_CHECKLIST:
             add_diligence_item(bbl, category, item, conn=c)
         return list_diligence_items(bbl, conn=c)
+    finally:
+        if should_close:
+            c.close()
+
+
+# ── Outreach Tracker CRUD ───────────────────────────────────────────────
+
+def upsert_outreach(bbl: str, status: str | None = None, follow_up_date: str | None = None,
+                     notes: str | None = None, conn: sqlite3.Connection | None = None) -> dict:
+    """Upsert a single outreach row keyed by `bbl`. Only fields explicitly
+    passed as non-None overwrite the existing row (mirrors `update_status()`'s
+    partial-update semantics); a brand-new row defaults to status
+    'Not Contacted' / empty notes / no follow-up date. `last_contacted_at`
+    is auto-stamped to now whenever `status` is explicitly passed as
+    something other than 'Not Contacted'."""
+    bbl = str(bbl or "").strip()
+    if not bbl:
+        raise ValueError("upsert_outreach: bbl is required and cannot be empty")
+
+    c, should_close = _with_conn(conn)
+    try:
+        existing = c.execute(
+            "SELECT status, last_contacted_at, follow_up_date, notes, created_at FROM outreach WHERE bbl = ?",
+            (bbl,),
+        ).fetchone()
+
+        use_status = status if status is not None else (existing["status"] if existing else "Not Contacted")
+        use_follow_up = follow_up_date if follow_up_date is not None else (
+            existing["follow_up_date"] if existing else None
+        )
+        use_notes = notes if notes is not None else (existing["notes"] if existing else "")
+
+        use_last_contacted = existing["last_contacted_at"] if existing else None
+        if status is not None and status != "Not Contacted":
+            use_last_contacted = _now()
+
+        now = _now()
+        created_at = existing["created_at"] if existing else now
+
+        c.execute(
+            """
+            INSERT INTO outreach (bbl, status, last_contacted_at, follow_up_date, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bbl) DO UPDATE SET
+                status            = excluded.status,
+                last_contacted_at = excluded.last_contacted_at,
+                follow_up_date    = excluded.follow_up_date,
+                notes             = excluded.notes,
+                updated_at        = excluded.updated_at
+            """,
+            (bbl, use_status, use_last_contacted, use_follow_up, use_notes, created_at, now),
+        )
+        c.commit()
+        row = c.execute("SELECT * FROM outreach WHERE bbl = ?", (bbl,)).fetchone()
+        return dict(row)
+    finally:
+        if should_close:
+            c.close()
+
+
+def get_outreach(bbl: str, conn: sqlite3.Connection | None = None) -> dict | None:
+    c, should_close = _with_conn(conn)
+    try:
+        row = c.execute("SELECT * FROM outreach WHERE bbl = ?", (str(bbl),)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if should_close:
+            c.close()
+
+
+def list_outreach(conn: sqlite3.Connection | None = None) -> list[dict]:
+    c, should_close = _with_conn(conn)
+    try:
+        rows = c.execute("SELECT * FROM outreach ORDER BY updated_at DESC").fetchall()
+        return [dict(r) for r in rows]
     finally:
         if should_close:
             c.close()

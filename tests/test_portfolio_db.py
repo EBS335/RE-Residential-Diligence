@@ -171,3 +171,63 @@ def test_seed_default_checklist_categories_match_source_list(conn):
     items = pdb.seed_default_checklist("3001", conn=conn)
     categories = {i["category"] for i in items}
     assert categories == {c for c, _ in pdb.DEFAULT_CHECKLIST}
+
+
+# ── Outreach Tracker ──────────────────────────────────────────────────────
+
+def test_upsert_outreach_requires_bbl(conn):
+    with pytest.raises(ValueError):
+        pdb.upsert_outreach("", status="Contacted", conn=conn)
+
+
+def test_upsert_outreach_inserts_new_row(conn):
+    row = pdb.upsert_outreach("6001", status="Contacted", notes="Left voicemail", conn=conn)
+    assert row["bbl"] == "6001"
+    assert row["status"] == "Contacted"
+    assert row["notes"] == "Left voicemail"
+    assert row["follow_up_date"] is None
+    assert row["last_contacted_at"] is not None  # auto-stamped: status != "Not Contacted"
+    assert row["created_at"] == row["updated_at"]
+
+
+def test_upsert_outreach_default_status_not_contacted(conn):
+    row = pdb.upsert_outreach("6002", conn=conn)
+    assert row["status"] == "Not Contacted"
+    assert row["last_contacted_at"] is None  # never auto-stamped for the default status
+
+
+def test_upsert_outreach_partial_update_status_only(conn):
+    pdb.upsert_outreach("6003", status="Contacted", follow_up_date="2026-09-01", notes="Initial note", conn=conn)
+    updated = pdb.upsert_outreach("6003", status="Responded", conn=conn)
+    assert updated["status"] == "Responded"
+    # follow_up_date/notes untouched by the status-only update
+    assert updated["follow_up_date"] == "2026-09-01"
+    assert updated["notes"] == "Initial note"
+
+
+def test_upsert_outreach_partial_update_notes_only(conn):
+    pdb.upsert_outreach("6004", status="Contacted", follow_up_date="2026-09-01", notes="Initial note", conn=conn)
+    updated = pdb.upsert_outreach("6004", notes="Updated note", conn=conn)
+    assert updated["notes"] == "Updated note"
+    # status/follow_up_date untouched by the notes-only update
+    assert updated["status"] == "Contacted"
+    assert updated["follow_up_date"] == "2026-09-01"
+
+
+def test_upsert_outreach_idempotent_by_bbl(conn):
+    pdb.upsert_outreach("6005", status="Contacted", conn=conn)
+    pdb.upsert_outreach("6005", status="Responded", conn=conn)
+    assert len(pdb.list_outreach(conn=conn)) == 1
+    assert pdb.get_outreach("6005", conn=conn)["status"] == "Responded"
+
+
+def test_get_outreach_missing_bbl_returns_none(conn):
+    assert pdb.get_outreach("nonexistent", conn=conn) is None
+
+
+def test_list_outreach_returns_all_rows(conn):
+    pdb.upsert_outreach("6006", status="Contacted", conn=conn)
+    pdb.upsert_outreach("6007", status="Passed", conn=conn)
+    rows = pdb.list_outreach(conn=conn)
+    assert len(rows) == 2
+    assert {r["bbl"] for r in rows} == {"6006", "6007"}

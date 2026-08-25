@@ -21,6 +21,7 @@ import streamlit as st
 
 from modules.portfolio_db import (
     STATUSES,
+    OUTREACH_STATUSES,
     list_portfolio,
     update_status,
     remove_property,
@@ -33,6 +34,8 @@ from modules.portfolio_db import (
     add_diligence_item,
     delete_diligence_item,
     diligence_progress,
+    list_outreach,
+    upsert_outreach,
 )
 
 _MAX_COMPARE = 4
@@ -277,6 +280,59 @@ def _render_diligence_tracker(rows: list[dict]) -> None:
             st.rerun()
 
 
+def _render_outreach_summary() -> None:
+    st.markdown("### 📞 Outreach Tracker")
+    st.caption(
+        "One current outreach status per property — set from the 📞 Outreach Tracker "
+        "expander on any Site Finder property detail view, or edited directly below."
+    )
+    rows = list_outreach()
+    if not rows:
+        st.info("No outreach logged yet — use the 📞 Outreach Tracker on any Site Finder property.")
+        return
+
+    df = pd.DataFrame([
+        {
+            "BBL":            r["bbl"],
+            "Status":         r.get("status") or "Not Contacted",
+            "Follow-up date": r.get("follow_up_date") or "",
+            "Notes":          r.get("notes") or "",
+            "Updated":        (r.get("updated_at") or "")[:10],
+        }
+        for r in rows
+    ])
+
+    edited = st.data_editor(
+        df, use_container_width=True, hide_index=True, key="_portfolio_outreach_editor",
+        column_config={
+            "BBL":            st.column_config.TextColumn(disabled=True),
+            "Status":         st.column_config.SelectboxColumn(options=OUTREACH_STATUSES, required=True),
+            "Follow-up date": st.column_config.TextColumn(),
+            "Notes":          st.column_config.TextColumn(),
+            "Updated":        st.column_config.TextColumn(disabled=True),
+        },
+    )
+
+    # Diff edited rows against the original snapshot and persist any changes
+    # (same pattern as _render_pipeline_table()/_render_diligence_tracker() above).
+    changed = 0
+    for (_, orig_row), (_, edit_row) in zip(df.iterrows(), edited.iterrows()):
+        if (orig_row["Status"] != edit_row["Status"]
+                or orig_row["Follow-up date"] != edit_row["Follow-up date"]
+                or orig_row["Notes"] != edit_row["Notes"]):
+            upsert_outreach(
+                orig_row["BBL"],
+                status=edit_row["Status"] if orig_row["Status"] != edit_row["Status"] else None,
+                follow_up_date=(edit_row["Follow-up date"] or None)
+                    if orig_row["Follow-up date"] != edit_row["Follow-up date"] else None,
+                notes=edit_row["Notes"] if orig_row["Notes"] != edit_row["Notes"] else None,
+            )
+            changed += 1
+    if changed:
+        st.toast(f"Updated {changed} outreach record{'s' if changed != 1 else ''}.", icon="✅")
+        st.rerun()
+
+
 def _render_proposal_comparer() -> None:
     st.markdown("### 📑 Consultant Proposal Comparer")
     st.caption(
@@ -337,6 +393,8 @@ def render_portfolio() -> None:
     _render_pipeline_table()
     st.markdown("---")
     _render_diligence_tracker(list_portfolio())
+    st.markdown("---")
+    _render_outreach_summary()
     st.markdown("---")
     _render_proposal_comparer()
     st.markdown("---")

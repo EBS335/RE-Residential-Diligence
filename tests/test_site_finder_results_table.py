@@ -441,6 +441,27 @@ def test_weight_adjuster_expander_and_sliders_render_without_exception():
     assert "↺ Reset weights" in button_labels
 
 
+# ── Batch E: outreach CRM tracker ───────────────────────────────────────────
+
+def test_outreach_tracker_expander_renders_without_exception():
+    results = _synthetic_results(1)
+    prop = results[0]
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_selected_bbl"] = prop["bbl"]
+    at.session_state["_sf_selected_prop"] = prop
+    at.run()
+
+    assert not at.exception
+    button_labels = [b.label for b in at.button]
+    assert "💾 Save Outreach Status" in button_labels
+    selectbox_labels = [s.label for s in at.selectbox]
+    assert "Status" in selectbox_labels
+
+
 def test_weight_adjuster_boosting_a_slider_resorts_display_only():
     """Moving one weight slider away from 1.0 re-sorts the table by the
     adjusted score, but must NOT change the underlying deal_score values

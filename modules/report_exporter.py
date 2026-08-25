@@ -1138,3 +1138,105 @@ def build_pptx_report(prop: dict, ic_summary: dict | None = None,
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue()
+
+
+# ── PDF: owner outreach teaser (owner-safe, one page) ────────────────────────
+
+def build_owner_teaser_pdf(prop: dict) -> bytes:
+    """
+    Build a simple, one-page, owner-facing outreach teaser PDF — a neutral
+    "we'd like to discuss buying your property" letter, deliberately NOT
+    built on build_pdf_report() (which is framed "CONFIDENTIAL — INVESTMENT
+    SCREENING MEMORANDUM" and would leak internal deal economics like Deal
+    Score, distress signal, margin, or IRR to an owner-facing document).
+
+    Owner-safe fields only: address, a brief neutral framing sentence,
+    unused FAR %, and the estimated acquisition value (from
+    site_finder_valuation.estimate_acquisition_cost(), stored on
+    prop["business_plan"]["acquisition"]["estimate"]). Never raises on
+    missing/malformed `prop` fields — every field defaults gracefully to
+    "—"; only raises ImportError if reportlab isn't installed, matching
+    the other builders in this module.
+
+    Returns raw .pdf bytes.
+    """
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+    except ImportError as exc:
+        raise ImportError("Install `reportlab` to enable PDF export: pip install reportlab") from exc
+
+    NAVY = colors.HexColor(f"#{_NAVY_HEX}")
+    GRAY = colors.HexColor(f"#{_GRAY_HEX}")
+    BORDER = colors.HexColor(f"#{_BORDER_HEX}")
+
+    try:
+        address = prop.get("address") or "—"
+    except Exception:
+        address = "—"
+        prop = {}
+
+    generated = _generated_stamp()
+
+    try:
+        unused_far_pct = prop.get("unused_far_pct")
+        unused_far_str = f"{unused_far_pct:.0f}%" if isinstance(unused_far_pct, (int, float)) else "—"
+    except Exception:
+        unused_far_str = "—"
+
+    try:
+        plan = prop.get("business_plan") or {}
+        acq = (plan.get("acquisition") or {}) if isinstance(plan, dict) else {}
+        acq_val = acq.get("estimate")
+        acq_val_str = f"${acq_val:,.0f}" if isinstance(acq_val, (int, float)) else "—"
+    except Exception:
+        acq_val_str = "—"
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        topMargin=1.0 * inch, bottomMargin=1.0 * inch,
+        leftMargin=0.9 * inch, rightMargin=0.9 * inch,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("TitleNavy", parent=styles["Title"], textColor=NAVY, spaceAfter=6, fontSize=20)
+    body = styles["Normal"]
+    caption = ParagraphStyle("CaptionGray", parent=styles["Italic"], textColor=GRAY, fontSize=8.5)
+
+    story = [
+        Paragraph(address, title_style),
+        Paragraph(f"{generated}", caption),
+        Spacer(1, 14),
+        HRFlowable(width="100%", thickness=0.75, color=BORDER, spaceAfter=14),
+        Paragraph(
+            "We are interested in discussing a potential purchase of your "
+            "property. We work with property owners across New York City to "
+            "explore straightforward, no-obligation sale opportunities, and "
+            "wanted to reach out directly.",
+            body,
+        ),
+        Spacer(1, 14),
+        Paragraph(f"<b>Property:</b> {address}", body),
+        Paragraph(f"<b>Unused development potential (FAR):</b> {unused_far_str}", body),
+        Paragraph(f"<b>Estimated value:</b> {acq_val_str}", body),
+        Spacer(1, 18),
+        Paragraph(
+            "If you would be open to a conversation about your property, "
+            "please reach out — we would be glad to answer any questions and "
+            "discuss next steps at your convenience.",
+            body,
+        ),
+        Spacer(1, 20),
+        HRFlowable(width="100%", thickness=0.75, color=BORDER, spaceAfter=8),
+        Paragraph(
+            "This letter is a preliminary, informal inquiry only — not an "
+            "offer, appraisal, or binding proposal of any kind.",
+            caption,
+        ),
+    ]
+
+    doc.build(story)
+    return buf.getvalue()

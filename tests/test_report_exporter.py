@@ -15,6 +15,7 @@ import pytest
 
 from modules.report_exporter import (
     build_pdf_report, build_pptx_report, build_excel_workbook, compose_fallback_ic_summary,
+    build_owner_teaser_pdf,
 )
 
 
@@ -496,3 +497,57 @@ def test_excel_workbook_backward_compatible_with_site_finder_call_signature():
     )
     xlsx_bytes = build_excel_workbook([prop])  # exact Site Finder call signature
     assert xlsx_bytes[:2] == b"PK"
+
+
+# ── Owner Outreach Teaser PDF (Batch E, Feature 7) ───────────────────────────
+#
+# Owner-facing document — must NEVER leak internal deal economics (Deal
+# Score, distress signal, margin, IRR), unlike build_pdf_report() which is
+# explicitly framed "CONFIDENTIAL — INVESTMENT SCREENING MEMORANDUM".
+
+def test_owner_teaser_pdf_returns_pdf_magic_bytes():
+    pdf_bytes = build_owner_teaser_pdf(_prop())
+    assert isinstance(pdf_bytes, bytes)
+    assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_owner_teaser_pdf_contains_owner_safe_fields():
+    text = _pdf_text(build_owner_teaser_pdf(_prop()))
+    assert "123 Main St" in text
+    assert "67%" in text or "66.7%" in text or "67" in text  # unused FAR
+    assert "3,500,000" in text  # acquisition estimate from business_plan.acquisition.estimate
+
+
+def test_owner_teaser_pdf_never_leaks_deal_economics():
+    prop = _prop(composite_distress=_composite_distress())
+    text = _pdf_text(build_owner_teaser_pdf(prop))
+    assert "Deal Score" not in text
+    assert "82" not in text          # deal_score.score
+    assert "Strong Lead" not in text  # deal_score.tier
+    assert "Distress" not in text
+    assert "Margin" not in text
+    assert "16.7%" not in text        # business_plan.margin_pct
+    assert "IRR" not in text
+
+
+def test_owner_teaser_pdf_handles_missing_fields_gracefully():
+    # Never raises on missing/malformed prop fields — only on the
+    # reportlab-ImportError path.
+    pdf_bytes = build_owner_teaser_pdf({})
+    assert pdf_bytes.startswith(b"%PDF")
+    text = _pdf_text(pdf_bytes)
+    assert "—" in text  # graceful "—" fallback for unavailable fields
+
+
+def test_owner_teaser_pdf_handles_malformed_business_plan():
+    prop = _prop(business_plan="not a dict", unused_far_pct=None)
+    pdf_bytes = build_owner_teaser_pdf(prop)
+    assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_owner_teaser_pdf_raises_import_error_when_reportlab_missing(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "reportlab", None)
+    monkeypatch.setitem(sys.modules, "reportlab.lib.pagesizes", None)
+    with pytest.raises(ImportError):
+        build_owner_teaser_pdf(_prop())

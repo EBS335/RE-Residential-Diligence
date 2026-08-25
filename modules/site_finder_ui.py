@@ -37,7 +37,8 @@ from modules.underwriting_engine import (
     DEFAULT_PERM_DSCR_MIN, DEFAULT_PERM_RATE, DEFAULT_PERM_AMORT_YEARS,
     DEFAULT_PREFERRED_RETURN_PCT, DEFAULT_PROMOTE_TIERS, DEFAULT_GP_CO_INVEST_PCT,
 )
-from modules.report_exporter import build_excel_workbook, build_pdf_report, build_pptx_report
+from modules.report_exporter import build_excel_workbook, build_pdf_report, build_pptx_report, build_owner_teaser_pdf
+from modules.portfolio_db import get_outreach, upsert_outreach, OUTREACH_STATUSES
 from modules.site_finder_agents import (
     run_all_agents, has_anthropic_key, AGENT_ORDER,
 )
@@ -948,6 +949,53 @@ def _render_deal_score_explainer(prop: dict) -> None:
             st.caption(detail.get("reasoning", ""))
 
 
+def _render_outreach_tracker(prop: dict) -> None:
+    """
+    "📞 Outreach Tracker" — a lightweight, one-row-per-BBL CRM tracker
+    (status / follow-up date / notes) backed by portfolio_db.py's new
+    `outreach` table. Independent of the portfolio/diligence-checklist
+    tables — a property does not need to be saved to the Portfolio first.
+    """
+    import datetime as _dt
+
+    with st.expander("📞 Outreach Tracker", expanded=False):
+        current = get_outreach(prop["bbl"]) or {}
+        cur_status = current.get("status") or "Not Contacted"
+        try:
+            status_index = OUTREACH_STATUSES.index(cur_status)
+        except ValueError:
+            status_index = 0
+
+        cur_followup = current.get("follow_up_date")
+        followup_value = None
+        if cur_followup:
+            try:
+                followup_value = _dt.date.fromisoformat(str(cur_followup)[:10])
+            except ValueError:
+                followup_value = None
+
+        status = st.selectbox(
+            "Status", OUTREACH_STATUSES, index=status_index,
+            key=f"{_SF_PREFIX}outreach_status_{prop['bbl']}",
+        )
+        followup = st.date_input(
+            "Follow-up date", value=followup_value,
+            key=f"{_SF_PREFIX}outreach_followup_{prop['bbl']}",
+        )
+        notes = st.text_area(
+            "Notes", value=current.get("notes") or "",
+            key=f"{_SF_PREFIX}outreach_notes_{prop['bbl']}",
+        )
+
+        if st.button("💾 Save Outreach Status", key=f"{_SF_PREFIX}outreach_save_{prop['bbl']}"):
+            upsert_outreach(
+                prop["bbl"], status=status,
+                follow_up_date=str(followup) if followup else None,
+                notes=notes,
+            )
+            st.success("Saved.")
+
+
 def _render_property_detail(prop: dict) -> None:
     if st.button("← Back to Results"):
         st.session_state.pop(f"{_SF_PREFIX}selected_bbl", None)
@@ -1259,6 +1307,8 @@ def _render_property_detail(prop: dict) -> None:
                     st.session_state.pop(f"{_SF_PREFIX}selected_prop", None)
                     st.rerun()
 
+    _render_outreach_tracker(prop)
+
     with st.expander("⬇️ Export This Property", expanded=False):
         ic = prop.get("ic_summary")
         uw_for_export = st.session_state.get(f"{_SF_PREFIX}uw_export_{prop['bbl']}")
@@ -1268,7 +1318,7 @@ def _render_property_detail(prop: dict) -> None:
         else:
             st.caption("Tip: generate a pro forma above to include it in these exports.")
 
-        ex1, ex2 = st.columns(2)
+        ex1, ex2, ex3 = st.columns(3)
         with ex1:
             if st.button("📄 Build PDF report", key=f"{_SF_PREFIX}pdf_{prop['bbl']}", use_container_width=True):
                 try:
@@ -1292,6 +1342,19 @@ def _render_property_detail(prop: dict) -> None:
                     "Download PowerPoint", data=st.session_state[f"{_SF_PREFIX}pptx_bytes"],
                     file_name=f"{prop['bbl']}_pitch.pptx",
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True,
+                )
+        with ex3:
+            teaser_key = f"{_SF_PREFIX}teaser_bytes_{prop['bbl']}"
+            if st.button("✉️ Build Owner Outreach Teaser", key=f"{_SF_PREFIX}teaser_{prop['bbl']}", use_container_width=True):
+                try:
+                    st.session_state[teaser_key] = build_owner_teaser_pdf(prop)
+                except ImportError as exc:
+                    st.error(str(exc))
+            if st.session_state.get(teaser_key):
+                st.download_button(
+                    "Download Teaser", data=st.session_state[teaser_key],
+                    file_name=f"{prop['bbl']}_teaser.pdf", mime="application/pdf",
                     use_container_width=True,
                 )
 
