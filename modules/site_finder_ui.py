@@ -127,7 +127,11 @@ def _render_criteria_form() -> dict | None:
                 "Buffers around each station/waypoint — not a continuous "
                 "corridor polygon (no NYC subway-line or avenue geometry "
                 "dataset is available). Subway line and avenue filter "
-                "independently — combine both, or leave either on \"Any\"."
+                "independently — combine both, or leave either on \"Any\". "
+                "The subway line list is always complete; if live NYC Open "
+                "Data station data is temporarily unavailable, subway-line "
+                "filtering may return no matches until it's back (avenue "
+                "filtering is unaffected — it uses static waypoint data)."
             )
             t1, t2, t3 = st.columns(3)
             with t1:
@@ -308,6 +312,35 @@ _TIER_MARKER_COLOR = {
     "Pass":        [156, 163, 175],  # gray
 }
 _DEFAULT_MARKER_COLOR = [59, 130, 246]  # blue fallback for an unrecognized tier
+
+# Green (low built FAR) -> yellow -> red (high built FAR) gradient for the
+# Built FAR heat map/choropleth in _render_results_charts() — 6-stop ramp
+# adapted from ColorBrewer's diverging "RdYlGn" palette (reversed: green
+# = low end, red = high end), low-to-high as pydeck/deck.gl's HeatmapLayer
+# `color_range` prop expects.
+_FAR_HEATMAP_COLOR_RANGE: list[list[int]] = [
+    [0, 104, 55],     # dark green   — least built
+    [102, 189, 99],   # green
+    [217, 239, 139],  # yellow-green
+    [254, 224, 139],  # yellow-orange
+    [244, 109, 67],   # orange-red
+    [165, 0, 38],     # dark red     — most built
+]
+
+
+def _interp_far_color(t: float) -> tuple[int, int, int]:
+    """Linearly interpolate an RGB color along _FAR_HEATMAP_COLOR_RANGE's
+    6 stops at fraction t (0.0-1.0, clamped) — used to color each
+    property's own dot in the Built FAR Choropleth by its exact far_built
+    value, complementing the aggregated HeatmapLayer (which reflects
+    locally-aggregated density, not one point's literal value)."""
+    t = max(0.0, min(1.0, t))
+    stops = _FAR_HEATMAP_COLOR_RANGE
+    n = len(stops) - 1
+    seg = min(int(t * n), n - 1)
+    local_t = (t * n) - seg
+    c0, c1 = stops[seg], stops[seg + 1]
+    return tuple(int(round(c0[i] + (c1[i] - c0[i]) * local_t)) for i in range(3))
 
 
 def _geojson_bounds(geojson: dict) -> list[list[float]] | None:
@@ -1082,7 +1115,10 @@ def _render_results_charts(properties: list[dict]) -> None:
             if p.get("deal_score", {}).get("score") is not None
         ]
         if scores:
-            fig = go.Figure(go.Histogram(x=scores, nbinsx=20, marker_color="#1D4ED8"))
+            fig = go.Figure(go.Histogram(
+                x=scores, nbinsx=20, marker_color="#1D4ED8",
+                hovertemplate="Deal Score: %{x}<br>%{y} properties in this range<extra></extra>",
+            ))
             fig.update_layout(
                 title="Deal Score Distribution", xaxis_title="Deal Score", yaxis_title="Properties",
                 height=300, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
@@ -1094,7 +1130,10 @@ def _render_results_charts(properties: list[dict]) -> None:
             if p.get("unused_far_pct") is not None
         ]
         if far_vals:
-            fig = go.Figure(go.Histogram(x=far_vals, nbinsx=20, marker_color="#059669"))
+            fig = go.Figure(go.Histogram(
+                x=far_vals, nbinsx=20, marker_color="#059669",
+                hovertemplate="Unused FAR: %{x}%<br>%{y} properties in this range<extra></extra>",
+            ))
             fig.update_layout(
                 title="Unused FAR % Distribution", xaxis_title="Unused FAR %", yaxis_title="Properties",
                 height=300, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
@@ -1109,6 +1148,7 @@ def _render_results_charts(properties: list[dict]) -> None:
             borough_counts[b] = borough_counts.get(b, 0) + 1
         fig = go.Figure(go.Bar(
             x=list(borough_counts.keys()), y=list(borough_counts.values()), marker_color="#7C3AED",
+            hovertemplate="%{x}<br>%{y} properties<extra></extra>",
         ))
         fig.update_layout(
             title="Results by Borough", xaxis_title="Borough", yaxis_title="Properties",
@@ -1123,6 +1163,7 @@ def _render_results_charts(properties: list[dict]) -> None:
         if strategy_counts:
             fig = go.Figure(go.Bar(
                 x=list(strategy_counts.keys()), y=list(strategy_counts.values()), marker_color="#DC2626",
+                hovertemplate="%{x}<br>%{y} properties<extra></extra>",
             ))
             fig.update_layout(
                 title="Strategy Mix", xaxis_title="Strategy", yaxis_title="Properties",
@@ -1132,18 +1173,167 @@ def _render_results_charts(properties: list[dict]) -> None:
         else:
             st.caption("No strategy tags on these results.")
 
+    st.markdown("---")
+    st.markdown("#### 🧭 Additional Site-Finding Analytics")
+
+    a1, a2 = st.columns(2)
+    with a1:
+        # Deal Score vs Seller Propensity — quadrant framing: top-right
+        # quadrant is "hot leads" (good deal AND likely to sell).
+        xs = [p.get("seller_propensity", {}).get("score") for p in properties]
+        ys = [p.get("deal_score", {}).get("score") for p in properties]
+        addrs = [p.get("address", "") for p in properties]
+        pairs = [(x, y, a) for x, y, a in zip(xs, ys, addrs) if x is not None and y is not None]
+        if pairs:
+            xs2, ys2, addrs2 = zip(*pairs)
+            fig = go.Figure(go.Scatter(
+                x=xs2, y=ys2, mode="markers",
+                marker=dict(color="#F59E0B", size=8, opacity=0.75),
+                customdata=addrs2,
+                hovertemplate="%{customdata}<br>Seller Propensity: %{x}<br>Deal Score: %{y}<extra></extra>",
+            ))
+            fig.add_hline(y=70, line_dash="dot", line_color="#9CA3AF")
+            fig.add_vline(x=70, line_dash="dot", line_color="#9CA3AF")
+            fig.update_layout(
+                title="Deal Score vs Seller Propensity (top-right = hot leads)",
+                xaxis_title="Seller Propensity Score", yaxis_title="Deal Score",
+                height=320, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with a2:
+        # Unused FAR % vs a value-per-buildable-SF proxy (assess_total /
+        # (lot_sf * far_max)) — lower proxy + higher unused-FAR% = cheaper
+        # basis relative to development upside = attractive for screening.
+        xs, ys, addrs = [], [], []
+        for p in properties:
+            lot_sf, far_max, assess_total = p.get("lot_sf") or 0.0, p.get("far_max") or 0.0, p.get("assess_total") or 0.0
+            if lot_sf > 0 and far_max > 0:
+                buildable_sf = lot_sf * far_max
+                xs.append(p.get("unused_far_pct"))
+                ys.append(round(assess_total / buildable_sf, 2))
+                addrs.append(p.get("address", ""))
+        if xs:
+            fig = go.Figure(go.Scatter(
+                x=xs, y=ys, mode="markers",
+                marker=dict(color="#0891B2", size=8, opacity=0.75),
+                customdata=addrs,
+                hovertemplate="%{customdata}<br>Unused FAR: %{x}%<br>Assessed $/buildable SF: $%{y}<extra></extra>",
+            ))
+            fig.update_layout(
+                title="Unused FAR % vs Assessed $/Buildable SF (lower-right = best value)",
+                xaxis_title="Unused FAR %", yaxis_title="Assessed $ / Buildable SF",
+                height=320, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    a3, a4 = st.columns(2)
+    with a3:
+        # Zoning district breakdown — which zones are most represented.
+        zoning_counts: dict[str, int] = {}
+        for p in properties:
+            z = p.get("zoning_dist") or "Unknown"
+            zoning_counts[z] = zoning_counts.get(z, 0) + 1
+        top_zoning = dict(sorted(zoning_counts.items(), key=lambda kv: kv[1], reverse=True)[:15])
+        if top_zoning:
+            fig = go.Figure(go.Bar(
+                x=list(top_zoning.keys()), y=list(top_zoning.values()), marker_color="#DB2777",
+                hovertemplate="%{x}<br>%{y} properties<extra></extra>",
+            ))
+            fig.update_layout(
+                title="Results by Zoning District", xaxis_title="Zoning District", yaxis_title="Properties",
+                height=320, margin=dict(l=40, r=20, t=40, b=60), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with a4:
+        # Year Built — older stock skews toward redevelopment candidates.
+        years = []
+        for p in properties:
+            try:
+                y = int(str(p.get("year_built") or "").strip())
+                if 1800 <= y <= 2026:
+                    years.append(y)
+            except ValueError:
+                continue
+        if years:
+            fig = go.Figure(go.Histogram(
+                x=years, nbinsx=20, marker_color="#65A30D",
+                hovertemplate="Year Built: %{x}<br>%{y} properties in this range<extra></extra>",
+            ))
+            fig.update_layout(
+                title="Year Built Distribution (older stock = redevelopment candidates)",
+                xaxis_title="Year Built", yaxis_title="Properties",
+                height=320, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    a5, a6 = st.columns(2)
+    with a5:
+        # Borough x Deal Score Tier — where "Strong Lead" density actually
+        # concentrates, stacked by tier per borough.
+        tier_order = ["Strong Lead", "Watch", "Pass"]
+        tier_colors = {"Strong Lead": "#16A34A", "Watch": "#F59E0B", "Pass": "#DC2626"}
+        borough_tier: dict[str, dict[str, int]] = {}
+        for p in properties:
+            b = p.get("borough") or "Unknown"
+            t = p.get("deal_score", {}).get("tier") or "Pass"
+            borough_tier.setdefault(b, {}).setdefault(t, 0)
+            borough_tier[b][t] += 1
+        boroughs_sorted = sorted(borough_tier.keys())
+        if boroughs_sorted:
+            fig = go.Figure()
+            for t in tier_order:
+                fig.add_trace(go.Bar(
+                    name=t, x=boroughs_sorted,
+                    y=[borough_tier[b].get(t, 0) for b in boroughs_sorted],
+                    marker_color=tier_colors[t],
+                    hovertemplate=f"%{{x}}<br>{t}: " + "%{y} properties<extra></extra>",
+                ))
+            fig.update_layout(
+                title="Deal Score Tier by Borough", xaxis_title="Borough", yaxis_title="Properties",
+                barmode="stack", height=320, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with a6:
+        # Assemblage-candidate share — donut of what fraction of results
+        # have an adjacent-lot assemblage opportunity flagged.
+        with_assemblage = sum(1 for p in properties if p.get("assemblage_with"))
+        without = len(properties) - with_assemblage
+        if len(properties) > 0:
+            fig = go.Figure(go.Pie(
+                labels=["Has assemblage candidates", "No adjacent match"],
+                values=[with_assemblage, without],
+                hole=0.6,
+                marker_colors=["#4F46E5", "#D1D5DB"],
+                hovertemplate="%{label}<br>%{value} properties (%{percent})<extra></extra>",
+            ))
+            fig.update_layout(
+                title="Assemblage-Candidate Share", height=320,
+                margin=dict(l=20, r=20, t=40, b=20), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
     # Geographic density heat map — distinct from _render_results_map()'s
     # discrete per-property scatter markers above: a smoothed density
-    # surface weighted by Deal Score, using pydeck's HeatmapLayer
-    # (pydeck is already imported for the scatter map — this is simply
-    # an until-now-unused layer type, not a new dependency).
+    # surface weighted by Built FAR (how built-up each site already is),
+    # using pydeck's HeatmapLayer (pydeck is already imported for the
+    # scatter map). Color ramp: green (low built FAR — more redevelopment
+    # headroom) -> yellow -> red (high built FAR — already maxed out).
+    # NOTE: HeatmapLayer aggregates weighted density across nearby points
+    # (a KDE surface), so color reflects locally-aggregated FAR-weighted
+    # density, not a single property's literal FAR value in isolation —
+    # see the Built FAR Choropleth below for an exact per-property view.
     located = [p for p in properties if p.get("latitude") and p.get("longitude")]
     if located:
-        st.markdown("##### 🔥 Deal Score Density Heat Map")
+        st.markdown("##### 🔥 Built FAR Density Heat Map")
+        st.caption(
+            "Weighted by each site's built FAR. Green areas skew toward "
+            "less-built sites (more redevelopment headroom); red areas "
+            "skew toward already built-up sites."
+        )
         heat_rows = [
             {
                 "lon": p["longitude"], "lat": p["latitude"],
-                "weight": p.get("deal_score", {}).get("score") or 1,
+                "weight": p.get("far_built") or 0.01,
             }
             for p in located
         ]
@@ -1153,10 +1343,46 @@ def _render_results_charts(properties: list[dict]) -> None:
             get_position="[lon, lat]",
             get_weight="weight",
             radius_pixels=50,
+            color_range=_FAR_HEATMAP_COLOR_RANGE,
         )
         fit_points = [[p["longitude"], p["latitude"]] for p in located]
         view_state = compute_view(fit_points)
         st.pydeck_chart(pdk.Deck(layers=[heat_layer], initial_view_state=view_state, map_style="light"))
+
+        # Built FAR Choropleth — one dot per property, colored EXACTLY by
+        # that property's own far_built (unlike the HeatmapLayer above,
+        # which renders aggregated density, not a single point's literal
+        # value). Companion view for precise per-property color.
+        st.markdown("##### 🎯 Built FAR Choropleth (per-property, exact)")
+        st.caption(
+            "Each dot is one property, colored by its own built FAR — "
+            "green = low (more redevelopment headroom), red = high "
+            "(already built up)."
+        )
+        far_values = [p.get("far_built") or 0.0 for p in located]
+        far_lo, far_hi = min(far_values), max(far_values)
+        choropleth_rows = []
+        for p, fv in zip(located, far_values):
+            t = 0.5 if far_hi <= far_lo else (fv - far_lo) / (far_hi - far_lo)
+            r, g, b = _interp_far_color(t)
+            choropleth_rows.append({
+                "lon": p["longitude"], "lat": p["latitude"],
+                "far_built": fv, "address": p.get("address", ""),
+                "color": [r, g, b, 200],
+            })
+        choropleth_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=choropleth_rows,
+            get_position="[lon, lat]",
+            get_fill_color="color",
+            get_radius=40,
+            pickable=True,
+        )
+        view_state = compute_view(fit_points)
+        st.pydeck_chart(pdk.Deck(
+            layers=[choropleth_layer], initial_view_state=view_state, map_style="light",
+            tooltip={"text": "{address}\nBuilt FAR: {far_built}"},
+        ))
 
 # ── Property detail (lightweight, self-contained — does not call the ──────
 # ── existing 4,000-line Property Analysis flow, to avoid any risk of ──────

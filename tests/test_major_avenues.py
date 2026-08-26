@@ -49,3 +49,41 @@ def test_is_near_avenue_respects_buffer_size():
     lat, lon = 40.6975, -73.9800
     assert is_near_avenue(lat, lon, "Flatbush Avenue", buffer_miles=0.5) is True
     assert is_near_avenue(lat, lon, "Flatbush Avenue", buffer_miles=0.05) is False
+
+
+# ── "All Manhattan avenues" expansion ───────────────────────────────────
+
+_NEW_MANHATTAN_AVENUES = [
+    "1st Avenue", "2nd Avenue", "6th Avenue (Avenue of the Americas)",
+    "7th Avenue", "8th Avenue", "9th Avenue", "10th Avenue", "11th Avenue",
+    "12th Avenue", "York Avenue", "West End Avenue", "Central Park West",
+    "St. Nicholas Avenue", "Convent Avenue", "Riverside Drive",
+    "Adam Clayton Powell Jr Boulevard", "Frederick Douglass Boulevard",
+    "Malcolm X Boulevard (Lenox Avenue)",
+]
+
+
+def test_list_available_avenues_includes_new_manhattan_avenues():
+    result = list_available_avenues()
+    for name in _NEW_MANHATTAN_AVENUES:
+        assert name in result, name
+
+
+def test_is_near_avenue_true_for_a_new_manhattan_avenue():
+    # 1st Avenue's first waypoint is (40.7231, -73.9789).
+    assert is_near_avenue(40.7231, -73.9789, "1st Avenue", buffer_miles=0.1) is True
+
+
+def test_other_boroughs_untouched_by_manhattan_expansion():
+    # Original other-borough entries are still present, unmodified in
+    # count/name — only Manhattan grew.
+    for name in [
+        "Flatbush Avenue", "Atlantic Avenue", "Eastern Parkway", "Ocean Parkway", "Utica Avenue",
+        "Queens Boulevard", "Northern Boulevard", "Roosevelt Avenue", "Jamaica Avenue",
+        "Grand Concourse", "Bruckner Boulevard",
+        "Hylan Boulevard", "Richmond Avenue",
+    ]:
+        assert name in MAJOR_AVENUES, name
+    # 8 original + 18 new Manhattan avenues, plus 5 Brooklyn + 4 Queens +
+    # 2 Bronx + 2 Staten Island = 39 total.
+    assert len(MAJOR_AVENUES) == 39

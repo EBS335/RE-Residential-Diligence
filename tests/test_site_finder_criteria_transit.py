@@ -31,6 +31,14 @@ def test_transit_avenue_corridor_expander_renders_without_exception():
     assert any("not a continuous" in c for c in captions)
 
 
+def test_transit_avenue_corridor_caption_mentions_fallback_list_always_complete():
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    assert not at.exception
+    captions = [c.value for c in at.caption]
+    assert any("always complete" in c for c in captions)
+
+
 def test_transit_criteria_round_trips_without_exception():
     criteria = {
         "boroughs": ["Brooklyn"],

@@ -35,6 +35,22 @@ _HALF_MILE = 0.5
 
 _station_cache: list[dict] | None = None
 
+# Fallback list of every current NYC Subway revenue-service line letter/
+# number, used ONLY when list_available_lines() is called and the live-
+# fetched station index is empty (fetch failed, dataset unreachable, or
+# any other reason _load_station_index() returned nothing) — guarantees
+# the "Subway line" dropdown in Site Finder's criteria form always has a
+# real, correct set of options regardless of live-fetch health. Matches
+# the plain letter/number tokens the live dataset itself uses (no express
+# "<X>" diamond notation). Deliberately excludes "SIR" — the Staten
+# Island Railway is a separate NYC Open Data resource, not part of this
+# dataset (arq3-7z49), so it would never appear from a live fetch either;
+# omitting it keeps the two code paths' output semantically consistent.
+_FALLBACK_LINES: list[str] = [
+    "1", "2", "3", "4", "5", "6", "7",
+    "A", "B", "C", "D", "E", "F", "G", "J", "L", "M", "N", "Q", "R", "S", "W", "Z",
+]
+
 
 def _get(url: str, params: dict) -> list[dict]:
     try:
@@ -250,15 +266,23 @@ def list_available_lines() -> list[str]:
     — parsed with the exact same _line_tokens() split fetch_transit_
     proximity() already applies to `nearest_lines`.
 
-    Never raises; returns [] if the station index is unavailable.
+    Never raises. If the live station index is unavailable (fetch failed,
+    empty, or any other error), falls back to _FALLBACK_LINES — a static
+    list of every current NYC Subway revenue-service line — so the
+    dropdown this feeds always has real options. NOTE: this fallback only
+    affects which OPTIONS are listed; is_near_line()'s actual proximity
+    matching still depends on live station data, so selecting a
+    fallback-sourced line while the live fetch is down returns zero
+    matching properties (not an error) until live data is back.
     """
     try:
         stations = _load_station_index()
     except Exception as exc:
         log.warning("list_available_lines failed: %s", exc)
-        return []
+        stations = []
+
     if not stations:
-        return []
+        return list(_FALLBACK_LINES)
 
     lines: set[str] = set()
     for s in stations:

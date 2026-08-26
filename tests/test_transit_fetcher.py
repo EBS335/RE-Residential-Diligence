@@ -120,9 +120,35 @@ def test_list_available_lines_returns_sorted_distinct_tokens():
         assert expected in result
 
 
-def test_list_available_lines_empty_station_index_returns_empty_list_no_raise():
+def test_list_available_lines_returns_fallback_when_station_index_empty():
+    # Behavior intentionally changed: an empty/unavailable live index no
+    # longer returns [] (which left the "Subway line" dropdown showing
+    # only "Any") — it now falls back to _FALLBACK_LINES, a static list
+    # of every current NYC Subway line, so the dropdown is always usable.
     with _empty_cache():
-        assert list_available_lines() == []
+        result = list_available_lines()
+    assert result == transit_fetcher._FALLBACK_LINES
+
+
+def test_list_available_lines_fallback_is_sorted_and_covers_current_lines():
+    assert transit_fetcher._FALLBACK_LINES == sorted(transit_fetcher._FALLBACK_LINES)
+    for expected in [
+        "1", "2", "3", "4", "5", "6", "7",
+        "A", "B", "C", "D", "E", "F", "G", "J", "L", "M", "N", "Q", "R", "S", "W", "Z",
+    ]:
+        assert expected in transit_fetcher._FALLBACK_LINES
+    assert "SIR" not in transit_fetcher._FALLBACK_LINES
+
+
+def test_list_available_lines_uses_live_data_not_fallback_when_available():
+    with _patched_cache():
+        result = list_available_lines()
+    assert result != transit_fetcher._FALLBACK_LINES
+    # Every token returned must actually come from the fake station data.
+    live_tokens = set()
+    for s in _FAKE_STATIONS:
+        live_tokens.update(t.upper() for t in s["line"].replace("/", "-").split("-") if t.strip())
+    assert set(result) == live_tokens
 
 
 # ── Caching-bug fix: a failed fetch must NOT be cached forever ─────────────
