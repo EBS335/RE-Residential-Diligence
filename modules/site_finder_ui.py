@@ -16,6 +16,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 import pydeck as pdk
+import plotly.graph_objects as go
 from pydeck.data_utils import compute_view
 
 from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE, fetch_properties_by_bbls, find_similar_properties
@@ -1050,6 +1051,112 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
                 use_container_width=True,
             )
 
+    st.markdown("---")
+    _render_results_charts(results_full)
+
+
+def _render_results_charts(properties: list[dict]) -> None:
+    """
+    "📊 Data Visualizations" — charts + a geographic heat map summarizing
+    the full result set, complementing (not duplicating)
+    _render_summary_cards()'s 4 KPI tiles and _render_results_map()'s
+    discrete per-property scatter markers. Uses Plotly (go.Figure +
+    st.plotly_chart(..., config={"displayModeBar": False})) — the one
+    charting convention already established elsewhere in this app
+    (app.py's Property Analysis tab, modules/visualizer.py) — Site
+    Finder itself had never used charts before this.
+    """
+    if not properties:
+        return
+
+    st.markdown("#### 📊 Data Visualizations")
+    st.caption(
+        "Distributions and breakdowns across the full result set, to "
+        "help spot patterns beyond the table and map above."
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        scores = [
+            p["deal_score"]["score"] for p in properties
+            if p.get("deal_score", {}).get("score") is not None
+        ]
+        if scores:
+            fig = go.Figure(go.Histogram(x=scores, nbinsx=20, marker_color="#1D4ED8"))
+            fig.update_layout(
+                title="Deal Score Distribution", xaxis_title="Deal Score", yaxis_title="Properties",
+                height=300, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with c2:
+        far_vals = [
+            p["unused_far_pct"] for p in properties
+            if p.get("unused_far_pct") is not None
+        ]
+        if far_vals:
+            fig = go.Figure(go.Histogram(x=far_vals, nbinsx=20, marker_color="#059669"))
+            fig.update_layout(
+                title="Unused FAR % Distribution", xaxis_title="Unused FAR %", yaxis_title="Properties",
+                height=300, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    c3, c4 = st.columns(2)
+    with c3:
+        borough_counts: dict[str, int] = {}
+        for p in properties:
+            b = p.get("borough") or "Unknown"
+            borough_counts[b] = borough_counts.get(b, 0) + 1
+        fig = go.Figure(go.Bar(
+            x=list(borough_counts.keys()), y=list(borough_counts.values()), marker_color="#7C3AED",
+        ))
+        fig.update_layout(
+            title="Results by Borough", xaxis_title="Borough", yaxis_title="Properties",
+            height=300, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with c4:
+        strategy_counts: dict[str, int] = {}
+        for p in properties:
+            for s in p.get("strategies", []):
+                strategy_counts[s] = strategy_counts.get(s, 0) + 1
+        if strategy_counts:
+            fig = go.Figure(go.Bar(
+                x=list(strategy_counts.keys()), y=list(strategy_counts.values()), marker_color="#DC2626",
+            ))
+            fig.update_layout(
+                title="Strategy Mix", xaxis_title="Strategy", yaxis_title="Properties",
+                height=300, margin=dict(l=40, r=20, t=40, b=60), font=dict(size=11),
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.caption("No strategy tags on these results.")
+
+    # Geographic density heat map — distinct from _render_results_map()'s
+    # discrete per-property scatter markers above: a smoothed density
+    # surface weighted by Deal Score, using pydeck's HeatmapLayer
+    # (pydeck is already imported for the scatter map — this is simply
+    # an until-now-unused layer type, not a new dependency).
+    located = [p for p in properties if p.get("latitude") and p.get("longitude")]
+    if located:
+        st.markdown("##### 🔥 Deal Score Density Heat Map")
+        heat_rows = [
+            {
+                "lon": p["longitude"], "lat": p["latitude"],
+                "weight": p.get("deal_score", {}).get("score") or 1,
+            }
+            for p in located
+        ]
+        heat_layer = pdk.Layer(
+            "HeatmapLayer",
+            data=heat_rows,
+            get_position="[lon, lat]",
+            get_weight="weight",
+            radius_pixels=50,
+        )
+        fit_points = [[p["longitude"], p["latitude"]] for p in located]
+        view_state = compute_view(fit_points)
+        st.pydeck_chart(pdk.Deck(layers=[heat_layer], initial_view_state=view_state, map_style="light"))
 
 # ── Property detail (lightweight, self-contained — does not call the ──────
 # ── existing 4,000-line Property Analysis flow, to avoid any risk of ──────
