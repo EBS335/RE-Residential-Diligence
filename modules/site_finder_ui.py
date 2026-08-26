@@ -21,7 +21,7 @@ from pydeck.data_utils import compute_view
 
 from modules.property_search import search_properties, BOROUGH_CODES, PROPERTY_TYPE_LANDUSE, fetch_properties_by_bbls, find_similar_properties
 from modules.site_sourcing import enrich_property, flag_assemblage_candidates, STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION
-from modules.deal_scorer import compute_bulk_deal_scores, compute_bulk_seller_propensity, recompute_display_score
+from modules.deal_scorer import compute_bulk_deal_scores, compute_bulk_seller_propensity, recompute_display_score, apply_custom_weights
 from modules.zoning_rules import get_zoning_rules, get_zoning_citations, classify_street_type
 from modules.zola_fetcher import bbl_to_zola_url
 from modules.acris_fetcher import fetch_acris, fetch_owner_portfolio
@@ -54,6 +54,16 @@ from modules.site_finder_agents import (
 )
 
 _SF_PREFIX = "_sf_"   # session-state key namespace, isolated from the existing tab
+
+# The 5 compute_deal_score() breakdown component names (verbatim dict
+# keys) and their engine-default point maxes — shared by the search-time
+# custom-weighting panel in _render_criteria_form() and the post-search
+# "this view only" adjuster (_render_weight_adjuster()).
+_DEAL_SCORE_WEIGHT_COMPONENTS = [
+    "Unused FAR", "Distress Signals", "Location Demand",
+    "Zoning Flexibility", "Listing Activity",
+]
+_DEAL_SCORE_DEFAULT_MAXES = [30, 25, 20, 15, 10]
 
 
 # ── Investment Criteria form ────────────────────────────────────────────────
@@ -122,33 +132,29 @@ def _render_criteria_form() -> dict | None:
                 key=f"{_SF_PREFIX}risk",
             )
 
-        with st.expander("🚇 Transit & Avenue Corridor (optional)", expanded=False):
+        with st.expander("⚖️ Customize Deal Score Weights (optional)", expanded=False):
             st.caption(
-                "Buffers around each station/waypoint — not a continuous "
-                "corridor polygon (no NYC subway-line or avenue geometry "
-                "dataset is available). Subway line and avenue filter "
-                "independently — combine both, or leave either on \"Any\". "
-                "The subway line list is always complete; if live NYC Open "
-                "Data station data is temporarily unavailable, subway-line "
-                "filtering may return no matches until it's back (avenue "
-                "filtering is unaffected — it uses static waypoint data)."
+                "Off by default — Deal Score uses the standard weighting "
+                "(Unused FAR 30 / Distress 25 / Location 20 / Zoning 15 / "
+                "Listings 10). Turn this on to allocate your own weights "
+                "(must sum to 100%) for this search — the resulting Deal "
+                "Score becomes the score used everywhere for these results "
+                "(table, map, exports, Portfolio)."
             )
-            t1, t2, t3 = st.columns(3)
-            with t1:
-                transit_line = st.selectbox(
-                    "Subway line", options=["Any"] + list_available_lines(),
-                    key=f"{_SF_PREFIX}transitline",
-                )
-            with t2:
-                avenue = st.selectbox(
-                    "Major avenue", options=["Any"] + list_available_avenues(),
-                    key=f"{_SF_PREFIX}avenue",
-                )
-            with t3:
-                transit_buffer = st.select_slider(
-                    "Buffer (miles)", options=[0.25, 0.5, 1.0], value=0.5,
-                    key=f"{_SF_PREFIX}transitbuffer",
-                )
+            use_custom_weights = st.checkbox(
+                "Use custom weights for this search", key=f"{_SF_PREFIX}use_custom_weights",
+            )
+            custom_weight_inputs: dict[str, float] = {}
+            w_cols = st.columns(len(_DEAL_SCORE_WEIGHT_COMPONENTS))
+            for w_col, component, default_max in zip(
+                w_cols, _DEAL_SCORE_WEIGHT_COMPONENTS, _DEAL_SCORE_DEFAULT_MAXES
+            ):
+                with w_col:
+                    custom_weight_inputs[component] = st.number_input(
+                        component, min_value=0, max_value=100, value=default_max, step=5,
+                        key=f"{_SF_PREFIX}customweight_{component}",
+                        disabled=not use_custom_weights,
+                    )
 
         sv1, sv2 = st.columns([1, 2])
         with sv1:
@@ -165,6 +171,17 @@ def _render_criteria_form() -> dict | None:
     if not submitted:
         return None
 
+    deal_score_weights = None
+    if use_custom_weights:
+        total_weight = sum(custom_weight_inputs.values())
+        if total_weight != 100:
+            st.error(
+                f"Custom weights must sum to 100% (currently {total_weight}%). "
+                "Adjust and search again."
+            )
+            return None
+        deal_score_weights = dict(custom_weight_inputs)
+
     criteria = {
         "boroughs":            boroughs,
         "zip_codes":           [z.strip() for z in zip_codes.split(",") if z.strip()],
@@ -180,9 +197,7 @@ def _render_criteria_form() -> dict | None:
         "property_types":      [p for p in property_types if p != "Any"],
         "strategies":          strategies,
         "risk":                risk,
-        "transit_line":        transit_line if transit_line != "Any" else None,
-        "avenue":              avenue if avenue != "Any" else None,
-        "transit_buffer_miles": transit_buffer,
+        "deal_score_weights":  deal_score_weights,
     }
 
     if save_this and search_name.strip():
@@ -218,9 +233,12 @@ def load_saved_criteria_into_widgets(criteria: dict) -> None:
     st.session_state[f"{_SF_PREFIX}ptypes"] = criteria.get("property_types") or ["Any"]
     st.session_state[f"{_SF_PREFIX}strategies"] = criteria.get("strategies") or []
     st.session_state[f"{_SF_PREFIX}risk"] = criteria.get("risk") or "Moderate"
-    st.session_state[f"{_SF_PREFIX}transitline"] = criteria.get("transit_line") or "Any"
-    st.session_state[f"{_SF_PREFIX}avenue"] = criteria.get("avenue") or "Any"
-    st.session_state[f"{_SF_PREFIX}transitbuffer"] = criteria.get("transit_buffer_miles") or 0.5
+    _weights = criteria.get("deal_score_weights")
+    st.session_state[f"{_SF_PREFIX}use_custom_weights"] = bool(_weights)
+    for _component, _default_max in zip(_DEAL_SCORE_WEIGHT_COMPONENTS, _DEAL_SCORE_DEFAULT_MAXES):
+        st.session_state[f"{_SF_PREFIX}customweight_{_component}"] = (
+            (_weights or {}).get(_component, _default_max)
+        )
 
 
 # ── Search execution + scoring ──────────────────────────────────────────────
@@ -230,6 +248,7 @@ def _enrich_and_score(
     strategies_filter: list[str] | None = None,
     min_price: float | None = None,
     max_price: float | None = None,
+    custom_weights: dict[str, float] | None = None,
 ) -> list[dict]:
     """
     Fetch -> enrich -> strategy/price filter -> score -> assemblage-flag.
@@ -238,6 +257,19 @@ def _enrich_and_score(
     a CSV upload, an owner-portfolio lookup, a similarity search) can run
     through the exact same downstream pipeline as a normal search, instead
     of duplicating this logic at each new call site.
+
+    `custom_weights`, when provided (search-time opt-in "Customize Deal
+    Score Weights" panel — a dict of the 5 compute_deal_score() component
+    names -> point caps summing to 100), REPLACES every property's
+    `deal_score` with deal_scorer.apply_custom_weights()'s result,
+    computed from the SAME default breakdown compute_bulk_deal_scores()
+    always produces first. This becomes the canonical `deal_score` for
+    this call's results — every downstream consumer (table, map color,
+    exports, Save to Portfolio, AI diligence) reads it unconditionally,
+    so applying the override here, upstream of all of them, is what makes
+    a search-time weighting choice actually propagate everywhere. When
+    `custom_weights` is None/falsy (the default), this is a no-op —
+    identical output to before this parameter existed.
     """
     enriched = [enrich_property(r) for r in raw_rows]
 
@@ -253,6 +285,11 @@ def _enrich_and_score(
         enriched = [p for p in enriched if p.get("assess_total", 0) <= max_price]
 
     scored = compute_bulk_deal_scores(enriched)
+    if custom_weights:
+        scored = [
+            {**p, "deal_score": apply_custom_weights(p["deal_score"]["breakdown"], custom_weights)}
+            for p in scored
+        ]
     scored = compute_bulk_seller_propensity(scored)
     # Flag same-block/near-lot-number pairs WITHIN this result set as
     # assemblage candidates — run once over the full scored list here so
@@ -273,17 +310,8 @@ def _run_search(criteria: dict) -> tuple[list[dict], dict]:
         strategies_filter=criteria.get("strategies"),
         min_price=criteria.get("min_price"),
         max_price=criteria.get("max_price"),
+        custom_weights=criteria.get("deal_score_weights"),
     )
-    if criteria.get("transit_line"):
-        scored = [
-            p for p in scored
-            if is_near_line(p.get("latitude"), p.get("longitude"), criteria["transit_line"], criteria.get("transit_buffer_miles", 0.5))
-        ]
-    if criteria.get("avenue"):
-        scored = [
-            p for p in scored
-            if is_near_avenue(p.get("latitude"), p.get("longitude"), criteria["avenue"], criteria.get("transit_buffer_miles", 0.5))
-        ]
     return scored, status
 
 
@@ -668,6 +696,29 @@ def _render_filter_panel(properties: list[dict]) -> list[dict]:
                 "Tags", options=TAG_OPTIONS, key=f"{_SF_PREFIX}filter_tags",
             )
 
+        st.caption(
+            "🚇 Transit & Avenue Corridor — buffers around each station/"
+            "waypoint, not a continuous corridor polygon (no NYC subway-"
+            "line or avenue geometry dataset is available). Filter "
+            "independently, or combine both."
+        )
+        r4c1, r4c2, r4c3, _r4c4 = st.columns(4)
+        with r4c1:
+            transit_line_sel = st.selectbox(
+                "Subway line", options=["Any"] + list_available_lines(),
+                key=f"{_SF_PREFIX}filter_transitline",
+            )
+        with r4c2:
+            avenue_sel = st.selectbox(
+                "Major avenue", options=["Any"] + list_available_avenues(),
+                key=f"{_SF_PREFIX}filter_avenue",
+            )
+        with r4c3:
+            corridor_buffer = st.select_slider(
+                "Buffer (miles)", options=[0.25, 0.5, 1.0], value=0.5,
+                key=f"{_SF_PREFIX}filter_transitbuffer",
+            )
+
         filtered = []
         for p in properties:
             if street_query and street_query.strip().lower() not in (p.get("address", "") or "").lower():
@@ -708,17 +759,19 @@ def _render_filter_panel(properties: list[dict]) -> list[dict]:
                     continue
             if tag_sel and not (set(p.get("tags", [])) & set(tag_sel)):
                 continue
+            if transit_line_sel != "Any" and not is_near_line(
+                p.get("latitude"), p.get("longitude"), transit_line_sel, corridor_buffer
+            ):
+                continue
+            if avenue_sel != "Any" and not is_near_avenue(
+                p.get("latitude"), p.get("longitude"), avenue_sel, corridor_buffer
+            ):
+                continue
             filtered.append(p)
 
         st.caption(f"Showing {len(filtered):,} of {len(properties):,} results")
 
     return filtered
-
-
-_DEAL_SCORE_WEIGHT_COMPONENTS = [
-    "Unused FAR", "Distress Signals", "Location Demand",
-    "Zoning Flexibility", "Listing Activity",
-]
 
 
 def _render_weight_adjuster(properties: list[dict]) -> list[dict]:

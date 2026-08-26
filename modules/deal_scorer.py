@@ -420,3 +420,63 @@ def recompute_display_score(
         tier = "Pass"
 
     return {"score": total, "tier": tier}
+
+
+def apply_custom_weights(breakdown: dict, custom_weights: dict[str, float]) -> dict:
+    """
+    Rebuild a FULL Deal Score dict (score, tier, AND a rebuilt breakdown)
+    from an existing compute_deal_score() breakdown, using caller-supplied
+    weights — point caps out of 100 (e.g. {"Unused FAR": 40, ...}), NOT
+    the 0.5-2.0 multipliers recompute_display_score() takes for its
+    display-only, post-search "this view only" adjuster.
+
+    Meant to produce a full REPLACEMENT for a property's "deal_score" when
+    a user opts into custom weights at SEARCH time (site_finder_ui.py's
+    "Customize Deal Score Weights" panel) — unlike recompute_display_score()
+    (deliberately display-only, returns no breakdown, never meant to
+    become the canonical score), this function's result is designed to be
+    assigned directly to prop["deal_score"], since every downstream
+    consumer (results table, map marker color, CSV/Excel/PDF/PPTX export,
+    Save to Portfolio, AI diligence context) reads that field
+    unconditionally as THE score.
+
+    For each component, its original earned FRACTION (score/max) is kept,
+    but recombined against the new max: new_score = (score/max) * new_max.
+    Using the engine's own default maxes (30/25/20/15/10) as
+    `custom_weights` reproduces the exact original score — the load-
+    bearing "no-op when using the standard weighting" invariant.
+
+    Args:
+        breakdown:       A compute_deal_score() result's "breakdown" dict
+                          (component -> {score, max, reasoning}). Not mutated.
+        custom_weights:  dict of component name -> new point cap. A
+                          component's max defaults to its ORIGINAL max if
+                          missing from this dict (never silently dropped).
+
+    Returns dict:
+        score     : int 0-100
+        tier      : "Strong Lead" | "Watch" | "Pass" (same thresholds as
+                    compute_deal_score())
+        breakdown : dict of component -> {score, max, reasoning} rebuilt
+                    against the new custom maxes
+    """
+    new_breakdown = {}
+    total = 0
+    for component, detail in breakdown.items():
+        old_score, old_max = detail.get("score", 0), detail.get("max", 0) or 1
+        new_max = custom_weights.get(component, old_max)
+        new_score = int(round((old_score / old_max) * new_max))
+        new_breakdown[component] = {
+            "score": new_score, "max": new_max, "reasoning": detail.get("reasoning", ""),
+        }
+        total += new_score
+
+    total = max(0, min(100, total))
+    if total >= 70:
+        tier = "Strong Lead"
+    elif total >= 40:
+        tier = "Watch"
+    else:
+        tier = "Pass"
+
+    return {"score": total, "tier": tier, "breakdown": new_breakdown}

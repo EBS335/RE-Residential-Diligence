@@ -7,6 +7,7 @@ from modules.deal_scorer import (
     compute_seller_propensity,
     compute_bulk_seller_propensity,
     recompute_display_score,
+    apply_custom_weights,
 )
 
 
@@ -272,3 +273,88 @@ def test_recompute_display_score_returns_shape():
     result = recompute_display_score(original["breakdown"])
     assert set(result.keys()) == {"score", "tier"}
     assert result["tier"] in ("Strong Lead", "Watch", "Pass")
+
+
+# ── Search-time custom weighting (apply_custom_weights) ──────────────────────
+
+_ENGINE_DEFAULT_WEIGHTS = {
+    "Unused FAR": 30, "Distress Signals": 25, "Location Demand": 20,
+    "Zoning Flexibility": 15, "Listing Activity": 10,
+}
+
+
+def test_apply_custom_weights_default_maxes_reproduce_original_score():
+    # The load-bearing no-op invariant: using the engine's own default
+    # maxes as "custom" weights must reproduce the exact original score.
+    for kwargs in (
+        dict(unused_far_pct=40.0, distress_level=1, neighborhood_rent_premium=5.0,
+             zoning_dist="R6", listings_nearby=3),
+        dict(unused_far_pct=90.0, distress_level=2, neighborhood_rent_premium=25.0,
+             zoning_dist="C6-2", listings_nearby=0, has_overlay=True),
+        dict(unused_far_pct=0.0, distress_level=0, neighborhood_rent_premium=-10.0,
+             zoning_dist="", listings_nearby=10),
+    ):
+        original = compute_deal_score(**kwargs)
+        result = apply_custom_weights(original["breakdown"], _ENGINE_DEFAULT_WEIGHTS)
+        assert result["score"] == original["score"]
+        assert result["tier"] == original["tier"]
+
+
+def test_apply_custom_weights_returns_full_shape_including_breakdown():
+    original = compute_deal_score(unused_far_pct=50.0, distress_level=1, listings_nearby=2)
+    result = apply_custom_weights(original["breakdown"], _ENGINE_DEFAULT_WEIGHTS)
+    assert set(result.keys()) == {"score", "tier", "breakdown"}
+    assert set(result["breakdown"].keys()) == set(original["breakdown"].keys())
+    for component, detail in result["breakdown"].items():
+        assert set(detail.keys()) == {"score", "max", "reasoning"}
+
+
+def test_apply_custom_weights_rebuilds_breakdown_maxes_to_custom_values():
+    original = compute_deal_score(unused_far_pct=50.0, distress_level=1)
+    custom = {"Unused FAR": 60, "Distress Signals": 10, "Location Demand": 10,
+              "Zoning Flexibility": 10, "Listing Activity": 10}
+    result = apply_custom_weights(original["breakdown"], custom)
+    for component, new_max in custom.items():
+        assert result["breakdown"][component]["max"] == new_max
+
+
+def test_apply_custom_weights_shifts_score_toward_boosted_component():
+    # An all-FAR-weight allocation should score close to the property's
+    # Unused FAR fraction alone, regardless of its other components.
+    original = compute_deal_score(unused_far_pct=100.0, distress_level=0, listings_nearby=0)
+    all_far_weight = {"Unused FAR": 100, "Distress Signals": 0, "Location Demand": 0,
+                       "Zoning Flexibility": 0, "Listing Activity": 0}
+    result = apply_custom_weights(original["breakdown"], all_far_weight)
+    # Unused FAR component earned its full 30/30 at unused_far_pct=100 —
+    # reweighted to 100 points, the total should be at (or very near) 100.
+    assert result["score"] >= 95
+
+
+def test_apply_custom_weights_never_mutates_input_breakdown():
+    original = compute_deal_score(unused_far_pct=60.0, distress_level=2, listings_nearby=4)
+    breakdown_before = copy.deepcopy(original["breakdown"])
+    apply_custom_weights(original["breakdown"], {"Unused FAR": 50, "Distress Signals": 50})
+    assert original["breakdown"] == breakdown_before
+
+
+def test_apply_custom_weights_bounded_0_100():
+    original = compute_deal_score(unused_far_pct=80.0, distress_level=2, listings_nearby=10)
+    result = apply_custom_weights(original["breakdown"], {c: 100 for c in original["breakdown"]})
+    assert 0 <= result["score"] <= 100
+
+
+def test_apply_custom_weights_missing_component_falls_back_to_original_max():
+    original = compute_deal_score(unused_far_pct=50.0, distress_level=1, listings_nearby=1)
+    # Only re-weight one component — the rest should keep their original max.
+    result = apply_custom_weights(original["breakdown"], {"Unused FAR": 50})
+    assert result["breakdown"]["Unused FAR"]["max"] == 50
+    assert result["breakdown"]["Distress Signals"]["max"] == original["breakdown"]["Distress Signals"]["max"]
+
+
+def test_apply_custom_weights_tier_thresholds_match_convention():
+    breakdown = {"Unused FAR": {"score": 30, "max": 30, "reasoning": ""}}
+    assert apply_custom_weights(breakdown, {"Unused FAR": 100})["tier"] == "Strong Lead"
+    breakdown_mid = {"Unused FAR": {"score": 15, "max": 30, "reasoning": ""}}
+    assert apply_custom_weights(breakdown_mid, {"Unused FAR": 100})["tier"] == "Watch"
+    breakdown_low = {"Unused FAR": {"score": 3, "max": 30, "reasoning": ""}}
+    assert apply_custom_weights(breakdown_low, {"Unused FAR": 100})["tier"] == "Pass"
