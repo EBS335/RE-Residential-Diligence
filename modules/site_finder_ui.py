@@ -45,7 +45,9 @@ from modules.portfolio_db import (
     create_collection, list_collections, add_to_collection,
     save_column_preset, list_column_presets,
 )
-from modules.criteria_presets import THESIS_PRESETS
+from modules.criteria_presets import (
+    STRATEGY_OPTIONS, neighborhoods_for_boroughs, build_criteria_from_selections,
+)
 from modules.site_finder_agents import (
     run_all_agents, has_anthropic_key, AGENT_ORDER,
 )
@@ -108,7 +110,7 @@ def _render_criteria_form() -> dict | None:
             with p2:
                 strategies = st.multiselect(
                     "Development strategy",
-                    options=[STRATEGY_VACANT, STRATEGY_DEMOLITION, STRATEGY_CONVERSION],
+                    options=STRATEGY_OPTIONS,
                     default=[], key=f"{_SF_PREFIX}strategies",
                     help="Filter results to properties matching these sourcing heuristics. Leave blank for all.",
                 )
@@ -1970,14 +1972,44 @@ def render_site_finder(anthropic_key: str = "") -> None:
                             st.session_state[f"{_SF_PREFIX}last_criteria"] = None
                             st.rerun()
 
-    with st.expander("🧭 Start from a Thesis Preset (optional)", expanded=False):
-        st.caption("One-click starting points for common strategies — loads criteria into the form below.")
-        _preset_cols = st.columns(len(THESIS_PRESETS))
-        for _col, (_name, _preset) in zip(_preset_cols, THESIS_PRESETS.items()):
-            with _col:
-                if st.button(_name, key=f"{_SF_PREFIX}thesis_{_name}", use_container_width=True):
-                    load_saved_criteria_into_widgets(_preset)
-                    st.rerun()
+    with st.expander("🧭 Build a Search (optional)", expanded=False):
+        st.caption(
+            "Combine any of these — pick as many or as few as you like, "
+            "then apply to pre-fill the form below, ready to search."
+        )
+        bcol, ncol = st.columns(2)
+        with bcol:
+            _thesis_boroughs = st.multiselect(
+                "Borough", options=list(BOROUGH_CODES.keys()), key=f"{_SF_PREFIX}thesis_boroughs",
+            )
+        with ncol:
+            _neighborhood_options = neighborhoods_for_boroughs(_thesis_boroughs)
+            _thesis_neighborhoods = st.multiselect(
+                "Neighborhood", options=_neighborhood_options, key=f"{_SF_PREFIX}thesis_neighborhoods",
+            )
+        scol, pcol = st.columns(2)
+        with scol:
+            _thesis_strategies = st.multiselect(
+                "Strategy", options=STRATEGY_OPTIONS, key=f"{_SF_PREFIX}thesis_strategies",
+            )
+        with pcol:
+            _thesis_ptypes = st.multiselect(
+                "Property Type", options=list(PROPERTY_TYPE_LANDUSE.keys()), key=f"{_SF_PREFIX}thesis_ptypes",
+            )
+        _thesis_risk = st.select_slider(
+            "Risk Tolerance", options=["(unset)", "Low", "Moderate", "High"], value="(unset)",
+            key=f"{_SF_PREFIX}thesis_risk",
+        )
+        if st.button("✅ Apply to Search Form", key=f"{_SF_PREFIX}thesis_apply", use_container_width=True):
+            combined = build_criteria_from_selections(
+                boroughs=_thesis_boroughs,
+                neighborhoods=_thesis_neighborhoods,
+                strategies=_thesis_strategies,
+                property_types=_thesis_ptypes,
+                risk=_thesis_risk if _thesis_risk != "(unset)" else None,
+            )
+            load_saved_criteria_into_widgets(combined)
+            st.rerun()
 
     criteria = _render_criteria_form()
 
