@@ -129,6 +129,52 @@ def test_landmark_label_pure_unit():
     assert _landmark_label({}) == "—"
 
 
+# ── Batch F: tags column + bulk actions ─────────────────────────────────
+
+def test_tags_column_appears_and_is_populated(monkeypatch):
+    """The "Tags" column is joined onto the results table via
+    list_tags_bulk() (patched here to a fixed per-bbl mapping, so this
+    stays a pure UI test with no real DB touched)."""
+    from modules import site_finder_ui
+
+    results = _synthetic_results(2)
+    tagged_bbl = results[0]["bbl"]
+
+    def _fake_list_tags_bulk(bbls, conn=None):
+        return {tagged_bbl: ["Hot", "Watch"]} if tagged_bbl in bbls else {}
+
+    monkeypatch.setattr(site_finder_ui, "list_tags_bulk", _fake_list_tags_bulk)
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+
+    assert not at.exception
+    dataframes = [el.value for el in at.dataframe]
+    results_df = max(dataframes, key=lambda df: len(df))
+    assert "Tags" in results_df.columns
+    assert results_df["Tags"].iloc[0] == "Hot, Watch"
+    assert results_df["Tags"].iloc[1] == "—"
+
+
+def test_bulk_actions_expander_renders_without_exception():
+    results = _synthetic_results(3)
+
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+
+    assert not at.exception
+    button_labels = [b.label for b in at.button]
+    assert "☆ Add all to Portfolio" in button_labels
+    assert "⬇️ Export selected (Excel)" in button_labels
+    assert "🏷️ Tag selected" in button_labels
+
+
 def test_rent_stab_label_pure_unit():
     assert _rent_stab_label({}) == "—"
     assert _rent_stab_label(None) == "—"

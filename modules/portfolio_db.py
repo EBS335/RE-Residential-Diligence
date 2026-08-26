@@ -34,6 +34,7 @@ DB_PATH = os.path.join(DB_DIR, "portfolio.db")
 
 STATUSES = ["Watching", "Under Diligence", "Offer Out", "Under Contract", "Passed", "Closed"]
 OUTREACH_STATUSES = ["Not Contacted", "Contacted", "Responded", "Passed"]
+TAG_OPTIONS = ["Hot", "Watch", "Pass"]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS portfolio (
@@ -78,6 +79,26 @@ CREATE TABLE IF NOT EXISTS outreach (
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tags (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    bbl        TEXT NOT NULL,
+    tag        TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(bbl, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_tags_bbl ON tags(bbl);
+
+CREATE TABLE IF NOT EXISTS collections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+    description TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS collection_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, collection_id INTEGER NOT NULL,
+    bbl TEXT NOT NULL, address TEXT, property_json TEXT NOT NULL, added_at TEXT NOT NULL,
+    UNIQUE(collection_id, bbl)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_items_cid ON collection_items(collection_id);
 """
 
 # Starter checklist seeded for a BBL the first time its tracker is opened —
@@ -500,6 +521,190 @@ def list_outreach(conn: sqlite3.Connection | None = None) -> list[dict]:
     try:
         rows = c.execute("SELECT * FROM outreach ORDER BY updated_at DESC").fetchall()
         return [dict(r) for r in rows]
+    finally:
+        if should_close:
+            c.close()
+
+
+# ── Tags/Labels CRUD ────────────────────────────────────────────────────
+
+def add_tag(bbl: str, tag: str, conn: sqlite3.Connection | None = None) -> bool:
+    """Attach `tag` to `bbl`. Idempotent — re-adding an already-present tag
+    is a harmless no-op thanks to the UNIQUE(bbl, tag) constraint + INSERT
+    OR IGNORE. Returns True only if a new row was actually inserted."""
+    c, should_close = _with_conn(conn)
+    try:
+        cur = c.execute(
+            "INSERT OR IGNORE INTO tags (bbl, tag, created_at) VALUES (?, ?, ?)",
+            (str(bbl), tag, _now()),
+        )
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if should_close:
+            c.close()
+
+
+def remove_tag(bbl: str, tag: str, conn: sqlite3.Connection | None = None) -> bool:
+    c, should_close = _with_conn(conn)
+    try:
+        cur = c.execute("DELETE FROM tags WHERE bbl = ? AND tag = ?", (str(bbl), tag))
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if should_close:
+            c.close()
+
+
+def list_tags(bbl: str, conn: sqlite3.Connection | None = None) -> list[str]:
+    c, should_close = _with_conn(conn)
+    try:
+        rows = c.execute(
+            "SELECT tag FROM tags WHERE bbl = ? ORDER BY tag", (str(bbl),)
+        ).fetchall()
+        return [r["tag"] for r in rows]
+    finally:
+        if should_close:
+            c.close()
+
+
+def list_tags_bulk(bbls: list[str], conn: sqlite3.Connection | None = None) -> dict[str, list[str]]:
+    """Same shape as calling list_tags() per bbl, but a single `bbl IN (...)`
+    query instead of N+1 — used when joining tags onto a whole results
+    table at once. An empty `bbls` list returns {} without querying."""
+    if not bbls:
+        return {}
+    c, should_close = _with_conn(conn)
+    try:
+        placeholders = ", ".join("?" for _ in bbls)
+        rows = c.execute(
+            f"SELECT bbl, tag FROM tags WHERE bbl IN ({placeholders}) ORDER BY tag",
+            [str(b) for b in bbls],
+        ).fetchall()
+        out: dict[str, list[str]] = {}
+        for r in rows:
+            out.setdefault(r["bbl"], []).append(r["tag"])
+        return out
+    finally:
+        if should_close:
+            c.close()
+
+
+# ── Named Site Collections CRUD ─────────────────────────────────────────
+
+def create_collection(name: str, description: str = "",
+                       conn: sqlite3.Connection | None = None) -> int:
+    c, should_close = _with_conn(conn)
+    try:
+        now = _now()
+        cur = c.execute(
+            "INSERT INTO collections (name, description, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (name, description, now, now),
+        )
+        c.commit()
+        return cur.lastrowid
+    finally:
+        if should_close:
+            c.close()
+
+
+def list_collections(conn: sqlite3.Connection | None = None) -> list[dict]:
+    """Every collection plus an `item_count` — one JOIN+GROUP BY query
+    rather than N+1 per-collection COUNT queries."""
+    c, should_close = _with_conn(conn)
+    try:
+        rows = c.execute(
+            """
+            SELECT c.*, COUNT(ci.id) AS item_count
+            FROM collections c
+            LEFT JOIN collection_items ci ON ci.collection_id = c.id
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if should_close:
+            c.close()
+
+
+def add_to_collection(collection_id: int, prop: dict,
+                       conn: sqlite3.Connection | None = None) -> bool:
+    """Upsert a property into a collection, keyed by (collection_id, bbl) —
+    mirrors save_property()'s upsert pattern. Returns True (the row always
+    exists after this call; INSERT vs UPDATE isn't distinguished, same
+    spirit as save_property() not distinguishing new-vs-refreshed either)."""
+    bbl = str(prop.get("bbl") or "").strip()
+    if not bbl:
+        raise ValueError("add_to_collection: prop['bbl'] is required and cannot be empty")
+    c, should_close = _with_conn(conn)
+    try:
+        now = _now()
+        c.execute(
+            """
+            INSERT INTO collection_items (collection_id, bbl, address, property_json, added_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(collection_id, bbl) DO UPDATE SET
+                address       = excluded.address,
+                property_json = excluded.property_json
+            """,
+            (collection_id, bbl, prop.get("address", ""), json.dumps(dict(prop)), now),
+        )
+        c.execute("UPDATE collections SET updated_at = ? WHERE id = ?", (now, collection_id))
+        c.commit()
+        return True
+    finally:
+        if should_close:
+            c.close()
+
+
+def remove_from_collection(collection_id: int, bbl: str,
+                            conn: sqlite3.Connection | None = None) -> bool:
+    c, should_close = _with_conn(conn)
+    try:
+        cur = c.execute(
+            "DELETE FROM collection_items WHERE collection_id = ? AND bbl = ?",
+            (collection_id, str(bbl)),
+        )
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if should_close:
+            c.close()
+
+
+def list_collection_items(collection_id: int, conn: sqlite3.Connection | None = None) -> list[dict]:
+    c, should_close = _with_conn(conn)
+    try:
+        rows = c.execute(
+            "SELECT * FROM collection_items WHERE collection_id = ? ORDER BY added_at DESC",
+            (collection_id,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["property"] = json.loads(d.pop("property_json"))
+            except Exception:
+                d["property"] = {}
+                d.pop("property_json", None)
+            out.append(d)
+        return out
+    finally:
+        if should_close:
+            c.close()
+
+
+def delete_collection(collection_id: int, conn: sqlite3.Connection | None = None) -> bool:
+    """Explicit two-step delete — this file never turns on `PRAGMA
+    foreign_keys`, so collection_items rows for this collection would
+    otherwise be silently orphaned rather than cascade-deleted."""
+    c, should_close = _with_conn(conn)
+    try:
+        c.execute("DELETE FROM collection_items WHERE collection_id = ?", (collection_id,))
+        cur = c.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+        c.commit()
+        return cur.rowcount > 0
     finally:
         if should_close:
             c.close()

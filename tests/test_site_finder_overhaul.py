@@ -126,6 +126,28 @@ def test_filter_strategy_narrows_results():
     assert len(df) == 1
 
 
+def test_filter_tag_narrows_results(monkeypatch):
+    """Feature 9 — Tags/Labels: the new Tags multiselect filter narrows the
+    table to rows carrying at least one of the chosen tags. Tags are joined
+    onto each row via list_tags_bulk() (a portfolio_db.py bulk query),
+    patched here to a fixed per-bbl mapping so this stays a pure UI test
+    with no real DB touched."""
+    from modules import site_finder_ui
+
+    results = flag_assemblage_candidates([_prop(0), _prop(1)])
+    tagged_bbl = results[0]["bbl"]
+
+    def _fake_list_tags_bulk(bbls, conn=None):
+        return {tagged_bbl: ["Hot"]} if tagged_bbl in bbls else {}
+
+    monkeypatch.setattr(site_finder_ui, "list_tags_bulk", _fake_list_tags_bulk)
+
+    at = _run_with_results(results, {"_sf_filter_tags": ["Hot"]})
+    df = _results_df(at)
+    assert len(df) == 1
+    assert df["Tags"].iloc[0] == "Hot"
+
+
 def test_no_filters_shows_all_results():
     results = flag_assemblage_candidates([_prop(0), _prop(1), _prop(2)])
     at = _run_with_results(results)

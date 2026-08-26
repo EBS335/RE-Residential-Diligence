@@ -231,3 +231,127 @@ def test_list_outreach_returns_all_rows(conn):
     rows = pdb.list_outreach(conn=conn)
     assert len(rows) == 2
     assert {r["bbl"] for r in rows} == {"6006", "6007"}
+
+
+# ── Tags/Labels ─────────────────────────────────────────────────────────
+
+def test_add_tag_inserts_and_reports_true(conn):
+    assert pdb.add_tag("7001", "Hot", conn=conn) is True
+    assert pdb.list_tags("7001", conn=conn) == ["Hot"]
+
+
+def test_add_tag_idempotent_re_add_via_unique_constraint(conn):
+    assert pdb.add_tag("7001", "Hot", conn=conn) is True
+    # Re-adding the same (bbl, tag) pair is a harmless no-op — UNIQUE
+    # constraint + INSERT OR IGNORE — and reports False (nothing inserted).
+    assert pdb.add_tag("7001", "Hot", conn=conn) is False
+    assert pdb.list_tags("7001", conn=conn) == ["Hot"]
+
+
+def test_remove_tag(conn):
+    pdb.add_tag("7002", "Watch", conn=conn)
+    assert pdb.remove_tag("7002", "Watch", conn=conn) is True
+    assert pdb.list_tags("7002", conn=conn) == []
+    assert pdb.remove_tag("7002", "Watch", conn=conn) is False  # already gone
+
+
+def test_list_tags_scoped_by_bbl(conn):
+    pdb.add_tag("7003", "Hot", conn=conn)
+    pdb.add_tag("7003", "Pass", conn=conn)
+    pdb.add_tag("7004", "Watch", conn=conn)
+    assert sorted(pdb.list_tags("7003", conn=conn)) == ["Hot", "Pass"]
+    assert pdb.list_tags("7004", conn=conn) == ["Watch"]
+
+
+def test_list_tags_bulk_groups_correctly(conn):
+    pdb.add_tag("7005", "Hot", conn=conn)
+    pdb.add_tag("7005", "Watch", conn=conn)
+    pdb.add_tag("7006", "Pass", conn=conn)
+    result = pdb.list_tags_bulk(["7005", "7006", "7999"], conn=conn)
+    assert sorted(result["7005"]) == ["Hot", "Watch"]
+    assert result["7006"] == ["Pass"]
+    assert "7999" not in result  # no tags -> not present in the dict at all
+
+
+def test_list_tags_bulk_empty_list_returns_empty_dict_no_query(conn):
+    # Passing an empty list must short-circuit before touching the DB —
+    # verified by monkeypatching conn.execute to raise if it's ever called.
+    class _ExplodingConn:
+        def execute(self, *a, **kw):
+            raise AssertionError("list_tags_bulk([]) must not query the DB")
+
+    assert pdb.list_tags_bulk([], conn=_ExplodingConn()) == {}
+
+
+# ── Named Site Collections ─────────────────────────────────────────────
+
+def test_create_collection_returns_int_id(conn):
+    cid = pdb.create_collection("Q3 Brooklyn Shortlist", "A few good corner lots", conn=conn)
+    assert isinstance(cid, int)
+
+
+def test_list_collections_includes_item_count(conn):
+    cid = pdb.create_collection("Test Collection", conn=conn)
+    assert pdb.list_collections(conn=conn)[0]["item_count"] == 0
+
+    pdb.add_to_collection(cid, {"bbl": "8001", "address": "1 Test St"}, conn=conn)
+    pdb.add_to_collection(cid, {"bbl": "8002", "address": "2 Test St"}, conn=conn)
+    collections = pdb.list_collections(conn=conn)
+    assert len(collections) == 1
+    assert collections[0]["item_count"] == 2
+    assert collections[0]["name"] == "Test Collection"
+
+
+def test_add_to_collection_requires_bbl(conn):
+    cid = pdb.create_collection("Test Collection", conn=conn)
+    with pytest.raises(ValueError):
+        pdb.add_to_collection(cid, {"address": "no bbl here"}, conn=conn)
+
+
+def test_add_to_collection_upsert_semantics(conn):
+    cid = pdb.create_collection("Test Collection", conn=conn)
+    pdb.add_to_collection(cid, {"bbl": "8003", "address": "Old Address", "lot_sf": 1000.0}, conn=conn)
+    pdb.add_to_collection(cid, {"bbl": "8003", "address": "New Address", "lot_sf": 2000.0}, conn=conn)
+
+    items = pdb.list_collection_items(cid, conn=conn)
+    assert len(items) == 1  # upsert, not a duplicate row
+    assert items[0]["address"] == "New Address"
+    assert items[0]["property"]["lot_sf"] == 2000.0
+
+
+def test_remove_from_collection(conn):
+    cid = pdb.create_collection("Test Collection", conn=conn)
+    pdb.add_to_collection(cid, {"bbl": "8004", "address": "A"}, conn=conn)
+    assert pdb.remove_from_collection(cid, "8004", conn=conn) is True
+    assert pdb.list_collection_items(cid, conn=conn) == []
+    assert pdb.remove_from_collection(cid, "8004", conn=conn) is False  # already gone
+
+
+def test_list_collection_items_round_trips_property_json(conn):
+    cid = pdb.create_collection("Test Collection", conn=conn)
+    prop = {"bbl": "8005", "address": "A", "lot_sf": 5000.0, "far_max": 3.44}
+    pdb.add_to_collection(cid, prop, conn=conn)
+    items = pdb.list_collection_items(cid, conn=conn)
+    assert items[0]["property"]["lot_sf"] == 5000.0
+    assert items[0]["property"]["far_max"] == 3.44
+    assert items[0]["bbl"] == "8005"
+
+
+def test_delete_collection_cascades_to_items(conn):
+    cid = pdb.create_collection("Test Collection", conn=conn)
+    pdb.add_to_collection(cid, {"bbl": "8006", "address": "A"}, conn=conn)
+    pdb.add_to_collection(cid, {"bbl": "8007", "address": "B"}, conn=conn)
+
+    assert pdb.delete_collection(cid, conn=conn) is True
+    assert pdb.list_collections(conn=conn) == []
+    # The items are actually gone, not orphaned — verified directly against
+    # the table, since list_collection_items(cid) alone can't distinguish
+    # "collection deleted" from "collection exists but is empty".
+    remaining = conn.execute(
+        "SELECT COUNT(*) AS n FROM collection_items WHERE collection_id = ?", (cid,)
+    ).fetchone()
+    assert remaining["n"] == 0
+
+
+def test_delete_collection_missing_returns_false(conn):
+    assert pdb.delete_collection(9999, conn=conn) is False

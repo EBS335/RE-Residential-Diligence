@@ -36,6 +36,10 @@ from modules.portfolio_db import (
     diligence_progress,
     list_outreach,
     upsert_outreach,
+    list_collections,
+    list_collection_items,
+    remove_from_collection,
+    delete_collection,
 )
 
 _MAX_COMPARE = 4
@@ -103,6 +107,46 @@ def _render_pipeline_table() -> None:
             remove_property(bbl)
             st.success("Removed.")
             st.rerun()
+
+
+def _render_kanban_board(rows: list[dict]) -> None:
+    """
+    Feature 11 — Kanban Pipeline Board. Reuses portfolio.status/STATUSES as
+    the stage field (zero schema change) — one column per STATUSES entry,
+    each holding a card per property in that status. ◀/▶ move a property
+    to the adjacent status via the EXISTING update_status(bbl, status=...).
+    A wholly separate, sibling render path — _render_pipeline_table() is
+    never called from here and stays completely unmodified.
+    """
+    if not rows:
+        st.info(
+            "Nothing saved yet. Use “☆ Save to Portfolio” in the 🔍 Site Finder results "
+            "table or the 🏢 Property Analysis tab to start building a shortlist."
+        )
+        return
+
+    by_status: dict[str, list[dict]] = {s: [] for s in STATUSES}
+    for r in rows:
+        by_status.setdefault(r.get("status") or "Watching", []).append(r)
+
+    cols = st.columns(len(STATUSES))
+    for idx, (col, status) in enumerate(zip(cols, STATUSES)):
+        with col:
+            st.markdown(f"**{status}** ({len(by_status.get(status, []))})")
+            for r in by_status.get(status, []):
+                with st.container(border=True):
+                    st.markdown(f"**{r['address']}**")
+                    if r.get("deal_score") is not None:
+                        st.caption(f"Deal Score: {r['deal_score']:.0f}")
+                    bprev, bnext = st.columns(2)
+                    with bprev:
+                        if st.button("◀", key=f"_portfolio_kanban_prev_{r['bbl']}", disabled=idx == 0):
+                            update_status(r["bbl"], status=STATUSES[idx - 1])
+                            st.rerun()
+                    with bnext:
+                        if st.button("▶", key=f"_portfolio_kanban_next_{r['bbl']}", disabled=idx == len(STATUSES) - 1):
+                            update_status(r["bbl"], status=STATUSES[idx + 1])
+                            st.rerun()
 
 
 def _render_comparison(rows: list[dict]) -> None:
@@ -333,6 +377,55 @@ def _render_outreach_summary() -> None:
         st.rerun()
 
 
+def _render_collections() -> None:
+    st.markdown("### 📚 Site Collections")
+    st.caption(
+        "Named, curated lists of properties — distinct from the Pipeline above "
+        "(one flat list keyed by status) and from Saved Searches (which persist "
+        "criteria, not properties). Add properties to a collection from the "
+        "🔍 Site Finder results table."
+    )
+    collections = list_collections()
+    if not collections:
+        st.info(
+            "No collections yet. Use “📚 Add to Collection” in the 🔍 Site Finder "
+            "results table to start one."
+        )
+        return
+
+    coll_labels = [f"{c['id']}. {c['name']} ({c['item_count']})" for c in collections]
+    coll_choice = st.selectbox("Collection", options=coll_labels, key="_portfolio_collection_choice")
+    coll_id = int(coll_choice.split(".", 1)[0])
+    coll = next(c for c in collections if c["id"] == coll_id)
+    if coll.get("description"):
+        st.caption(coll["description"])
+
+    items = list_collection_items(coll_id)
+    if not items:
+        st.info("This collection is empty.")
+    else:
+        df = pd.DataFrame([
+            {
+                "BBL":     it["bbl"],
+                "Address": it.get("address") or it["property"].get("address", ""),
+                "Added":   (it.get("added_at") or "")[:10],
+            }
+            for it in items
+        ])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        rm_options = ["— Select —"] + [f"{it['bbl']} — {it.get('address') or ''}" for it in items]
+        rm_choice = st.selectbox("Remove item", options=rm_options, key=f"_portfolio_coll_rm_{coll_id}")
+        if rm_choice != rm_options[0] and st.button("Remove from Collection", key=f"_portfolio_coll_rmbtn_{coll_id}"):
+            remove_from_collection(coll_id, rm_choice.split(" — ")[0])
+            st.rerun()
+
+    if st.button("🗑️ Delete this collection", key=f"_portfolio_coll_del_{coll_id}"):
+        delete_collection(coll_id)
+        st.success("Collection deleted.")
+        st.rerun()
+
+
 def _render_proposal_comparer() -> None:
     st.markdown("### 📑 Consultant Proposal Comparer")
     st.caption(
@@ -390,11 +483,17 @@ def render_portfolio() -> None:
         "local database, unlike the rest of the app, which resets when your session ends."
     )
 
-    _render_pipeline_table()
+    view_mode = st.radio("View", ["📋 Table", "🗂️ Kanban"], horizontal=True, key="_portfolio_view_mode")
+    if view_mode == "🗂️ Kanban":
+        _render_kanban_board(list_portfolio())
+    else:
+        _render_pipeline_table()
     st.markdown("---")
     _render_diligence_tracker(list_portfolio())
     st.markdown("---")
     _render_outreach_summary()
+    st.markdown("---")
+    _render_collections()
     st.markdown("---")
     _render_proposal_comparer()
     st.markdown("---")

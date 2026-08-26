@@ -38,7 +38,11 @@ from modules.underwriting_engine import (
     DEFAULT_PREFERRED_RETURN_PCT, DEFAULT_PROMOTE_TIERS, DEFAULT_GP_CO_INVEST_PCT,
 )
 from modules.report_exporter import build_excel_workbook, build_pdf_report, build_pptx_report, build_owner_teaser_pdf
-from modules.portfolio_db import get_outreach, upsert_outreach, OUTREACH_STATUSES
+from modules.portfolio_db import (
+    get_outreach, upsert_outreach, OUTREACH_STATUSES,
+    list_tags, list_tags_bulk, add_tag, remove_tag, TAG_OPTIONS,
+    create_collection, list_collections, add_to_collection,
+)
 from modules.site_finder_agents import (
     run_all_agents, has_anthropic_key, AGENT_ORDER,
 )
@@ -600,11 +604,15 @@ def _render_filter_panel(properties: list[dict]) -> list[dict]:
                 key=f"{_SF_PREFIX}filter_rentstab",
             )
 
-        r3c1, _r3c2, _r3c3, _r3c4 = st.columns(4)
+        r3c1, r3c2, _r3c3, _r3c4 = st.columns(4)
         with r3c1:
             landmark_sel = st.selectbox(
                 "Landmark Status", options=["Any", "Landmarked", "Historic District", "Either", "Neither"],
                 key=f"{_SF_PREFIX}filter_landmark",
+            )
+        with r3c2:
+            tag_sel = st.multiselect(
+                "Tags", options=TAG_OPTIONS, key=f"{_SF_PREFIX}filter_tags",
             )
 
         filtered = []
@@ -645,6 +653,8 @@ def _render_filter_panel(properties: list[dict]) -> list[dict]:
                     continue
                 if landmark_sel == "Neither" and (is_landmark or is_hist_dist):
                     continue
+            if tag_sel and not (set(p.get("tags", [])) & set(tag_sel)):
+                continue
             filtered.append(p)
 
         st.caption(f"Showing {len(filtered):,} of {len(properties):,} results")
@@ -715,6 +725,74 @@ def _render_weight_adjuster(properties: list[dict]) -> list[dict]:
     return properties
 
 
+def _render_bulk_actions(results_full: list[dict]) -> None:
+    """
+    Feature 12 — Bulk Row Actions. A wholly separate, new control from the
+    single-row st.dataframe(selection_mode="single-row") block above —
+    that block is shared verbatim with app.py's underbuilt-lots table and
+    is deliberately left untouched. Uses st.data_editor + CheckboxColumn,
+    mirroring the bulk/editable-row idiom already used twice in
+    portfolio_ui.py (Pipeline table, Diligence Checklist).
+    """
+    if not results_full:
+        return
+
+    with st.expander("☑️ Bulk Actions", expanded=False):
+        bulk_df = pd.DataFrame([
+            {
+                "Select":     False,
+                "Address":    p.get("address", ""),
+                "BBL":        p.get("bbl", ""),
+                "Deal Score": p.get("deal_score", {}).get("score", "—"),
+            }
+            for p in results_full
+        ])
+        edited = st.data_editor(
+            bulk_df, use_container_width=True, hide_index=True, key=f"{_SF_PREFIX}bulk_editor",
+            column_config={
+                "Select":     st.column_config.CheckboxColumn(),
+                "Address":    st.column_config.TextColumn(disabled=True),
+                "BBL":        st.column_config.TextColumn(disabled=True),
+                "Deal Score": st.column_config.NumberColumn(disabled=True, format="%.0f"),
+            },
+        )
+        selected_props = [results_full[i] for i, sel in enumerate(edited["Select"]) if sel]
+        st.caption(f"{len(selected_props):,} selected")
+
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            if st.button("☆ Add all to Portfolio", key=f"{_SF_PREFIX}bulk_save_btn",
+                         disabled=not selected_props, use_container_width=True):
+                from modules.portfolio_db import save_property
+                for p in selected_props:
+                    save_property(p, status="Watching")
+                st.success(f"Saved {len(selected_props)} propert{'y' if len(selected_props) == 1 else 'ies'} to Portfolio.")
+        with b2:
+            if st.button("⬇️ Export selected (Excel)", key=f"{_SF_PREFIX}bulk_export_btn",
+                         disabled=not selected_props, use_container_width=True):
+                try:
+                    st.session_state[f"{_SF_PREFIX}bulk_xlsx_bytes"] = build_excel_workbook(selected_props)
+                except ImportError as exc:
+                    st.error(str(exc))
+            if st.session_state.get(f"{_SF_PREFIX}bulk_xlsx_bytes"):
+                st.download_button(
+                    "Download selected (Excel)",
+                    data=st.session_state[f"{_SF_PREFIX}bulk_xlsx_bytes"],
+                    file_name="site_finder_selected.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key=f"{_SF_PREFIX}bulk_export_dl",
+                )
+        with b3:
+            bulk_tags = st.multiselect("Tags to apply", options=TAG_OPTIONS, key=f"{_SF_PREFIX}bulk_tag_sel")
+            if st.button("🏷️ Tag selected", key=f"{_SF_PREFIX}bulk_tag_btn",
+                         disabled=not (selected_props and bulk_tags), use_container_width=True):
+                for p in selected_props:
+                    for t in bulk_tags:
+                        add_tag(p["bbl"], t)
+                st.success(f"Tagged {len(selected_props)} propert{'y' if len(selected_props) == 1 else 'ies'}.")
+
+
 def _render_results_table(properties: list[dict], criteria: dict | None = None) -> None:
     if not properties:
         st.info("No properties matched your criteria. Try widening the search (fewer filters, larger area).")
@@ -724,6 +802,11 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
     # handle large row counts natively; the upstream Socrata fetch already
     # caps at property_search._MAX_ROWS (3000) so this isn't unbounded.
     results_full = _apply_ownership_cache(properties)
+
+    # Join tags onto each property for this render pass only (Feature 9) —
+    # a single bulk query, not N+1, and never persisted onto `properties`.
+    tags_by_bbl = list_tags_bulk([p["bbl"] for p in results_full])
+    results_full = [{**p, "tags": tags_by_bbl.get(p["bbl"], [])} for p in results_full]
 
     # Client-side filter panel narrows what's displayed everywhere below
     # (summary cards, map, table, exports, row-selection) — it does NOT
@@ -805,6 +888,7 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
             row["Tax Lien"] = "⚠️ On DOF list" if p["tax_lien"].get("on_lien_list") else "—"
         row["Rent Stab."] = _rent_stab_label(p.get("rent_stab_signal", {}))
         row["Landmark"] = _landmark_label(p)
+        row["Tags"] = ", ".join(p.get("tags", [])) or "—"
         assemblage = p.get("assemblage_with") or []
         row["Assemblage"] = ("🔗 " + "; ".join(assemblage)) if assemblage else "—"
         row["Deal Score"] = ds["score"]
@@ -844,6 +928,8 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
             st.session_state[f"{_SF_PREFIX}selected_prop"] = _sel_prop
             st.rerun()
 
+    _render_bulk_actions(results_full)
+
     st.markdown("---")
     st.markdown("#### ☆ Save to Portfolio")
     options = ["— Select a property —"] + [
@@ -856,6 +942,39 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
             from modules.portfolio_db import save_property
             save_property(results_full[save_idx], status="Watching")
             st.success(f"Saved {results_full[save_idx]['address']} to Portfolio.")
+
+    st.markdown("---")
+    st.markdown("#### 📚 Add to Collection")
+    coll_options = ["— Select a property —"] + [
+        f"{i}. {p['address']} (BBL {p['bbl']})" for i, p in enumerate(results_full, start=1)
+    ]
+    coll_prop_choice = st.selectbox(
+        "Choose a result to add", options=coll_options, key=f"{_SF_PREFIX}coll_prop_choice",
+    )
+    existing_collections = list_collections()
+    coll_names = ["— Select an existing collection —"] + [
+        f"{c['id']}. {c['name']} ({c['item_count']})" for c in existing_collections
+    ]
+    cc1, cc2 = st.columns([2, 2])
+    with cc1:
+        coll_choice = st.selectbox("Existing collection", options=coll_names, key=f"{_SF_PREFIX}coll_choice")
+    with cc2:
+        new_coll_name = st.text_input(
+            "+ New collection", key=f"{_SF_PREFIX}coll_new_name", placeholder="e.g. Q3 Brooklyn Shortlist",
+        )
+    if coll_prop_choice != coll_options[0] and st.button("📚 Add to Collection", key=f"{_SF_PREFIX}coll_add_btn"):
+        coll_idx = coll_options.index(coll_prop_choice) - 1
+        target_id = None
+        if new_coll_name.strip():
+            target_id = create_collection(new_coll_name.strip())
+        elif coll_choice != coll_names[0]:
+            target_id = int(coll_choice.split(".", 1)[0])
+        if target_id is None:
+            st.error("Choose an existing collection or enter a name for a new one.")
+        else:
+            add_to_collection(target_id, results_full[coll_idx])
+            st.success(f"Added {results_full[coll_idx]['address']} to the collection.")
+            st.rerun()
 
     st.markdown("---")
     st.markdown("#### ⬇️ Export")
@@ -947,6 +1066,28 @@ def _render_deal_score_explainer(prop: dict) -> None:
             maxv = detail.get("max", 0) or 1
             st.progress(min(1.0, score / maxv), text=f"{component.upper()} — {score}/{detail.get('max', 0)}")
             st.caption(detail.get("reasoning", ""))
+
+
+def _render_tag_editor(prop: dict) -> None:
+    """
+    Feature 9 — "🏷️ Tag this property". A closed-vocabulary label control
+    (TAG_OPTIONS) backed by portfolio_db.py's new `tags` table. Diffs the
+    multiselect's current selection against the persisted set and calls
+    add_tag()/remove_tag() only for the delta, on save.
+    """
+    with st.expander("🏷️ Tag this property", expanded=False):
+        current_tags = list_tags(prop["bbl"])
+        chosen = st.multiselect(
+            "Tags", options=TAG_OPTIONS, default=current_tags,
+            key=f"{_SF_PREFIX}tag_select_{prop['bbl']}",
+        )
+        if st.button("💾 Save Tags", key=f"{_SF_PREFIX}tag_save_{prop['bbl']}"):
+            for t in set(chosen) - set(current_tags):
+                add_tag(prop["bbl"], t)
+            for t in set(current_tags) - set(chosen):
+                remove_tag(prop["bbl"], t)
+            st.success("Tags saved.")
+            st.rerun()
 
 
 def _render_outreach_tracker(prop: dict) -> None:
@@ -1306,6 +1447,8 @@ def _render_property_detail(prop: dict) -> None:
                     st.session_state.pop(f"{_SF_PREFIX}selected_bbl", None)
                     st.session_state.pop(f"{_SF_PREFIX}selected_prop", None)
                     st.rerun()
+
+    _render_tag_editor(prop)
 
     _render_outreach_tracker(prop)
 
