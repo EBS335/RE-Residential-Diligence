@@ -27,6 +27,7 @@ from modules.acris_fetcher import fetch_acris, fetch_owner_portfolio
 from modules.ownership_research import enrich_ownership_batch, DEFAULT_BATCH_SIZE
 from modules.bulk_list_upload import parse_uploaded_list, resolve_addresses_to_bbls
 from modules.transit_fetcher import is_near_line, list_available_lines
+from modules.major_avenues import is_near_avenue, list_available_avenues
 from modules.site_finder_market import enrich_market_data, fetch_market_comps
 from modules.site_finder_valuation import estimate_acquisition_cost
 from modules.underwriting_engine import (
@@ -118,20 +119,27 @@ def _render_criteria_form() -> dict | None:
                 key=f"{_SF_PREFIX}risk",
             )
 
-        with st.expander("🚇 Transit Corridor (optional)", expanded=False):
+        with st.expander("🚇 Transit & Avenue Corridor (optional)", expanded=False):
             st.caption(
-                "Buffers around each station on this line — not a continuous "
-                "corridor polygon (no NYC subway-line geometry dataset is available)."
+                "Buffers around each station/waypoint — not a continuous "
+                "corridor polygon (no NYC subway-line or avenue geometry "
+                "dataset is available). Subway line and avenue filter "
+                "independently — combine both, or leave either on \"Any\"."
             )
-            t1, t2 = st.columns(2)
+            t1, t2, t3 = st.columns(3)
             with t1:
                 transit_line = st.selectbox(
                     "Subway line", options=["Any"] + list_available_lines(),
                     key=f"{_SF_PREFIX}transitline",
                 )
             with t2:
+                avenue = st.selectbox(
+                    "Major avenue", options=["Any"] + list_available_avenues(),
+                    key=f"{_SF_PREFIX}avenue",
+                )
+            with t3:
                 transit_buffer = st.select_slider(
-                    "Buffer around stations (miles)", options=[0.25, 0.5, 1.0], value=0.5,
+                    "Buffer (miles)", options=[0.25, 0.5, 1.0], value=0.5,
                     key=f"{_SF_PREFIX}transitbuffer",
                 )
 
@@ -166,6 +174,7 @@ def _render_criteria_form() -> dict | None:
         "strategies":          strategies,
         "risk":                risk,
         "transit_line":        transit_line if transit_line != "Any" else None,
+        "avenue":              avenue if avenue != "Any" else None,
         "transit_buffer_miles": transit_buffer,
     }
 
@@ -203,6 +212,7 @@ def load_saved_criteria_into_widgets(criteria: dict) -> None:
     st.session_state[f"{_SF_PREFIX}strategies"] = criteria.get("strategies") or []
     st.session_state[f"{_SF_PREFIX}risk"] = criteria.get("risk") or "Moderate"
     st.session_state[f"{_SF_PREFIX}transitline"] = criteria.get("transit_line") or "Any"
+    st.session_state[f"{_SF_PREFIX}avenue"] = criteria.get("avenue") or "Any"
     st.session_state[f"{_SF_PREFIX}transitbuffer"] = criteria.get("transit_buffer_miles") or 0.5
 
 
@@ -261,6 +271,11 @@ def _run_search(criteria: dict) -> tuple[list[dict], dict]:
         scored = [
             p for p in scored
             if is_near_line(p.get("latitude"), p.get("longitude"), criteria["transit_line"], criteria.get("transit_buffer_miles", 0.5))
+        ]
+    if criteria.get("avenue"):
+        scored = [
+            p for p in scored
+            if is_near_avenue(p.get("latitude"), p.get("longitude"), criteria["avenue"], criteria.get("transit_buffer_miles", 0.5))
         ]
     return scored, status
 

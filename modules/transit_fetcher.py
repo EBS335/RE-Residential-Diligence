@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 import requests
 
-from modules.app_logging import get_logger
+from modules.app_logging import get_logger, record_source_status
 
 log = get_logger(__name__)
 
@@ -42,8 +42,9 @@ def _get(url: str, params: dict) -> list[dict]:
         if r.status_code == 200:
             data = r.json()
             return data if isinstance(data, list) else []
+        log.warning("transit_fetcher: request to %s returned status %s", url, r.status_code)
     except Exception as exc:
-        log.debug("transit_fetcher: request to %s failed: %s", url, exc)
+        log.warning("transit_fetcher: request to %s failed: %s", url, exc)
     return []
 
 
@@ -71,9 +72,19 @@ def _extract_point(row: dict) -> tuple[float, float] | None:
 
 
 def _load_station_index() -> list[dict]:
-    """Lazily fetch and cache the full station list once per process."""
+    """
+    Lazily fetch and cache the full station list once per process.
+
+    Only a NON-EMPTY result is cached permanently. A failed/empty fetch is
+    NOT cached — it's retried on the next call — so one transient network
+    hiccup (timeout, rate-limit, cold start) doesn't permanently poison
+    the station index (and therefore the "Subway line" dropdown) for the
+    rest of the process's life, which is what an unconditional
+    `if _station_cache is not None` guard would otherwise do (an empty
+    list is not None).
+    """
     global _station_cache
-    if _station_cache is not None:
+    if _station_cache:
         return _station_cache
 
     rows = _get(_STATIONS_URL, {"$limit": 1000})
@@ -86,10 +97,13 @@ def _load_station_index() -> list[dict]:
         line = r.get("line") or r.get("LINE") or r.get("routes") or ""
         stations.append({"name": name, "line": line, "lat": pt[0], "lon": pt[1]})
 
-    _station_cache = stations
-    if not stations:
+    if stations:
+        _station_cache = stations
+        record_source_status("NYC Subway Stations", ok=True)
+    else:
         log.warning("transit_fetcher: station index fetch returned 0 usable rows")
-    return _station_cache
+        record_source_status("NYC Subway Stations", ok=False, detail="station index fetch returned 0 usable rows")
+    return stations
 
 
 def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

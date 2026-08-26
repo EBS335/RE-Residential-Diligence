@@ -1,17 +1,21 @@
 """
-Tests for modules/transit_fetcher.py's new "Transit Corridor Search"
-functions (Batch B, Feature 3): stations_for_line(), is_near_line(), and
-list_available_lines(). fetch_transit_proximity()'s existing behavior is
-untouched and not re-tested here.
+Tests for modules/transit_fetcher.py's "Transit Corridor Search"
+functions: stations_for_line(), is_near_line(), and list_available_lines().
+fetch_transit_proximity()'s existing behavior is untouched and not
+re-tested here.
 
 All cases patch the module-level `_station_cache` directly with a small
-fixed fake station index — zero network access required.
+fixed fake station index — zero network access required. `_empty_cache()`
+ALSO patches `_get()` to a no-op, since the "cache empty" state is no
+longer terminal (see the retry-on-empty-cache tests below) — without
+that, `_load_station_index()` would attempt a real network call whenever
+`_station_cache` is falsy.
 """
 
 from unittest.mock import patch
 
 import modules.transit_fetcher as transit_fetcher
-from modules.transit_fetcher import stations_for_line, is_near_line, list_available_lines
+from modules.transit_fetcher import stations_for_line, is_near_line, list_available_lines, _load_station_index
 
 _FAKE_STATIONS = [
     {"name": "Times Sq-42 St", "line": "N-Q-R-W-S-1-2-3-7", "lat": 40.7557, "lon": -73.9866},
@@ -26,7 +30,7 @@ def _patched_cache():
 
 
 def _empty_cache():
-    return patch.object(transit_fetcher, "_station_cache", [])
+    return patch.multiple(transit_fetcher, _station_cache=None, _get=lambda *a, **k: [])
 
 
 # ── stations_for_line() ─────────────────────────────────────────────────────
@@ -119,3 +123,62 @@ def test_list_available_lines_returns_sorted_distinct_tokens():
 def test_list_available_lines_empty_station_index_returns_empty_list_no_raise():
     with _empty_cache():
         assert list_available_lines() == []
+
+
+# ── Caching-bug fix: a failed fetch must NOT be cached forever ─────────────
+
+def test_load_station_index_does_not_permanently_cache_an_empty_result():
+    """The bug this guards against: a transient fetch failure sets
+    _station_cache to [] (an empty list, not None); the OLD
+    `if _station_cache is not None: return _station_cache` guard would
+    then short-circuit forever, since [] is not None. The fix: only a
+    non-empty result is cached; an empty result is retried next call."""
+    call_count = {"n": 0}
+
+    def _flaky_get(url, params):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return []  # first call: simulated transient failure
+        return [
+            {"the_geom": {"type": "Point", "coordinates": [-73.9866, 40.7557]},
+             "name": "Times Sq-42 St", "line": "N-Q-R-W-S-1-2-3-7"},
+        ]
+
+    with patch.multiple(transit_fetcher, _station_cache=None, _get=_flaky_get):
+        first = _load_station_index()
+        assert first == []
+        assert call_count["n"] == 1
+
+        # A second call must RETRY (not return the stale empty cache) —
+        # this is the exact behavior the bug fix guarantees.
+        second = _load_station_index()
+        assert len(second) == 1
+        assert call_count["n"] == 2
+
+        # Once populated, the cache is now sticky — a third call must NOT
+        # hit _get() again.
+        third = _load_station_index()
+        assert third == second
+        assert call_count["n"] == 2
+
+
+def test_load_station_index_records_source_status_on_failure_and_success():
+    with patch.multiple(transit_fetcher, _station_cache=None, _get=lambda *a, **k: []), \
+         patch.object(transit_fetcher, "record_source_status") as mock_record:
+        _load_station_index()
+    mock_record.assert_called_once()
+    args, kwargs = mock_record.call_args
+    assert args[0] == "NYC Subway Stations"
+    assert kwargs.get("ok") is False
+
+    def _good_get(url, params):
+        return [{"the_geom": {"type": "Point", "coordinates": [-73.9866, 40.7557]},
+                  "name": "Times Sq-42 St", "line": "7"}]
+
+    with patch.multiple(transit_fetcher, _station_cache=None, _get=_good_get), \
+         patch.object(transit_fetcher, "record_source_status") as mock_record2:
+        _load_station_index()
+    mock_record2.assert_called_once()
+    args2, kwargs2 = mock_record2.call_args
+    assert args2[0] == "NYC Subway Stations"
+    assert kwargs2.get("ok") is True
