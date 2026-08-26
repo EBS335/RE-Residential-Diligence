@@ -534,3 +534,65 @@ def test_weight_adjuster_boosting_a_slider_resorts_display_only():
     # never the reweighted display score — regardless of row order.
     for _, row in results_df.iterrows():
         assert row["Deal Score"] == original_scores_by_address[row["Address"]]
+
+
+# ── Batch G: Column Customization ───────────────────────────────────────
+# st.dataframe(..., column_order=...) stores the subset/order in a separate
+# proto field (not the Arrow payload itself), so AppTest's `.value` always
+# reflects every column regardless of column_order — the underlying data/
+# CSV/Excel export are unaffected by any display preset. The column_order
+# itself is asserted via `el.proto.column_order`.
+
+def test_column_order_none_by_default_on_a_fresh_session():
+    results = _synthetic_results(5)
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+    assert not at.exception
+
+    results_el = max(at.dataframe, key=lambda el: len(el.value))
+    # The "Customize Columns" multiselect's own default (when "Default" is
+    # selected) is every column in df, so on an untouched session
+    # column_order is the full set in original order — behaviorally
+    # identical to no restriction at all (the multiselect never narrows
+    # anything unless the user actively changes it).
+    assert list(results_el.proto.column_order) == list(results_el.value.columns)
+    # And the underlying data still contains every expected column.
+    assert "Landmark" in results_el.value.columns
+    assert "Tags" in results_el.value.columns
+    assert "Seller Propensity" in results_el.value.columns
+
+
+def test_column_order_reflects_a_chosen_subset():
+    results = _synthetic_results(3)
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+    assert not at.exception
+
+    at.multiselect(key="_sf_col_choice").set_value(["Address", "Deal Score"])
+    at.run()
+    assert not at.exception
+
+    results_el = max(at.dataframe, key=lambda el: len(el.value))
+    assert list(results_el.proto.column_order) == ["Address", "Deal Score"]
+    # The underlying data is untouched by the display subset — every
+    # original column is still present in the dataframe's own value.
+    assert "Landmark" in results_el.value.columns
+    assert "Borough" in results_el.value.columns
+
+
+def test_customize_columns_expander_renders_without_exception():
+    results = _synthetic_results(2)
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.run()
+    assert not at.exception
+    col_multiselect = at.multiselect(key="_sf_col_choice")
+    assert "Address" in col_multiselect.options

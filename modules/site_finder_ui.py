@@ -42,7 +42,9 @@ from modules.portfolio_db import (
     get_outreach, upsert_outreach, OUTREACH_STATUSES,
     list_tags, list_tags_bulk, add_tag, remove_tag, TAG_OPTIONS,
     create_collection, list_collections, add_to_collection,
+    save_column_preset, list_column_presets,
 )
+from modules.criteria_presets import THESIS_PRESETS
 from modules.site_finder_agents import (
     run_all_agents, has_anthropic_key, AGENT_ORDER,
 )
@@ -897,6 +899,33 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
         rows.append(row)
 
     df = pd.DataFrame(rows)
+
+    with st.expander("🧩 Customize Columns", expanded=False):
+        _col_presets = list_column_presets()
+        _preset_names = ["Default"] + [p["name"] for p in _col_presets]
+        _preset_choice = st.selectbox("Load preset", options=_preset_names, key=f"{_SF_PREFIX}col_preset_choice")
+        if _preset_choice == "Default":
+            _default_cols = list(df.columns)
+        else:
+            _match = next((p for p in _col_presets if p["name"] == _preset_choice), None)
+            _default_cols = _match["columns"] if _match else list(df.columns)
+        chosen_cols = st.multiselect(
+            "Visible columns (shown in the order selected)",
+            options=list(df.columns), default=_default_cols, key=f"{_SF_PREFIX}col_choice",
+        )
+        cc1, cc2 = st.columns([2, 1])
+        with cc1:
+            _preset_name_input = st.text_input("Save as preset", key=f"{_SF_PREFIX}col_preset_name")
+        with cc2:
+            st.markdown("&nbsp;")
+            if st.button("💾 Save preset", key=f"{_SF_PREFIX}col_preset_save_btn"):
+                if _preset_name_input.strip() and chosen_cols:
+                    save_column_preset(_preset_name_input.strip(), chosen_cols)
+                    st.success(f"Saved preset “{_preset_name_input.strip()}”.")
+                    st.rerun()
+                else:
+                    st.error("Enter a name and select at least one column first.")
+
     st.markdown(f"**{len(results_full):,} results**, ranked by Deal Score")
     st.caption("🔬 Click a row to select it for Preliminary Diligence.")
     table_state = st.dataframe(
@@ -910,6 +939,7 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
                 "Seller Propensity", min_value=0, max_value=100, format="%d"
             ),
         },
+        column_order=chosen_cols if chosen_cols else None,
         on_select="rerun",
         selection_mode="single-row",
         key=f"{_SF_PREFIX}results_table",
@@ -1924,6 +1954,15 @@ def render_site_finder(anthropic_key: str = "") -> None:
                             st.session_state[f"{_SF_PREFIX}last_status"] = fetch_status
                             st.session_state[f"{_SF_PREFIX}last_criteria"] = None
                             st.rerun()
+
+    with st.expander("🧭 Start from a Thesis Preset (optional)", expanded=False):
+        st.caption("One-click starting points for common strategies — loads criteria into the form below.")
+        _preset_cols = st.columns(len(THESIS_PRESETS))
+        for _col, (_name, _preset) in zip(_preset_cols, THESIS_PRESETS.items()):
+            with _col:
+                if st.button(_name, key=f"{_SF_PREFIX}thesis_{_name}", use_container_width=True):
+                    load_saved_criteria_into_widgets(_preset)
+                    st.rerun()
 
     criteria = _render_criteria_form()
 

@@ -355,3 +355,31 @@ def test_delete_collection_cascades_to_items(conn):
 
 def test_delete_collection_missing_returns_false(conn):
     assert pdb.delete_collection(9999, conn=conn) is False
+
+
+# ── Column Presets CRUD (Feature 14 — Column Customization) ────────────
+
+def test_save_column_preset_and_list_round_trips_columns_exactly(conn):
+    pid = pdb.save_column_preset("My View", ["Address", "Deal Score", "Tier"], conn=conn)
+    assert isinstance(pid, int)
+    presets = pdb.list_column_presets(conn=conn)
+    assert len(presets) == 1
+    assert presets[0]["name"] == "My View"
+    assert presets[0]["columns"] == ["Address", "Deal Score", "Tier"]
+
+
+def test_list_column_presets_multiple_presets_and_order(conn):
+    pdb.save_column_preset("First", ["Address"], conn=conn)
+    pdb.save_column_preset("Second", ["Address", "Borough"], conn=conn)
+    presets = pdb.list_column_presets(conn=conn)
+    assert len(presets) == 2
+    names = {p["name"] for p in presets}
+    assert names == {"First", "Second"}
+
+
+def test_delete_column_preset(conn):
+    pid = pdb.save_column_preset("Temp", ["Address"], conn=conn)
+    assert pdb.delete_column_preset(pid, conn=conn) is True
+    assert pdb.list_column_presets(conn=conn) == []
+    # Re-deleting an already-gone preset returns False, not an error.
+    assert pdb.delete_column_preset(pid, conn=conn) is False

@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS collection_items (
     UNIQUE(collection_id, bbl)
 );
 CREATE INDEX IF NOT EXISTS idx_collection_items_cid ON collection_items(collection_id);
+
+CREATE TABLE IF NOT EXISTS column_presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+    columns_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
 """
 
 # Starter checklist seeded for a BBL the first time its tracker is opened —
@@ -703,6 +708,59 @@ def delete_collection(collection_id: int, conn: sqlite3.Connection | None = None
     try:
         c.execute("DELETE FROM collection_items WHERE collection_id = ?", (collection_id,))
         cur = c.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        if should_close:
+            c.close()
+
+
+# ── Column Presets CRUD ─────────────────────────────────────────────────
+
+def save_column_preset(name: str, columns: list[str],
+                        conn: sqlite3.Connection | None = None) -> int:
+    """Save a named, ordered subset of results-table column names as a
+    reusable display preset (Feature 14 — Column Customization). Purely a
+    display-layer concept — never affects what the underlying results
+    table/CSV/Excel export actually compute or contain."""
+    c, should_close = _with_conn(conn)
+    try:
+        cur = c.execute(
+            "INSERT INTO column_presets (name, columns_json, created_at) VALUES (?, ?, ?)",
+            (name, json.dumps(columns), _now()),
+        )
+        c.commit()
+        return cur.lastrowid
+    finally:
+        if should_close:
+            c.close()
+
+
+def list_column_presets(conn: sqlite3.Connection | None = None) -> list[dict]:
+    c, should_close = _with_conn(conn)
+    try:
+        rows = c.execute(
+            "SELECT * FROM column_presets ORDER BY created_at DESC"
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["columns"] = json.loads(d.pop("columns_json"))
+            except Exception:
+                d["columns"] = []
+                d.pop("columns_json", None)
+            out.append(d)
+        return out
+    finally:
+        if should_close:
+            c.close()
+
+
+def delete_column_preset(id: int, conn: sqlite3.Connection | None = None) -> bool:
+    c, should_close = _with_conn(conn)
+    try:
+        cur = c.execute("DELETE FROM column_presets WHERE id = ?", (id,))
         c.commit()
         return cur.rowcount > 0
     finally:
