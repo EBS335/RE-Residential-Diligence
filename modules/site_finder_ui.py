@@ -13,6 +13,7 @@ professional diligence.
 """
 
 from __future__ import annotations
+import datetime
 import pandas as pd
 import streamlit as st
 import pydeck as pdk
@@ -27,8 +28,13 @@ from modules.zola_fetcher import bbl_to_zola_url
 from modules.acris_fetcher import fetch_acris, fetch_owner_portfolio
 from modules.ownership_research import enrich_ownership_batch, DEFAULT_BATCH_SIZE
 from modules.bulk_list_upload import parse_uploaded_list, resolve_addresses_to_bbls
-from modules.transit_fetcher import is_near_line, list_available_lines
+from modules.transit_fetcher import is_near_line, list_available_lines, nearest_station_distance_miles
 from modules.major_avenues import is_near_avenue, list_available_avenues
+from modules.rent_stab_registry import check_rent_stabilized
+from modules.ceqr_fetcher import fetch_ulurp_applications
+from modules.dev_momentum_fetcher import fetch_dev_momentum
+from modules.nyc_sales_fetcher import fetch_nyc_sales
+from modules.demographics_fetcher import fetch_demographics
 from modules.site_finder_market import enrich_market_data, fetch_market_comps
 from modules.site_finder_valuation import estimate_acquisition_cost
 from modules.underwriting_engine import (
@@ -313,6 +319,268 @@ def _run_search(criteria: dict) -> tuple[list[dict], dict]:
         custom_weights=criteria.get("deal_score_weights"),
     )
     return scored, status
+
+
+# ── Search Area Intelligence ─────────────────────────────────────────────────
+# An opt-in, area-wide dashboard summarizing the FULL PLUTO universe of the
+# searched geography (boroughs/ZIPs only, no lot-size/FAR/unit/strategy/price
+# filters) — distinct from the per-result table/charts below, which only
+# ever reflect the user's matched/filtered results. Never runs automatically
+# on a normal search (one extra bulk PLUTO fetch + several small per-CD/ZIP
+# Socrata calls), so it's entirely behind a single button, cached until the
+# next new search.
+
+def _load_area_intelligence(criteria: dict | None) -> None:
+    """
+    Populates st.session_state[f"{_SF_PREFIX}area_intel"] with an
+    area-wide snapshot of the searched geography. Never raises to the
+    caller — any failure (including the initial broader PLUTO fetch)
+    is captured into the cached dict's "error" key rather than
+    propagating, and a failure in any one PER-AREA sub-fetch (rezoning,
+    momentum, sales, demographics) simply omits that sub-section rather
+    than failing the whole dashboard.
+    """
+    criteria = criteria or {}
+    geo_criteria = {
+        "boroughs": criteria.get("boroughs"),
+        "zip_codes": criteria.get("zip_codes"),
+    }
+    try:
+        raw_rows, status = search_properties(geo_criteria)
+    except Exception as exc:
+        st.session_state[f"{_SF_PREFIX}area_intel"] = {"error": str(exc)}
+        return
+
+    if status.get("error"):
+        st.session_state[f"{_SF_PREFIX}area_intel"] = {"error": status["error"]}
+        return
+
+    total = len(raw_rows)
+    if total == 0:
+        st.session_state[f"{_SF_PREFIX}area_intel"] = {
+            "error": "No lots found for this area — try broadening boroughs/ZIPs before loading area intelligence."
+        }
+        return
+
+    result: dict = {"error": None, "total_lots": total}
+
+    vacant_count = sum(1 for r in raw_rows if r.get("is_vacant"))
+    underbuilt_count = sum(1 for r in raw_rows if (r.get("unused_far_pct") or 0) > 50)
+    far_vals = sorted(r.get("unused_far_pct") or 0 for r in raw_rows)
+    result["pct_vacant"] = 100.0 * vacant_count / total
+    result["pct_underbuilt"] = 100.0 * underbuilt_count / total
+    result["avg_unused_far_pct"] = sum(far_vals) / total
+    result["median_unused_far_pct"] = far_vals[total // 2]
+
+    historic_count = sum(
+        1 for r in raw_rows if (r.get("landmark") or "").strip() or (r.get("historic_dist") or "").strip()
+    )
+    result["pct_historic"] = 100.0 * historic_count / total
+
+    zoning_counts: dict[str, int] = {}
+    for r in raw_rows:
+        z = r.get("zoning_dist") or "Unknown"
+        zoning_counts[z] = zoning_counts.get(z, 0) + 1
+    result["zoning_mix"] = dict(sorted(zoning_counts.items(), key=lambda kv: kv[1], reverse=True)[:15])
+
+    # Rent stabilization density — bundled/local lookup, no network call.
+    try:
+        rs_count = 0
+        for r in raw_rows:
+            rs = check_rent_stabilized(
+                r.get("borough_code", ""), r.get("block", ""), r.get("lot", ""), r.get("address", "")
+            )
+            if rs.get("status") == "confirmed":
+                rs_count += 1
+        result["pct_rent_stab"] = 100.0 * rs_count / total
+    except Exception:
+        result["pct_rent_stab"] = None
+
+    # Transit access — sampled if the area is large, to keep this bounded;
+    # nearest_station_distance_miles() is a local/cached lookup, no network.
+    try:
+        sample = raw_rows if total <= 500 else raw_rows[:500]
+        dists = [
+            d for d in (nearest_station_distance_miles(r.get("latitude"), r.get("longitude")) for r in sample)
+            if d is not None
+        ]
+        result["avg_transit_dist_miles"] = (sum(dists) / len(dists)) if dists else None
+    except Exception:
+        result["avg_transit_dist_miles"] = None
+
+    # Distinct community districts / ZIPs actually present in this area —
+    # capped so a very large multi-borough search issues a bounded number
+    # of small per-area Socrata calls, not one per every CD/ZIP in NYC.
+    distinct_cds = sorted({
+        (r.get("borough_code", ""), r.get("community_district", ""))
+        for r in raw_rows if r.get("borough_code") and r.get("community_district")
+    })[:25]
+    distinct_zips = sorted({r.get("zip_code", "") for r in raw_rows if r.get("zip_code")})[:25]
+
+    rezoning_by_cd: dict[str, dict] = {}
+    momentum_by_cd: dict[str, int] = {}
+    for boro_code, cd in distinct_cds:
+        try:
+            rez = fetch_ulurp_applications(boro_code, cd)
+            if rez.get("verified") and rez.get("count", 0) > 0:
+                rezoning_by_cd[cd] = rez
+        except Exception:
+            pass
+        try:
+            mom = fetch_dev_momentum(boro_code, cd)
+            if mom.get("verified"):
+                momentum_by_cd[cd] = mom.get("nb_permit_count", 0)
+        except Exception:
+            pass
+    result["rezoning_by_cd"] = rezoning_by_cd
+    result["momentum_by_cd"] = momentum_by_cd
+
+    if rezoning_by_cd or momentum_by_cd:
+        all_cds = set(rezoning_by_cd.keys()) | set(momentum_by_cd.keys())
+        max_rez = max((v.get("count", 0) for v in rezoning_by_cd.values()), default=0) or 1
+        max_mom = max(momentum_by_cd.values(), default=0) or 1
+        composite = {
+            cd: 50 * (rezoning_by_cd.get(cd, {}).get("count", 0) / max_rez)
+                + 50 * (momentum_by_cd.get(cd, 0) / max_mom)
+            for cd in all_cds
+        }
+        result["up_and_coming"] = sorted(composite.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    else:
+        result["up_and_coming"] = []
+
+    sales_total = 0
+    demographics_by_zip: dict[str, dict] = {}
+    cutoff = (datetime.date.today() - datetime.timedelta(days=365)).isoformat()
+    for zc in distinct_zips:
+        zip_rows = [r for r in raw_rows if r.get("zip_code") == zc]
+        if not zip_rows:
+            continue
+        anchor = zip_rows[0]
+        try:
+            listings, _sstatus = fetch_nyc_sales(
+                anchor.get("latitude") or 40.7, anchor.get("longitude") or -74.0, 0.25, zip_code=zc,
+            )
+            sales_total += sum(1 for listing in listings if (listing.get("date") or "") >= cutoff)
+        except Exception:
+            pass
+        try:
+            demo = fetch_demographics(zc)
+            if demo.get("population") is not None or demo.get("median_household_income") is not None:
+                demographics_by_zip[zc] = demo
+        except Exception:
+            pass
+    result["sales_count"] = sales_total
+    result["demographics_by_zip"] = demographics_by_zip
+
+    st.session_state[f"{_SF_PREFIX}area_intel"] = result
+
+
+def _render_search_area_intelligence(criteria: dict | None) -> None:
+    st.markdown("#### 🗺️ Search Area Intelligence")
+    st.caption(
+        "The full picture of the area you searched — not just your "
+        "filtered results — to see how much opportunity exists here "
+        "before drilling into individual sites."
+    )
+    if st.button("📊 Load Search Area Intelligence", key=f"{_SF_PREFIX}load_area_intel"):
+        with st.spinner(
+            "Loading area-wide PLUTO universe, rezoning activity, "
+            "permit momentum, sales, and demographics…"
+        ):
+            _load_area_intelligence(criteria)
+        st.rerun()
+
+    area = st.session_state.get(f"{_SF_PREFIX}area_intel")
+    if not area:
+        return
+    if area.get("error"):
+        st.error(f"Couldn't load area intelligence: {area['error']}")
+        return
+
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("Lots in Area", f"{area['total_lots']:,}")
+    a2.metric("% Vacant", f"{area['pct_vacant']:.0f}%")
+    a3.metric("% Underbuilt (>50% unused FAR)", f"{area['pct_underbuilt']:.0f}%")
+    a4.metric("Avg Unused FAR", f"{area['avg_unused_far_pct']:.0f}%")
+
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Historic/Landmark Coverage", f"{area['pct_historic']:.0f}%")
+    rs = area.get("pct_rent_stab")
+    b2.metric("Rent-Stabilized Density", f"{rs:.0f}%" if rs is not None else "—")
+    td = area.get("avg_transit_dist_miles")
+    b3.metric("Avg Transit Distance", f"{td:.2f} mi" if td is not None else "—")
+    b4.metric("Sales (last 12mo)", f"{area.get('sales_count', 0):,}")
+
+    if area.get("zoning_mix"):
+        fig = go.Figure(go.Bar(
+            x=list(area["zoning_mix"].keys()), y=list(area["zoning_mix"].values()), marker_color="#0EA5E9",
+            hovertemplate="%{x}<br>%{y} lots<extra></extra>",
+        ))
+        fig.update_layout(
+            title="Zoning Mix (Area-Wide)", xaxis_title="Zoning District", yaxis_title="Lots",
+            height=280, margin=dict(l=40, r=20, t=40, b=60), font=dict(size=11),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    if area.get("rezoning_by_cd"):
+        st.markdown("##### 🏛️ Active Rezoning in This Search Area")
+        rows = [
+            {
+                "Community District": cd,
+                "Active ULURP Applications": info.get("count", 0),
+                "Recent Cases": ", ".join(
+                    a.get("project_name", "") for a in info.get("applications", [])[:3] if a.get("project_name")
+                ) or "—",
+            }
+            for cd, info in area["rezoning_by_cd"].items()
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    if area.get("momentum_by_cd"):
+        st.markdown("##### 🏗️ Development Momentum by Community District")
+        fig = go.Figure(go.Bar(
+            x=list(area["momentum_by_cd"].keys()), y=list(area["momentum_by_cd"].values()), marker_color="#DC2626",
+            hovertemplate="CD %{x}<br>%{y} new-building permits (last 12mo)<extra></extra>",
+        ))
+        fig.update_layout(
+            title="New-Building Permit Filings (Last 12 Months)",
+            xaxis_title="Community District", yaxis_title="NB Permits",
+            height=280, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    if area.get("up_and_coming"):
+        st.markdown("##### 🚀 Up-and-Coming Areas (Rezoning + Momentum Composite)")
+        rows = [
+            {"Community District": cd, "Composite Score": round(score, 1)}
+            for cd, score in area["up_and_coming"]
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    if area.get("demographics_by_zip"):
+        st.markdown("##### 👪 Neighborhood Growth & Income by ZIP")
+        zips = list(area["demographics_by_zip"].keys())
+        pops = [area["demographics_by_zip"][z].get("population") or 0 for z in zips]
+        incomes = [area["demographics_by_zip"][z].get("median_household_income") or 0 for z in zips]
+
+        fig_pop = go.Figure(go.Bar(
+            x=zips, y=pops, marker_color="#16A34A", hovertemplate="%{x}<br>Population: %{y:,.0f}<extra></extra>",
+        ))
+        fig_pop.update_layout(
+            title="Population by ZIP", xaxis_title="ZIP", yaxis_title="Population",
+            height=280, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+        )
+        st.plotly_chart(fig_pop, use_container_width=True, config={"displayModeBar": False})
+
+        fig_inc = go.Figure(go.Bar(
+            x=zips, y=incomes, marker_color="#0891B2",
+            hovertemplate="%{x}<br>Median HH Income: $%{y:,.0f}<extra></extra>",
+        ))
+        fig_inc.update_layout(
+            title="Median Household Income by ZIP", xaxis_title="ZIP", yaxis_title="Median HH Income ($)",
+            height=280, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
+        )
+        st.plotly_chart(fig_inc, use_container_width=True, config={"displayModeBar": False})
 
 
 # ── Summary cards ────────────────────────────────────────────────────────────
@@ -925,6 +1193,9 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
     _render_summary_cards(results_full)
     st.markdown("---")
 
+    _render_search_area_intelligence(criteria)
+    st.markdown("---")
+
     _render_results_map(results_full, criteria)
     st.markdown("---")
 
@@ -1191,6 +1462,19 @@ def _render_results_charts(properties: list[dict]) -> None:
                 title="Unused FAR % Distribution", xaxis_title="Unused FAR %", yaxis_title="Properties",
                 height=300, margin=dict(l=40, r=20, t=40, b=40), font=dict(size=11),
             )
+            # Opt-in overlay: once "🗺️ Search Area Intelligence" has been
+            # loaded, add a reference line at the AREA-WIDE median unused
+            # FAR% (computed from the full, unfiltered area universe, not
+            # just these matched results) — turns "here's my results'
+            # distribution" into "...compared to the area's actual
+            # baseline." A no-op (no vline, chart unchanged) until that
+            # button is clicked.
+            area_intel = st.session_state.get(f"{_SF_PREFIX}area_intel")
+            if area_intel and area_intel.get("median_unused_far_pct") is not None:
+                fig.add_vline(
+                    x=area_intel["median_unused_far_pct"], line_dash="dash", line_color="#F59E0B",
+                    annotation_text="Area median", annotation_position="top",
+                )
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     c3, c4 = st.columns(2)

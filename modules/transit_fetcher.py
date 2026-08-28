@@ -260,6 +260,29 @@ def is_near_line(lat: float, lon: float, line: str, buffer_miles: float = 0.5) -
         return False
 
 
+def nearest_station_distance_miles(lat: float, lon: float) -> float | None:
+    """
+    Distance in miles from (lat, lon) to the nearest subway station, or
+    None if coordinates/station index are unavailable. Reuses the same
+    cached station index and haversine helper fetch_transit_proximity()
+    uses internally — a small public wrapper so callers that only need
+    the raw distance (e.g. an area-wide average) don't need the rest of
+    fetch_transit_proximity()'s per-point payload.
+
+    Never raises.
+    """
+    try:
+        if lat is None or lon is None:
+            return None
+        lat, lon = float(lat), float(lon)
+        stations = _load_station_index()
+        if not stations:
+            return None
+        return min(_haversine_miles(lat, lon, s["lat"], s["lon"]) for s in stations)
+    except Exception:
+        return None
+
+
 def list_available_lines() -> list[str]:
     """
     The distinct, sorted set of line tokens across the full station index
