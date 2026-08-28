@@ -57,22 +57,28 @@ _BROADER_AREA_ROWS = [
 def _mock_area_fetches():
     """Mocks every underlying fetch _load_area_intelligence() calls, so no
     live network access is required and every sub-section has real data
-    to render."""
+    to render. Patches the BATCHED per-borough/aggregate function names
+    (fetch_ulurp_applications_by_cds, fetch_dev_momentum_by_cds,
+    fetch_nyc_sales_counts_by_zips) — the code path no longer calls the
+    old single-CD/single-ZIP functions at all, so patching those instead
+    would leave the real (network-calling) batched functions unmocked.
+    All _BROADER_AREA_ROWS share community_district "302" and zip_code
+    "11201", so the batched mocks return data keyed accordingly."""
     return (
         patch("modules.site_finder_ui.search_properties", return_value=(_BROADER_AREA_ROWS, {"error": None})),
         patch("modules.site_finder_ui.check_rent_stabilized", return_value={"status": "not_found"}),
         patch("modules.site_finder_ui.nearest_station_distance_miles", return_value=0.3),
         patch(
-            "modules.site_finder_ui.fetch_ulurp_applications",
-            return_value={"verified": True, "count": 2, "applications": [{"project_name": "Test Rezoning"}]},
+            "modules.site_finder_ui.fetch_ulurp_applications_by_cds",
+            return_value={"302": {"verified": True, "count": 2, "applications": [{"project_name": "Test Rezoning"}]}},
         ),
         patch(
-            "modules.site_finder_ui.fetch_dev_momentum",
-            return_value={"verified": True, "nb_permit_count": 4},
+            "modules.site_finder_ui.fetch_dev_momentum_by_cds",
+            return_value={"302": {"verified": True, "nb_permit_count": 4}},
         ),
         patch(
-            "modules.site_finder_ui.fetch_nyc_sales",
-            return_value=([{"date": "2026-01-01"}, {"date": "2020-01-01"}], "live"),
+            "modules.site_finder_ui.fetch_nyc_sales_counts_by_zips",
+            return_value=({"11201": 2}, "live"),
         ),
         patch(
             "modules.site_finder_ui.fetch_demographics",
@@ -136,7 +142,7 @@ def test_one_subfetch_failure_does_not_break_the_rest():
 
     mocks = _mock_area_fetches()
     with mocks[0], mocks[1], mocks[2], \
-         patch("modules.site_finder_ui.fetch_ulurp_applications", side_effect=RuntimeError("boom")), \
+         patch("modules.site_finder_ui.fetch_ulurp_applications_by_cds", side_effect=RuntimeError("boom")), \
          mocks[4], mocks[5], mocks[6]:
         at.button(key="_sf_load_area_intel").click().run()
 
@@ -148,9 +154,19 @@ def test_one_subfetch_failure_does_not_break_the_rest():
     assert area["rezoning_by_cd"] == {}  # just this one sub-section is empty
     assert area["momentum_by_cd"]  # the rest still populated
 
+    fs = area["fetch_summary"]
+    assert fs["rezoning_cds_failed"] == fs["cds_requested"] == 1
+    assert fs["rezoning_cds_ok"] == 0
+    assert fs["momentum_cds_ok"] == fs["cds_requested"]  # the other batched source still succeeded
+
     markdowns = [m.value for m in at.markdown if m.value]
     assert not any("Active Rezoning in This Search Area" in m for m in markdowns)
     assert any("Development Momentum by Community District" in m for m in markdowns)
+
+    expander_labels = [e.label for e in at.expander]
+    assert "ℹ️ Data completeness for this load" in expander_labels
+    assert any("Rezoning: 0/1 community districts loaded." in m for m in markdowns)
+    assert any("Development momentum: 1/1 community districts loaded." in m for m in markdowns)
 
 
 def test_area_wide_broader_fetch_error_shows_error_not_exception():
@@ -203,3 +219,97 @@ def test_far_histogram_gets_area_median_line_after_button_clicked():
     area = at.session_state["_sf_area_intel"]
     assert area is not None
     assert area.get("median_unused_far_pct") is not None
+
+
+# ── Reliability fixes: empty-geography fallback ──────────────────────────────
+
+def test_empty_criteria_derives_geography_from_results():
+    # No boroughs/zip_codes in criteria — e.g. the "Bring Your Own List"
+    # flow, which explicitly sets last_criteria to None. Must fall back to
+    # deriving the area's geography from the boroughs/ZIPs actually
+    # present in the currently displayed results, instead of silently
+    # going citywide (property_search._build_where_clause() has no
+    # geography requirement of its own).
+    results = _synthetic_results(3)
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_last_criteria"] = None
+    at.run()
+    assert not at.exception
+
+    mocks = _mock_area_fetches()
+    with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4], mocks[5], mocks[6]:
+        at.button(key="_sf_load_area_intel").click().run()
+
+    assert not at.exception
+    area = at.session_state["_sf_area_intel"]
+    assert area["error"] is None
+    assert area["geo_derived_from_results"] is True
+
+    captions = [c.value for c in at.caption if c.value]
+    assert any("derived from the boroughs/ZIPs present in your current results" in c for c in captions)
+
+
+def test_no_derivable_geography_shows_clean_error_no_network_call():
+    # Results exist (so the button still renders — an EMPTY results list
+    # makes _render_results_table() bail out with an st.info before ever
+    # reaching the area-intelligence section) but carry no usable
+    # borough/zip_code fields, and criteria carries neither either — there
+    # is nothing to derive an area from at all.
+    results = _synthetic_results(1)
+    for p in results:
+        p["borough"] = ""
+        p["zip_code"] = ""
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_last_criteria"] = None
+    at.run()
+    assert not at.exception
+
+    # With no derivable geography at all, _load_area_intelligence() must
+    # short-circuit before ever calling search_properties().
+    with patch("modules.site_finder_ui.search_properties") as mock_search:
+        at.button(key="_sf_load_area_intel").click().run()
+    mock_search.assert_not_called()
+
+    assert not at.exception
+    area = at.session_state["_sf_area_intel"]
+    assert area["error"] is not None
+
+
+# ── Reliability fixes: per-row error isolation ───────────────────────────────
+
+def test_one_bad_row_in_rent_stab_loop_does_not_blank_the_whole_metric():
+    results = _synthetic_results(3)
+    at = AppTest.from_file(_APP_PATH, default_timeout=60)
+    at.run()
+    at.session_state["_sf_last_results"] = results
+    at.session_state["_sf_last_status"] = {"overall": "live"}
+    at.session_state["_sf_last_criteria"] = {"boroughs": ["Brooklyn"]}
+    at.run()
+
+    # 5 broader-area rows: the first check_rent_stabilized() call raises,
+    # the rest resolve normally — the metric must be computed from the 4
+    # survivors, not blanked to None by one bad row.
+    calls = {"n": 0}
+
+    def _rs_side_effect(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return {"status": "confirmed"}
+
+    mocks = _mock_area_fetches()
+    with mocks[0], mocks[2], mocks[3], mocks[4], mocks[5], mocks[6], \
+         patch("modules.site_finder_ui.check_rent_stabilized", side_effect=_rs_side_effect):
+        at.button(key="_sf_load_area_intel").click().run()
+
+    assert not at.exception
+    area = at.session_state["_sf_area_intel"]
+    assert area["error"] is None
+    assert area["pct_rent_stab"] is not None
+    assert area["fetch_summary"]["rent_stab_row_errors"] == 1

@@ -14,6 +14,8 @@ professional diligence.
 
 from __future__ import annotations
 import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 import pandas as pd
 import streamlit as st
 import pydeck as pdk
@@ -31,10 +33,11 @@ from modules.bulk_list_upload import parse_uploaded_list, resolve_addresses_to_b
 from modules.transit_fetcher import is_near_line, list_available_lines, nearest_station_distance_miles
 from modules.major_avenues import is_near_avenue, list_available_avenues
 from modules.rent_stab_registry import check_rent_stabilized
-from modules.ceqr_fetcher import fetch_ulurp_applications
-from modules.dev_momentum_fetcher import fetch_dev_momentum
-from modules.nyc_sales_fetcher import fetch_nyc_sales
+from modules.ceqr_fetcher import fetch_ulurp_applications_by_cds
+from modules.dev_momentum_fetcher import fetch_dev_momentum_by_cds
+from modules.nyc_sales_fetcher import fetch_nyc_sales_counts_by_zips
 from modules.demographics_fetcher import fetch_demographics
+from modules.app_logging import record_source_status
 from modules.site_finder_market import enrich_market_data, fetch_market_comps
 from modules.site_finder_valuation import estimate_acquisition_cost
 from modules.underwriting_engine import (
@@ -60,6 +63,11 @@ from modules.site_finder_agents import (
 )
 
 _SF_PREFIX = "_sf_"   # session-state key namespace, isolated from the existing tab
+
+# Search Area Intelligence's parallel-fetch worker pool size — capped low
+# enough to stay well under NYC Open Data's anonymous-tier rate limits
+# even when several batched/per-ZIP jobs are in flight at once.
+_AREA_INTEL_MAX_WORKERS = 8
 
 # The 5 compute_deal_score() breakdown component names (verbatim dict
 # keys) and their engine-default point maxes — shared by the search-time
@@ -326,27 +334,83 @@ def _run_search(criteria: dict) -> tuple[list[dict], dict]:
 # searched geography (boroughs/ZIPs only, no lot-size/FAR/unit/strategy/price
 # filters) — distinct from the per-result table/charts below, which only
 # ever reflect the user's matched/filtered results. Never runs automatically
-# on a normal search (one extra bulk PLUTO fetch + several small per-CD/ZIP
-# Socrata calls), so it's entirely behind a single button, cached until the
-# next new search.
+# on a normal search (one extra bulk PLUTO fetch + several small per-area
+# Socrata calls, batched and parallelized — see _load_area_intelligence()),
+# so it's entirely behind a single button, cached until the next new search.
 
-def _load_area_intelligence(criteria: dict | None) -> None:
+def _derive_geo_criteria(criteria: dict | None, results_full: list[dict] | None) -> tuple[dict, bool]:
+    """
+    Resolve the (boroughs, zip_codes) filter Search Area Intelligence's
+    broader PLUTO fetch should use.
+
+    Prefers the user's actual search criteria. Falls back to the distinct
+    boroughs/ZIPs present in the CURRENTLY DISPLAYED results only when
+    criteria carries neither — which happens whenever the Investment
+    Criteria form's Geography fields were left blank (no field there is
+    required), or the results came from a flow that doesn't carry search
+    criteria at all (Bring Your Own List leaves/passes criteria as None).
+    Without this fallback, an empty geo filter would silently become an
+    unfiltered CITYWIDE PLUTO query (property_search._build_where_clause()
+    has no geography requirement of its own) — an arbitrary,
+    non-representative slice, not a meaningful "area."
+
+    Returns (geo_criteria, derived_from_results):
+        geo_criteria         — {"boroughs": [...], "zip_codes": [...]}
+                                (either list may be empty)
+        derived_from_results — True only when the results-derived fallback
+                                path was used, False otherwise (including
+                                when nothing could be derived at all).
+    """
+    criteria = criteria or {}
+    boroughs = criteria.get("boroughs") or []
+    zips = criteria.get("zip_codes") or []
+    if boroughs or zips:
+        return {"boroughs": boroughs, "zip_codes": zips}, False
+
+    if not results_full:
+        return {"boroughs": [], "zip_codes": []}, False
+
+    distinct_boroughs = sorted({p.get("borough") for p in results_full if p.get("borough")})
+    distinct_zips = sorted({p.get("zip_code") for p in results_full if p.get("zip_code")})
+    if not distinct_boroughs and not distinct_zips:
+        return {"boroughs": [], "zip_codes": []}, False
+    return {"boroughs": distinct_boroughs, "zip_codes": distinct_zips}, True
+
+
+def _load_area_intelligence(criteria: dict | None, results_full: list[dict] | None) -> None:
     """
     Populates st.session_state[f"{_SF_PREFIX}area_intel"] with an
     area-wide snapshot of the searched geography. Never raises to the
-    caller — any failure (including the initial broader PLUTO fetch)
-    is captured into the cached dict's "error" key rather than
-    propagating, and a failure in any one PER-AREA sub-fetch (rezoning,
-    momentum, sales, demographics) simply omits that sub-section rather
-    than failing the whole dashboard.
+    caller — any failure (including the initial broader PLUTO fetch) is
+    captured into the cached dict's "error" key rather than propagating.
+
+    Per-CD/per-ZIP sub-fetches (rezoning, momentum, sales, demographics)
+    run in parallel on a small worker-thread pool and are batched into at
+    most one request per BOROUGH present (rezoning/momentum, via
+    fetch_ulurp_applications_by_cds()/fetch_dev_momentum_by_cds()) or one
+    request total (sales, via fetch_nyc_sales_counts_by_zips()) — only
+    demographics (a non-Socrata Census API) stays one request per ZIP,
+    cached across the process by fetch_demographics() itself. None of
+    these fetchers touch st.session_state internally, so it's safe to run
+    them off the main thread; every record_source_status() call happens
+    afterward, on the main thread. A failure in one source is isolated to
+    that source (reflected in "fetch_summary") rather than failing the
+    whole dashboard. The rent-stabilization/transit-distance metrics use
+    per-ROW try/except (not one try/except around the whole loop), so a
+    single bad row is skipped and counted rather than blanking the entire
+    metric.
     """
-    criteria = criteria or {}
-    geo_criteria = {
-        "boroughs": criteria.get("boroughs"),
-        "zip_codes": criteria.get("zip_codes"),
-    }
+    geo_criteria, derived_from_results = _derive_geo_criteria(criteria, results_full)
+    if not geo_criteria.get("boroughs") and not geo_criteria.get("zip_codes"):
+        st.session_state[f"{_SF_PREFIX}area_intel"] = {
+            "error": "No boroughs, ZIP codes, or usable result geography available to build an "
+                     "area — search with at least one borough/ZIP, or make sure your current "
+                     "results have valid ZIP codes, before loading area intelligence."
+        }
+        return
+
     try:
-        raw_rows, status = search_properties(geo_criteria)
+        raw_rows, status = search_properties(geo_criteria, require_geo=True)
     except Exception as exc:
         st.session_state[f"{_SF_PREFIX}area_intel"] = {"error": str(exc)}
         return
@@ -362,7 +426,7 @@ def _load_area_intelligence(criteria: dict | None) -> None:
         }
         return
 
-    result: dict = {"error": None, "total_lots": total}
+    result: dict = {"error": None, "total_lots": total, "geo_derived_from_results": derived_from_results}
 
     vacant_count = sum(1 for r in raw_rows if r.get("is_vacant"))
     underbuilt_count = sum(1 for r in raw_rows if (r.get("unused_far_pct") or 0) > 50)
@@ -384,29 +448,35 @@ def _load_area_intelligence(criteria: dict | None) -> None:
     result["zoning_mix"] = dict(sorted(zoning_counts.items(), key=lambda kv: kv[1], reverse=True)[:15])
 
     # Rent stabilization density — bundled/local lookup, no network call.
-    try:
-        rs_count = 0
-        for r in raw_rows:
+    # Per-row try/except: one bad row is skipped and counted, not a
+    # whole-metric blank-out.
+    rs_count = 0
+    rs_row_errors = 0
+    for r in raw_rows:
+        try:
             rs = check_rent_stabilized(
                 r.get("borough_code", ""), r.get("block", ""), r.get("lot", ""), r.get("address", "")
             )
             if rs.get("status") == "confirmed":
                 rs_count += 1
-        result["pct_rent_stab"] = 100.0 * rs_count / total
-    except Exception:
-        result["pct_rent_stab"] = None
+        except Exception:
+            rs_row_errors += 1
+    result["pct_rent_stab"] = (100.0 * rs_count / total) if total else None
 
     # Transit access — sampled if the area is large, to keep this bounded;
-    # nearest_station_distance_miles() is a local/cached lookup, no network.
-    try:
-        sample = raw_rows if total <= 500 else raw_rows[:500]
-        dists = [
-            d for d in (nearest_station_distance_miles(r.get("latitude"), r.get("longitude")) for r in sample)
-            if d is not None
-        ]
-        result["avg_transit_dist_miles"] = (sum(dists) / len(dists)) if dists else None
-    except Exception:
-        result["avg_transit_dist_miles"] = None
+    # nearest_station_distance_miles() is a local/cached lookup, no
+    # network. Same per-row try/except reasoning as above.
+    sample = raw_rows if total <= 500 else raw_rows[:500]
+    dists: list[float] = []
+    transit_row_errors = 0
+    for r in sample:
+        try:
+            d = nearest_station_distance_miles(r.get("latitude"), r.get("longitude"))
+            if d is not None:
+                dists.append(d)
+        except Exception:
+            transit_row_errors += 1
+    result["avg_transit_dist_miles"] = (sum(dists) / len(dists)) if dists else None
 
     # Distinct community districts / ZIPs actually present in this area —
     # capped so a very large multi-borough search issues a bounded number
@@ -417,21 +487,65 @@ def _load_area_intelligence(criteria: dict | None) -> None:
     })[:25]
     distinct_zips = sorted({r.get("zip_code", "") for r in raw_rows if r.get("zip_code")})[:25]
 
+    # ── Batched, parallel sub-fetches ───────────────────────────────────
+    cds_by_boro: dict[str, list[str]] = {}
+    for boro_code, cd in distinct_cds:
+        cds_by_boro.setdefault(boro_code, []).append(cd)
+
+    cutoff = (datetime.date.today() - datetime.timedelta(days=365)).isoformat()
+
+    jobs: list[tuple[str, str, object]] = []
+    for boro_code, cds in cds_by_boro.items():
+        jobs.append(("rezoning", boro_code, partial(fetch_ulurp_applications_by_cds, boro_code, cds, limit=15)))
+        jobs.append(("momentum", boro_code, partial(fetch_dev_momentum_by_cds, boro_code, cds, months_back=12)))
+    if distinct_zips:
+        jobs.append(("sales", "ALL", partial(fetch_nyc_sales_counts_by_zips, distinct_zips, cutoff)))
+    for zc in distinct_zips:
+        jobs.append(("demographics", zc, partial(fetch_demographics, zc)))
+
+    raw_results: dict[tuple[str, str], object] = {}
+    if jobs:
+        with ThreadPoolExecutor(max_workers=min(_AREA_INTEL_MAX_WORKERS, len(jobs))) as pool:
+            future_map = {pool.submit(fn): (kind, key) for kind, key, fn in jobs}
+            for future in as_completed(future_map):
+                kind, key = future_map[future]
+                try:
+                    raw_results[(kind, key)] = future.result()
+                except Exception as exc:
+                    raw_results[(kind, key)] = exc
+
+    # Main-thread-only merge — every record_source_status() call happens
+    # here, never inside a worker thread.
     rezoning_by_cd: dict[str, dict] = {}
     momentum_by_cd: dict[str, int] = {}
-    for boro_code, cd in distinct_cds:
-        try:
-            rez = fetch_ulurp_applications(boro_code, cd)
-            if rez.get("verified") and rez.get("count", 0) > 0:
-                rezoning_by_cd[cd] = rez
-        except Exception:
-            pass
-        try:
-            mom = fetch_dev_momentum(boro_code, cd)
-            if mom.get("verified"):
-                momentum_by_cd[cd] = mom.get("nb_permit_count", 0)
-        except Exception:
-            pass
+    rezoning_cds_ok = 0
+    momentum_cds_ok = 0
+    for boro_code, cds in cds_by_boro.items():
+        raw_rez = raw_results.get(("rezoning", boro_code))
+        rez_map = raw_rez if isinstance(raw_rez, dict) else {}
+        rez_ok = bool(rez_map) and all(v.get("verified") for v in rez_map.values())
+        record_source_status("ULURP Applications", ok=rez_ok, detail="" if rez_ok else "ULURP batched request failed")
+        if rez_ok:
+            rezoning_cds_ok += len(cds)
+            for cd in cds:
+                rez = rez_map.get(cd)
+                if rez and rez.get("count", 0) > 0:
+                    rezoning_by_cd[cd] = rez
+
+        raw_mom = raw_results.get(("momentum", boro_code))
+        mom_map = raw_mom if isinstance(raw_mom, dict) else {}
+        mom_ok = bool(mom_map) and all(v.get("verified") for v in mom_map.values())
+        record_source_status(
+            "DOB Permit Issuance (momentum)", ok=mom_ok,
+            detail="" if mom_ok else "permit momentum batched request failed",
+        )
+        if mom_ok:
+            momentum_cds_ok += len(cds)
+            for cd in cds:
+                mom = mom_map.get(cd)
+                if mom:
+                    momentum_by_cd[cd] = mom.get("nb_permit_count", 0)
+
     result["rezoning_by_cd"] = rezoning_by_cd
     result["momentum_by_cd"] = momentum_by_cd
 
@@ -448,34 +562,43 @@ def _load_area_intelligence(criteria: dict | None) -> None:
     else:
         result["up_and_coming"] = []
 
-    sales_total = 0
+    raw_sales = raw_results.get(("sales", "ALL"))
+    if isinstance(raw_sales, tuple) and len(raw_sales) == 2:
+        sales_counts, sales_status = raw_sales
+    else:
+        sales_counts, sales_status = {}, "error: unexpected result shape"
+    sales_ok = not str(sales_status).startswith("error")
+    record_source_status("NYC Rolling Sales", ok=sales_ok, detail="" if sales_ok else f"sales batch query: {sales_status}")
+    result["sales_count"] = sum(sales_counts.values()) if isinstance(sales_counts, dict) else 0
+
     demographics_by_zip: dict[str, dict] = {}
-    cutoff = (datetime.date.today() - datetime.timedelta(days=365)).isoformat()
+    demo_ok = 0
     for zc in distinct_zips:
-        zip_rows = [r for r in raw_rows if r.get("zip_code") == zc]
-        if not zip_rows:
-            continue
-        anchor = zip_rows[0]
-        try:
-            listings, _sstatus = fetch_nyc_sales(
-                anchor.get("latitude") or 40.7, anchor.get("longitude") or -74.0, 0.25, zip_code=zc,
-            )
-            sales_total += sum(1 for listing in listings if (listing.get("date") or "") >= cutoff)
-        except Exception:
-            pass
-        try:
-            demo = fetch_demographics(zc)
-            if demo.get("population") is not None or demo.get("median_household_income") is not None:
-                demographics_by_zip[zc] = demo
-        except Exception:
-            pass
-    result["sales_count"] = sales_total
+        raw_demo = raw_results.get(("demographics", zc))
+        demo = raw_demo if isinstance(raw_demo, dict) else {}
+        if demo.get("population") is not None or demo.get("median_household_income") is not None:
+            demographics_by_zip[zc] = demo
+            demo_ok += 1
     result["demographics_by_zip"] = demographics_by_zip
+
+    result["fetch_summary"] = {
+        "cds_requested": len(distinct_cds),
+        "rezoning_cds_ok": rezoning_cds_ok,
+        "rezoning_cds_failed": len(distinct_cds) - rezoning_cds_ok,
+        "momentum_cds_ok": momentum_cds_ok,
+        "momentum_cds_failed": len(distinct_cds) - momentum_cds_ok,
+        "zips_requested": len(distinct_zips),
+        "demographics_zips_ok": demo_ok,
+        "demographics_zips_failed": len(distinct_zips) - demo_ok,
+        "sales_query_ok": sales_ok,
+        "rent_stab_row_errors": rs_row_errors,
+        "transit_row_errors": transit_row_errors,
+    }
 
     st.session_state[f"{_SF_PREFIX}area_intel"] = result
 
 
-def _render_search_area_intelligence(criteria: dict | None) -> None:
+def _render_search_area_intelligence(criteria: dict | None, results_full: list[dict] | None) -> None:
     st.markdown("#### 🗺️ Search Area Intelligence")
     st.caption(
         "The full picture of the area you searched — not just your "
@@ -487,7 +610,7 @@ def _render_search_area_intelligence(criteria: dict | None) -> None:
             "Loading area-wide PLUTO universe, rezoning activity, "
             "permit momentum, sales, and demographics…"
         ):
-            _load_area_intelligence(criteria)
+            _load_area_intelligence(criteria, results_full)
         st.rerun()
 
     area = st.session_state.get(f"{_SF_PREFIX}area_intel")
@@ -496,6 +619,12 @@ def _render_search_area_intelligence(criteria: dict | None) -> None:
     if area.get("error"):
         st.error(f"Couldn't load area intelligence: {area['error']}")
         return
+
+    if area.get("geo_derived_from_results"):
+        st.caption(
+            "ℹ️ Your search had no borough/ZIP criteria, so this area's geography was derived "
+            "from the boroughs/ZIPs present in your current results instead of your original search."
+        )
 
     a1, a2, a3, a4 = st.columns(4)
     a1.metric("Lots in Area", f"{area['total_lots']:,}")
@@ -510,6 +639,31 @@ def _render_search_area_intelligence(criteria: dict | None) -> None:
     td = area.get("avg_transit_dist_miles")
     b3.metric("Avg Transit Distance", f"{td:.2f} mi" if td is not None else "—")
     b4.metric("Sales (last 12mo)", f"{area.get('sales_count', 0):,}")
+
+    fs = area.get("fetch_summary")
+    if fs:
+        any_failures = bool(
+            fs["rezoning_cds_failed"] or fs["momentum_cds_failed"] or fs["demographics_zips_failed"]
+            or not fs["sales_query_ok"] or fs["rent_stab_row_errors"] or fs["transit_row_errors"]
+        )
+        with st.expander("ℹ️ Data completeness for this load", expanded=any_failures):
+            st.write(f"Rezoning: {fs['rezoning_cds_ok']}/{fs['cds_requested']} community districts loaded.")
+            st.write(f"Development momentum: {fs['momentum_cds_ok']}/{fs['cds_requested']} community districts loaded.")
+            st.write(f"Demographics: {fs['demographics_zips_ok']}/{fs['zips_requested']} ZIPs loaded.")
+            st.write(
+                "Sales velocity: loaded." if fs["sales_query_ok"]
+                else "Sales velocity: failed — Socrata may be rate-limiting; try reloading."
+            )
+            if fs["rent_stab_row_errors"]:
+                st.write(
+                    f"Rent-stabilization check: skipped {fs['rent_stab_row_errors']} row(s) with bad data "
+                    "(rest still counted)."
+                )
+            if fs["transit_row_errors"]:
+                st.write(
+                    f"Transit-distance check: skipped {fs['transit_row_errors']} row(s) with bad data "
+                    "(rest still counted)."
+                )
 
     if area.get("zoning_mix"):
         fig = go.Figure(go.Bar(
@@ -1193,7 +1347,7 @@ def _render_results_table(properties: list[dict], criteria: dict | None = None) 
     _render_summary_cards(results_full)
     st.markdown("---")
 
-    _render_search_area_intelligence(criteria)
+    _render_search_area_intelligence(criteria, results_full)
     st.markdown("---")
 
     _render_results_map(results_full, criteria)

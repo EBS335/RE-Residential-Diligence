@@ -94,3 +94,60 @@ def test_community_district_normalized_to_district_number():
         dmf.fetch_dev_momentum("3", "302")
 
     assert "community_board='2'" in captured["where"]
+
+
+# ── fetch_dev_momentum_by_cds (batched) ──────────────────────────────────────
+
+def test_batched_builds_group_by_and_in_clause():
+    captured = {}
+
+    def _capture_get(url, params=None, timeout=None):
+        captured["where"] = params["$where"]
+        captured["select"] = params["$select"]
+        captured["group"] = params["$group"]
+        return _fake_response([])
+
+    with patch.object(dmf.requests, "get", side_effect=_capture_get):
+        dmf.fetch_dev_momentum_by_cds("1", ["105", "108"])
+
+    assert "community_board IN(" in captured["where"]
+    assert "'5'" in captured["where"] and "'8'" in captured["where"]
+    assert "job_type='NB'" in captured["where"]
+    assert "count(*)" in captured["select"]
+    assert captured["group"] == "community_board"
+
+
+def test_batched_maps_grouped_counts_back_to_original_cds():
+    rows = [{"community_board": "5", "cnt": "12"}, {"community_board": "8", "cnt": "3"}]
+    with patch.object(dmf.requests, "get", return_value=_fake_response(rows)):
+        result = dmf.fetch_dev_momentum_by_cds("1", ["105", "108"])
+    assert result["105"]["verified"] is True
+    assert result["105"]["nb_permit_count"] == 12
+    assert result["108"]["nb_permit_count"] == 3
+
+
+def test_batched_cd_absent_from_grouped_response_defaults_to_zero():
+    rows = [{"community_board": "5", "cnt": "12"}]  # "108" never appears
+    with patch.object(dmf.requests, "get", return_value=_fake_response(rows)):
+        result = dmf.fetch_dev_momentum_by_cds("1", ["105", "108"])
+    assert result["108"]["verified"] is True
+    assert result["108"]["nb_permit_count"] == 0
+
+
+def test_batched_request_failure_marks_every_requested_cd_unverified():
+    with patch.object(dmf.requests, "get", return_value=_fake_response(None, ok=False)):
+        result = dmf.fetch_dev_momentum_by_cds("1", ["105", "108"])
+    assert set(result.keys()) == {"105", "108"}
+    assert all(v["verified"] is False and v["error"] for v in result.values())
+
+
+def test_batched_unrecognized_borough_no_network_call():
+    with patch.object(dmf.requests, "get") as mock_get:
+        result = dmf.fetch_dev_momentum_by_cds("9", ["105", "108"])
+    mock_get.assert_not_called()
+    assert all(v["verified"] is False and v["error"] for v in result.values())
+
+
+def test_batched_empty_cd_list_returns_empty_dict():
+    result = dmf.fetch_dev_momentum_by_cds("1", [])
+    assert result == {}

@@ -150,7 +150,7 @@ def _build_where_clause(criteria: dict) -> str:
     return " AND ".join(clauses) if clauses else "bbl IS NOT NULL"
 
 
-def search_properties(criteria: dict, max_rows: int = _MAX_ROWS) -> tuple[list[dict], dict]:
+def search_properties(criteria: dict, max_rows: int = _MAX_ROWS, require_geo: bool = False) -> tuple[list[dict], dict]:
     """
     Bulk-search NYC PLUTO for properties matching investment criteria.
 
@@ -159,11 +159,29 @@ def search_properties(criteria: dict, max_rows: int = _MAX_ROWS) -> tuple[list[d
                   community_districts (list[str]), min_lot_sf, max_lot_sf,
                   min_far, max_far, min_units, max_units, property_types (list[str])
         max_rows: hard cap on rows returned (default 3000)
+        require_geo: if True, refuse to run when criteria has no boroughs/
+                     zip_codes/community_districts — returns immediately
+                     with an empty result and a clear error instead of
+                     silently running an unfiltered citywide query (which
+                     _build_where_clause() would otherwise happily do, since
+                     it has no geography requirement of its own). Default
+                     False preserves this function's existing behavior for
+                     every current caller — only pass True for callers that
+                     specifically mean "an AREA," not "everything."
 
     Returns (rows, status) where:
         rows   — list of normalized property dicts
         status — {"total_fetched": int, "truncated": bool, "where_clause": str, "error": str|None}
     """
+    if require_geo and not (
+        criteria.get("boroughs") or criteria.get("zip_codes") or criteria.get("community_districts")
+    ):
+        return [], {
+            "total_fetched": 0, "truncated": False, "where_clause": "",
+            "error": "No boroughs, ZIP codes, or community districts specified — refusing an unfiltered citywide query.",
+            "coords_missing_pct": None, "raw_field_sample_if_no_coords": None,
+        }
+
     where_clause = _build_where_clause(criteria)
     rows: list[dict] = []
     offset = 0

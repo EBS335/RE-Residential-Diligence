@@ -20,6 +20,7 @@ that always returns the same fixed dict shape, never raises.
 
 from __future__ import annotations
 
+import threading
 import requests
 
 from modules.app_logging import get_logger
@@ -28,6 +29,16 @@ log = get_logger(__name__)
 
 _ACS_URL = "https://api.census.gov/data/2022/acs/acs5"
 _TIMEOUT = 15
+
+# Per-ZCTA cache, module-level (process lifetime), mirroring
+# modules/transit_fetcher.py's _station_cache precedent exactly: only a
+# result carrying real data is cached — an error/no-data result is NOT
+# cached, so one transient failure never permanently poisons a ZIP for the
+# rest of the process. A lock guards it since fetch_demographics() may now
+# be called concurrently from worker threads (Search Area Intelligence's
+# parallel per-ZIP fetch).
+_demo_cache: dict[str, dict] = {}
+_demo_cache_lock = threading.Lock()
 
 
 def _get(params: dict) -> list | None:
@@ -71,6 +82,11 @@ def fetch_demographics(zip_code: str, census_api_key: str | None = None) -> dict
         if not zip_clean or not zip_clean.isdigit():
             return {**base, "error": "missing/invalid zip code"}
 
+        with _demo_cache_lock:
+            cached = _demo_cache.get(zip_clean)
+        if cached is not None:
+            return cached
+
         params = {
             "get": "B01003_001E,B19013_001E",
             "for": f"zip code tabulation area:{zip_clean}",
@@ -92,11 +108,15 @@ def fetch_demographics(zip_code: str, census_api_key: str | None = None) -> dict
             except (TypeError, ValueError):
                 return None
 
-        return {
+        result = {
             **base,
             "population": _int_or_none(rec.get("B01003_001E")),
             "median_household_income": _int_or_none(rec.get("B19013_001E")),
         }
+        if result["population"] is not None or result["median_household_income"] is not None:
+            with _demo_cache_lock:
+                _demo_cache[zip_clean] = result
+        return result
     except Exception as exc:
         log.warning("fetch_demographics failed: %s", exc)
         return {**base, "error": str(exc)}

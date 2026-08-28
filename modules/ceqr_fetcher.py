@@ -118,3 +118,105 @@ def fetch_ulurp_applications(borough_code: str, community_district: str, limit: 
         log.warning("fetch_ulurp_applications failed: %s", exc)
         record_source_status("ULURP Applications", ok=False, detail=str(exc))
         return {**base, "error": str(exc)}
+
+
+def _normalize_cd_num(community_district) -> str:
+    """Same normalization rule fetch_ulurp_applications() applies inline —
+    a 3-digit borough+district code (e.g. "302") down to just the district
+    number ("2") this dataset's field is keyed on. Extracted so the batched
+    function below can reuse it without duplicating the rule."""
+    return str(community_district).strip()[-2:].lstrip("0") or "0"
+
+
+def fetch_ulurp_applications_by_cds(
+    borough_code: str, community_districts: list[str], limit: int = 15
+) -> dict[str, dict]:
+    """
+    Batched sibling of fetch_ulurp_applications(): looks up ULURP
+    applications for MULTIPLE community districts within one borough in a
+    SINGLE Socrata request (community_district IN(...)), instead of one
+    request per district — meant to be called once per borough present in
+    a Site Finder search area, not once per district.
+
+    Does NOT call record_source_status() (unlike fetch_ulurp_applications)
+    — this is intentional: callers running this from a worker thread must
+    record source status themselves, on the main thread, after collecting
+    the result (record_source_status() writes to st.session_state, which
+    is not thread-safe).
+
+    Args:
+        borough_code:          single-digit BBL borough code ("1"-"5").
+        community_districts:   3-digit codes (e.g. "302"), any duplicates
+                                are deduped internally.
+        limit:                 max applications kept PER community district
+                                (same semantics as fetch_ulurp_applications's
+                                own `limit`, applied client-side after the
+                                single batched fetch).
+
+    Returns: dict keyed by each ORIGINAL (unnormalized) community_district
+    string passed in, each value the exact same per-CD shape
+    fetch_ulurp_applications() returns (never raises; a district with zero
+    matching applications still gets `{"verified": True, "count": 0,
+    "applications": []}`; on a request failure every requested district
+    gets `{"verified": False, "error": "..."}`).
+    """
+    def _base_for(cd: str) -> dict:
+        return {
+            "applications": [], "count": 0, "info_url": _ULURP_INFO_URL,
+            "source": "NYC Planning ULURP Applications", "verified": False, "error": None,
+        }
+
+    community_districts = list(community_districts or [])
+    if not community_districts:
+        return {}
+    if not borough_code:
+        return {cd: {**_base_for(cd), "error": "missing borough"} for cd in community_districts}
+    boro = _BOROUGH_NAME.get(str(borough_code))
+    if not boro:
+        return {
+            cd: {**_base_for(cd), "error": f"unrecognized borough code: {borough_code}"}
+            for cd in community_districts
+        }
+
+    # Map normalized district number -> every original input string that
+    # normalized to it (usually one-to-one; a collision is a harmless
+    # degenerate case since callers pass the distinct CDs of one borough).
+    norm_to_originals: dict[str, list[str]] = {}
+    for cd in community_districts:
+        norm_to_originals.setdefault(_normalize_cd_num(cd), []).append(cd)
+
+    in_list = ",".join(f"'{n}'" for n in sorted(norm_to_originals))
+    shared_limit = min(1000, limit * max(len(norm_to_originals), 1) * 5)
+
+    try:
+        params = {
+            "$where": f"borough='{boro}' AND community_district IN({in_list})",
+            "$order": "certified_referred_date DESC",
+            "$limit": str(shared_limit),
+        }
+        data, ok = _get_json(_ULURP_URL, params)
+        if not ok or not isinstance(data, list):
+            return {
+                cd: {**_base_for(cd), "error": "ULURP batched request failed, timed out, or field names have changed"}
+                for cd in community_districts
+            }
+
+        by_norm: dict[str, list[dict]] = {}
+        for r in data:
+            norm = _normalize_cd_num(r.get("community_district", ""))
+            by_norm.setdefault(norm, []).append({
+                "ulurp_no": r.get("ulurp_no", ""),
+                "project_name": r.get("project_name", ""),
+                "certified_date": (r.get("certified_referred_date", "") or "")[:10],
+                "status": r.get("status", r.get("current_stage", "")),
+            })
+
+        result: dict[str, dict] = {}
+        for norm, originals in norm_to_originals.items():
+            apps = by_norm.get(norm, [])[:limit]
+            for cd in originals:
+                result[cd] = {**_base_for(cd), "verified": True, "applications": apps, "count": len(apps)}
+        return result
+    except Exception as exc:
+        log.warning("fetch_ulurp_applications_by_cds failed: %s", exc)
+        return {cd: {**_base_for(cd), "error": str(exc)} for cd in community_districts}

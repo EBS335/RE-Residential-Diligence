@@ -136,3 +136,88 @@ def fetch_dev_momentum(borough_code: str, community_district: str, months_back: 
         log.warning("fetch_dev_momentum failed: %s", exc)
         record_source_status("DOB Permit Issuance (momentum)", ok=False, detail=str(exc))
         return {**base, "error": str(exc)}
+
+
+def fetch_dev_momentum_by_cds(
+    borough_code: str, community_districts: list[str], months_back: int = 12
+) -> dict[str, dict]:
+    """
+    Batched sibling of fetch_dev_momentum(): counts recent DOB New-Building
+    (NB) permit filings for MULTIPLE community districts within one
+    borough in a SINGLE Socrata aggregate request (community_board
+    IN(...), $group=community_board), instead of one count(*) request per
+    district — meant to be called once per borough present in a Site
+    Finder search area, not once per district.
+
+    Does NOT call record_source_status() (unlike fetch_dev_momentum) —
+    intentional: callers running this from a worker thread must record
+    source status themselves, on the main thread, after collecting the
+    result (record_source_status() writes to st.session_state, which is
+    not thread-safe).
+
+    Returns: dict keyed by each ORIGINAL (unnormalized) community_district
+    string passed in, each value the exact same per-CD shape
+    fetch_dev_momentum() returns (never raises; a district absent from the
+    grouped response — Socrata omits zero-count groups — still gets
+    `{"verified": True, "nb_permit_count": 0}`; on a request failure every
+    requested district gets `{"verified": False, "error": "..."}`).
+    """
+    def _base_for(cd: str) -> dict:
+        return {
+            "nb_permit_count": 0, "community_district": str(cd or ""), "months_back": months_back,
+            "source": "DOB Permit Issuance", "verified": False, "error": None,
+        }
+
+    community_districts = list(community_districts or [])
+    if not community_districts:
+        return {}
+    if not borough_code:
+        return {cd: {**_base_for(cd), "error": "missing borough"} for cd in community_districts}
+    boro = _BOROUGH_NAME.get(str(borough_code))
+    if not boro:
+        return {
+            cd: {**_base_for(cd), "error": f"unrecognized borough code: {borough_code}"}
+            for cd in community_districts
+        }
+
+    norm_to_originals: dict[str, list[str]] = {}
+    for cd in community_districts:
+        norm = str(cd).strip()[-2:].lstrip("0") or "0"
+        norm_to_originals.setdefault(norm, []).append(cd)
+
+    in_list = ",".join(f"'{n}'" for n in sorted(norm_to_originals))
+    cutoff = (datetime.date.today() - datetime.timedelta(days=30 * months_back)).isoformat()
+
+    try:
+        params = {
+            "$select": "community_board, count(*) as cnt",
+            "$where": (
+                f"borough='{boro}' AND community_board IN({in_list}) "
+                f"AND job_type='NB' AND filing_date > '{cutoff}'"
+            ),
+            "$group": "community_board",
+        }
+        data, ok = _get_json(_DOB_PERMITS_URL, params)
+        if not ok or not isinstance(data, list):
+            return {
+                cd: {**_base_for(cd), "error": "DOB permits batched request failed, timed out, or field names have changed"}
+                for cd in community_districts
+            }
+
+        counts_by_norm: dict[str, int] = {}
+        for row in data:
+            norm = str(row.get("community_board", "")).strip()
+            try:
+                counts_by_norm[norm] = int(row.get("cnt", 0))
+            except (TypeError, ValueError):
+                counts_by_norm[norm] = 0
+
+        result: dict[str, dict] = {}
+        for norm, originals in norm_to_originals.items():
+            count = counts_by_norm.get(norm, 0)
+            for cd in originals:
+                result[cd] = {**_base_for(cd), "verified": True, "nb_permit_count": count}
+        return result
+    except Exception as exc:
+        log.warning("fetch_dev_momentum_by_cds failed: %s", exc)
+        return {cd: {**_base_for(cd), "error": str(exc)} for cd in community_districts}

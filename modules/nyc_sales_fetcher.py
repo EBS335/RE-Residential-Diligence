@@ -203,6 +203,75 @@ def fetch_nyc_sales(
     return listings, status
 
 
+def fetch_nyc_sales_counts_by_zips(zip_codes: list[str], since_date: str) -> tuple[dict[str, int], str]:
+    """
+    Batched, count-only sibling of fetch_nyc_sales(): counts closed sales
+    (sale_price > $10,000) since `since_date` for MULTIPLE ZIP codes in a
+    SINGLE Socrata aggregate request (zip_code IN(...), $group=zip_code),
+    instead of one request per ZIP — meant for area-wide sales-velocity
+    metrics where only a per-ZIP count is needed, not distance-sorted
+    listing rows. Deliberately drops fetch_nyc_sales()'s anchor-point
+    distance sort — not needed for a count metric — fetch_nyc_sales()
+    itself is untouched and keeps that behavior for its own callers.
+
+    Does NOT call record_source_status() — intentional: callers running
+    this from a worker thread must record source status themselves, on
+    the main thread, after collecting the result (record_source_status()
+    writes to st.session_state, which is not thread-safe).
+
+    Args:
+        zip_codes:   ZIP code strings (any duplicates deduped internally).
+        since_date:  a plain "YYYY-MM-DD" string; only sales strictly
+                     after this date are counted.
+
+    Returns (counts_by_zip, status):
+        counts_by_zip: dict keyed by each ORIGINAL zip_code string passed
+                        in, each value an int count (0 for a ZIP absent
+                        from the grouped response — Socrata omits
+                        zero-count groups — never a missing key).
+        status:  "no_filter" if zip_codes is empty (no request made),
+                 "live" if the request succeeded with >=1 sale counted,
+                 "no_results" if it succeeded with zero sales counted,
+                 "error: <detail>" on a request failure (never raises).
+    """
+    zip_codes = list(zip_codes or [])
+    if not zip_codes:
+        return {}, "no_filter"
+
+    clean = sorted({z.strip() for z in zip_codes if z and z.strip()})
+    if not clean:
+        return {z: 0 for z in zip_codes}, "no_filter"
+
+    in_list = ",".join(f"'{z}'" for z in clean)
+    params = {
+        "$select": "zip_code, count(*) as cnt",
+        "$where": f"sale_price > 10000 AND zip_code IN({in_list}) AND sale_date > '{since_date}'",
+        "$group": "zip_code",
+    }
+    try:
+        resp = requests.get(_SALES_URL, params=params, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as exc:
+        log.warning("fetch_nyc_sales_counts_by_zips failed: %s", exc)
+        return {z: 0 for z in zip_codes}, f"error: {exc}"
+
+    if not isinstance(rows, list):
+        return {z: 0 for z in zip_codes}, "error: unexpected response shape"
+
+    counts_by_clean: dict[str, int] = {}
+    for r in rows:
+        z = str(r.get("zip_code", "")).strip()
+        try:
+            counts_by_clean[z] = int(r.get("cnt", 0))
+        except (TypeError, ValueError):
+            counts_by_clean[z] = 0
+
+    counts_by_zip = {z: counts_by_clean.get(z.strip(), 0) for z in zip_codes}
+    total = sum(counts_by_zip.values())
+    return counts_by_zip, ("live" if total else "no_results")
+
+
 def fetch_dob_permits(
     lat: float,
     lon: float,
